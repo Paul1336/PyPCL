@@ -2,6 +2,16 @@ import torch
 import gc
 from src.engine import train_algorithm, evaluate_model, train_pico_epoch, train_solar
 
+def run_cour_training(args, loaders, train_config, device):
+    """Runs the training pipeline for the Cour 2011 (PLL) model."""
+    from src.model_setup import setup_cour
+    print("\nTraining Cour 2011 (PL)")
+    model, loss, optimizer = setup_cour(args, train_config)
+    accuracies = train_algorithm(model, loaders['pl'], loaders['test'], loss, optimizer, args.epochs, device)
+    del model, loss, optimizer
+    gc.collect()
+    return accuracies
+
 def run_proden_training(args, loaders, train_config, device):
     """Runs the training pipeline for the PRODEN model."""
     from src.model_setup import setup_proden
