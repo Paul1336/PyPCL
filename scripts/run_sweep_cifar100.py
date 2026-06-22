@@ -57,12 +57,15 @@ def get_class_count_sequence() -> list:
 def get_k_values(C: int) -> list:
     """
     Returns the sorted, deduplicated list of k values to test for class count C.
-    Includes absolute endpoints {1, C-1} and proportional values at
-    10 % / 20 % / 30 % / 50 % / 70 % / 80 % / 90 % of C.
-    All values are clamped to [1, C-1].
+    Includes:
+      - absolute endpoints {1, C-1}
+      - proportional values at 10%/20%/30%/50%/70%/80%/90% of C
+      - fixed small-k values {2, 3, 4, 5} (clamped to [1, C-1])
+    All values are filtered to [1, C-1].
     """
     proportional = [max(1, round(r * C)) for r in [0.1, 0.2, 0.3, 0.5, 0.7, 0.8, 0.9]]
-    all_k = sorted(set([1, C - 1] + proportional))
+    fixed_small  = [k for k in [2, 3, 4, 5] if k <= C - 1]
+    all_k = sorted(set([1, C - 1] + proportional + fixed_small))
     return [k for k in all_k if 1 <= k <= C - 1]
 
 
