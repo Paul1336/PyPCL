@@ -3,16 +3,16 @@ import torch.optim as optim
 
 from src.models import create_model
 from src.proden_loss import proden
-from src.cour_loss import CourLoss
+from src.clpl_loss import CLPLSquaredHingeLoss
 from src.mcl_losses import MCL_LOG, MCL_MAE, MCL_EXP
 from src.pico.model import PiCOModel
 from src.pico.utils_loss import PartialLoss, SupConLoss
 from src.solar.utils_loss import partial_loss as solar_partial_loss
 
 def setup_cour(args, train_config):
-    """Initializes model, loss, and optimizer for Cour 2011."""
+    """Initializes model, loss, and optimizer for Cour 2011 CLPL (squared-hinge)."""
     model = create_model(train_config['num_classes'])
-    loss = CourLoss()
+    loss = CLPLSquaredHingeLoss()
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
     return model, loss, optimizer
 

@@ -131,10 +131,10 @@ def load_combined_results(C: int, supplement_csv: str) -> list[dict]:
 
 def estimate_training_time(loaders, num_classes, epochs, device,
                            n_warmup=2, n_bench=5) -> float:
-    from src.cour_loss import CourLoss
+    from src.clpl_loss import CLPLSquaredHingeLoss
     from src.models import create_model
     model = create_model(num_classes).to(device)
-    loss_fn = CourLoss()
+    loss_fn = CLPLSquaredHingeLoss()
     opt = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
     model.train()
     it = iter(loaders['pl'])

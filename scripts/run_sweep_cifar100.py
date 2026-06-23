@@ -94,11 +94,11 @@ def estimate_training_time(loaders, num_classes: int, epochs: int, device,
     Uses Cour loss and a fresh ResNet18 for benchmarking (deleted after).
     n_warmup passes are discarded; n_bench passes are timed.
     """
-    from src.cour_loss import CourLoss
+    from src.clpl_loss import CLPLSquaredHingeLoss
     from src.models import create_model
 
     model = create_model(num_classes).to(device)
-    loss_fn = CourLoss()
+    loss_fn = CLPLSquaredHingeLoss()
     opt = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
     model.train()
 
