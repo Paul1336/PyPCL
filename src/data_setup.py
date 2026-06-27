@@ -4,8 +4,8 @@ from torchvision.datasets import CIFAR10, CIFAR100
 from torchvision import transforms
 import numpy as np
 
-from src.data_utils import ComparisonDataGenerator, WeaklySupervisedDataset, PicoDataset, SoLarDataset
-from src.collate import collate_fn, pico_collate_fn, solar_collate_fn
+from src.data_utils import ComparisonDataGenerator, WeaklySupervisedDataset, PicoDataset, SoLarDataset, ComCoDataset
+from src.collate import collate_fn, pico_collate_fn, solar_collate_fn, comco_collate_fn
 from src.clcifar import CLCIFAR10 as CLCIFAR10_dataset, CLCIFAR20 as CLCIFAR20_dataset
 
 def _cifar100_to_cifar20(target):
@@ -190,10 +190,15 @@ def get_dataloaders(args, data_config, pl_dataset_raw, cl_dataset_raw, original_
     solar_train_dataset = SoLarDataset(pl_dataset_raw, original_targets)
     solar_loader = DataLoader(solar_train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=True, collate_fn=solar_collate_fn)
 
+    # ComCo loader (uses complementary labels)
+    comco_train_dataset = ComCoDataset(cl_dataset_raw, original_targets)
+    comco_loader = DataLoader(comco_train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=True, collate_fn=comco_collate_fn, pin_memory=True)
+
     return {
         'pl': pl_loader,
         'cl': cl_loader,
         'test': test_loader,
         'pico': pico_loader,
-        'solar': solar_loader
+        'solar': solar_loader,
+        'comco': comco_loader,
     }, solar_train_dataset

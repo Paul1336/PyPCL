@@ -11,7 +11,7 @@ sys.path.insert(0, project_root)
 
 # Import project modules
 from src.data_setup import prepare_datasets, get_dataloaders
-from src.training_pipelines import run_proden_training, run_mcl_training, run_pico_training, run_solar_training
+from src.training_pipelines import run_proden_training, run_mcl_training, run_pico_training, run_solar_training, run_comco_training
 from src.plotting import save_accuracy_plot
 from src.args import parse_arguments
 from src.saving import save_accuracies_to_csv
@@ -36,7 +36,7 @@ def main():
         
     # Dictionary to store accuracies for each model
     all_accuracies = {
-        'PRODEN': [], 'MCL-LOG': [], 'MCL-MAE': [], 'MCL-EXP': [], 'PiCO': [], 'SoLar': []
+        'PRODEN': [], 'MCL-LOG': [], 'MCL-MAE': [], 'MCL-EXP': [], 'ComCo': [], 'PiCO': [], 'SoLar': []
     }
     epochs_range = range(1, args.epochs + 1)
 
@@ -56,6 +56,10 @@ def main():
 
     # MCL-EXP
     all_accuracies['MCL-EXP'] = run_mcl_training(args, loaders, config['training'], DEVICE, 'exp')
+    save_accuracy_plot(all_accuracies, epochs_range, args, project_root)
+
+    # ComCo
+    all_accuracies['ComCo'] = run_comco_training(args, loaders, config['training'], config['comco'], DEVICE)
     save_accuracy_plot(all_accuracies, epochs_range, args, project_root)
 
     # PiCO

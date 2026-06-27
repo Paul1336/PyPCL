@@ -39,33 +39,18 @@ from src.training_pipelines import run_cour_training, run_mcl_training
 # ---------------------------------------------------------------------------
 
 def get_class_count_sequence() -> list:
-    """
-    Generates integer class counts from 5 to 100 via ×1.2 growth (ceiling).
-    Sequence: [5, 6, 8, 10, 12, 15, 18, 22, 27, 33, 40, 48, 58, 70, 84, 100].
-    """
-    counts = [5]
-    while True:
-        nxt = math.ceil(counts[-1] * 1.2)
-        if nxt >= 100:
-            if counts[-1] != 100:
-                counts.append(100)
-            break
-        counts.append(nxt)
-    return counts
+    return [5, 8, 12, 18, 27, 40, 58, 84, 100]
 
 
 def get_k_values(C: int) -> list:
     """
     Returns the sorted, deduplicated list of k values to test for class count C.
-    Includes:
-      - absolute endpoints {1, C-1}
-      - proportional values at 10%/20%/30%/50%/70%/80%/90% of C
-      - fixed small-k values {2, 3, 4, 5} (clamped to [1, C-1])
-    All values are filtered to [1, C-1].
+    Includes fixed small-k {1, 2, 3, 5}, proportional {25%, 50%, 75%} of C,
+    and the endpoint C-1. All values filtered to [1, C-1].
     """
-    proportional = [max(1, round(r * C)) for r in [0.1, 0.2, 0.3, 0.5, 0.7, 0.8, 0.9]]
-    fixed_small  = [k for k in [2, 3, 4, 5] if k <= C - 1]
-    all_k = sorted(set([1, C - 1] + proportional + fixed_small))
+    fixed = [k for k in [1, 2, 3, 5] if k <= C - 1]
+    prop  = [max(1, round(r * C)) for r in [0.25, 0.50, 0.75]]
+    all_k = sorted(set(fixed + prop + [C - 1]))
     return [k for k in all_k if 1 <= k <= C - 1]
 
 

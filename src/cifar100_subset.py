@@ -247,3 +247,60 @@ def get_subset_dataloaders(
     test_loader  = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     return {'pl': pl_loader, 'cl': cl_loader, 'test': test_loader}
+
+
+def get_subset_dataloaders_full(
+    pl_dataset_raw,
+    cl_dataset_raw,
+    original_targets,
+    test_info,
+    batch_size: int,
+):
+    """
+    Builds all 5 DataLoaders needed for PiCO and ComCo:
+    'pl', 'cl', 'pico', 'comco', 'test'.
+
+    PiCO / ComCo loaders use drop_last=True so the MoCo queue assertion
+    (queue_size % batch_size == 0) is always satisfied.
+    """
+    from torchvision import transforms
+    from src.data_utils import PicoDataset, ComCoDataset
+    from src.collate import pico_collate_fn, comco_collate_fn
+
+    train_transform = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize(_MEAN, _STD),
+    ])
+    test_transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(_MEAN, _STD),
+    ])
+
+    pl_dataset = WeaklySupervisedDataset(
+        pl_dataset_raw.data, pl_dataset_raw.targets, transform=train_transform
+    )
+    cl_dataset = WeaklySupervisedDataset(
+        cl_dataset_raw.data, cl_dataset_raw.targets, transform=train_transform
+    )
+    pl_loader = DataLoader(pl_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    cl_loader = DataLoader(cl_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+
+    pico_dataset  = PicoDataset(pl_dataset_raw, original_targets)
+    pico_loader   = DataLoader(pico_dataset,  batch_size=batch_size, shuffle=True,
+                               drop_last=True, collate_fn=pico_collate_fn, pin_memory=True)
+
+    comco_dataset = ComCoDataset(cl_dataset_raw, original_targets)
+    comco_loader  = DataLoader(comco_dataset, batch_size=batch_size, shuffle=True,
+                               drop_last=True, collate_fn=comco_collate_fn, pin_memory=True)
+
+    test_data, test_targets = test_info
+    test_dataset = _ArrayTestDataset(test_data, test_targets, transform=test_transform)
+    test_loader  = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
+    return {
+        'pl': pl_loader, 'cl': cl_loader,
+        'pico': pico_loader, 'comco': comco_loader,
+        'test': test_loader,
+    }

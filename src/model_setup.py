@@ -8,6 +8,8 @@ from src.mcl_losses import MCL_LOG, MCL_MAE, MCL_EXP
 from src.pico.model import PiCOModel
 from src.pico.utils_loss import PartialLoss, SupConLoss
 from src.solar.utils_loss import partial_loss as solar_partial_loss
+from src.comco.model import ComCoModel
+from src.comco.utils_loss import ComCoCLSLoss, ComCoContrastiveLoss
 
 def setup_cour(args, train_config):
     """Initializes model, loss, and optimizer for Cour 2011 CLPL (squared-hinge)."""
@@ -37,6 +39,32 @@ def setup_mcl(args, train_config, loss_type='log'):
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
     return model, loss, optimizer
 
+def setup_comco(args, train_config, comco_config, device):
+    """Initializes model, losses, and optimizer for ComCo."""
+    from src.comco.model import ComCoModel
+    from src.comco.utils_loss import ComCoCLSLoss, ComCoContrastiveLoss
+
+    comco_args = {
+        'num_class':   train_config['num_classes'],
+        'epochs':      args.epochs,
+        'low_dim':     comco_config['low_dim'],
+        'moco_queue':  comco_config['moco_queue'],
+        'moco_m':      comco_config['moco_m'],
+        'loss_weight': comco_config['loss_weight'],
+        'warmup_neg':  comco_config['warmup_neg'],
+        'warmup_pos':  comco_config['warmup_pos'],
+    }
+    model     = ComCoModel(comco_args).to(device)
+    cls_loss  = ComCoCLSLoss()
+    cont_loss = ComCoContrastiveLoss(
+        temperature=comco_config['temperature'],
+        top_k=comco_config['top_k'],
+    )
+    optimizer = optim.SGD(model.parameters(), lr=args.lr,
+                          momentum=args.momentum, weight_decay=args.weight_decay)
+    return model, (cls_loss, cont_loss), optimizer, comco_args
+
+
 def setup_pico(args, train_config, pico_config, pico_train_dataset, device):
     """Initializes model, losses, and optimizer for PiCO."""
     pico_args = {
@@ -54,6 +82,27 @@ def setup_pico(args, train_config, pico_config, pico_train_dataset, device):
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
     
     return model, (cls_loss, cont_loss), optimizer, pico_args
+
+def setup_comco(args, train_config, comco_config, device):
+    """Initializes model, losses, and optimizer for ComCo."""
+    comco_args = {
+        'num_class': train_config['num_classes'],
+        'epochs': args.epochs,
+        'low_dim': comco_config['low_dim'],
+        'moco_queue': comco_config['moco_queue'],
+        'moco_m': comco_config['moco_m'],
+        'loss_weight': comco_config['loss_weight'],
+        'temperature': comco_config['temperature'],
+        'top_k': comco_config['top_k'],
+        'warmup_neg': comco_config['warmup_neg'],
+        'warmup_pos': comco_config['warmup_pos'],
+    }
+    model = ComCoModel(comco_args).to(device)
+    cls_loss = ComCoCLSLoss()
+    cont_loss = ComCoContrastiveLoss(temperature=comco_args['temperature'], top_k=comco_args['top_k'])
+    optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+    return model, (cls_loss, cont_loss), optimizer, comco_args
+
 
 def setup_solar(args, train_config, solar_config, solar_train_dataset, device):
     """Initializes model, loss, and optimizer for SoLar."""

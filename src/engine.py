@@ -1,6 +1,7 @@
 import torch
 from tqdm import tqdm
 from src.pico.model import PiCOModel
+from src.comco.model import ComCoModel
 import torch.nn.functional as F
 import numpy as np
 import math
@@ -14,7 +15,7 @@ def evaluate_model(model, test_loader, device):
     with torch.no_grad():
         for images, labels in test_loader:
             images, labels = images.to(device), labels.to(device)
-            if isinstance(model, PiCOModel):
+            if isinstance(model, (PiCOModel, ComCoModel)):
                 outputs = model(images, eval_only=True)
             else:
                 outputs = model(images)
@@ -80,6 +81,35 @@ def train_pico_epoch(pico_args, model, loader, loss_fn, loss_cont_fn, optimizer,
         total_loss += loss.item()
         progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
     return total_loss / len(loader)
+
+def train_comco_epoch(comco_args, model, loader, cls_loss_fn, cont_loss_fn, optimizer, epoch, device):
+    """Runs a single training epoch for the ComCo model."""
+    model.train()
+    total_loss = 0
+    warmup_pos = epoch >= comco_args['warmup_pos']
+    warmup_neg = epoch >= comco_args['warmup_neg']
+
+    progress_bar = tqdm(loader, desc=f"ComCo Epoch {epoch + 1}/{comco_args['epochs']}")
+    for (images_w, images_s, comp_mask, true_labels, index) in progress_bar:
+        images_w = images_w.to(device)
+        images_s = images_s.to(device)
+        comp_mask = comp_mask.to(device)
+
+        cls_out, q, all_feats, all_pseudo, all_comp = model(images_w, images_s, comp_mask, comco_args)
+        pseudo_q = cls_out.argmax(dim=1)
+
+        loss_cls = cls_loss_fn(cls_out, comp_mask)
+        loss_cont = cont_loss_fn(q, all_feats, all_pseudo, all_comp, pseudo_q, warmup_pos, warmup_neg)
+        loss = loss_cls + comco_args['loss_weight'] * loss_cont
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
+    return total_loss / len(loader)
+
 
 def train_solar_epoch(solar_args, model, loader, loss_fn, optimizer, epoch, device, queue, emp_dist):
     """Runs a single training epoch for the SoLar model."""

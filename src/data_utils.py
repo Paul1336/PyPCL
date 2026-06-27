@@ -164,6 +164,53 @@ class PicoDataset(Dataset):
         each_true_label = self.true_labels[index]
         return each_image_w, each_image_s, each_label, each_true_label, index
 
+class ComCoDataset(Dataset):
+    """Dataset for ComCo: returns weak/strong augmented pairs with complementary label masks."""
+
+    def __init__(self, cl_dataset_raw, original_labels):
+        self.images = cl_dataset_raw.data
+        self.true_labels = original_labels
+        self.num_classes = len(set(original_labels.numpy()))
+
+        # Pre-build dense binary complementary masks [C] from variable-length sparse labels
+        self.comp_masks = []
+        for cl_labels in cl_dataset_raw.targets:
+            mask = torch.zeros(self.num_classes, dtype=torch.float)
+            mask[cl_labels] = 1.0
+            self.comp_masks.append(mask)
+
+        self.weak_transform = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.RandomResizedCrop(size=32, scale=(0.2, 1.)),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomApply([
+                transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)
+            ], p=0.8),
+            transforms.RandomGrayscale(p=0.2),
+            transforms.ToTensor(),
+            transforms.Normalize([0.4914, 0.4822, 0.4465], [0.247, 0.2435, 0.2616])
+        ])
+        self.strong_transform = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.RandomResizedCrop(size=32, scale=(0.2, 1.)),
+            transforms.RandomHorizontalFlip(),
+            RandomAugment(n=3, m=5),
+            transforms.ToTensor(),
+            transforms.Normalize([0.4914, 0.4822, 0.4465], [0.247, 0.2435, 0.2616])
+        ])
+
+    def __len__(self):
+        return len(self.true_labels)
+
+    def __getitem__(self, index):
+        image = self.images[index]
+        img_w = self.weak_transform(image)
+        img_s = self.strong_transform(image)
+        comp_mask = self.comp_masks[index]
+        true_label = self.true_labels[index]
+        return img_w, img_s, comp_mask, true_label, index
+
+
 class SoLarDataset(Dataset):
     def __init__(self, pl_dataset_raw, original_labels):
         self.images = pl_dataset_raw.data

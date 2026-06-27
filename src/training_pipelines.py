@@ -1,6 +1,6 @@
 import torch
 import gc
-from src.engine import train_algorithm, evaluate_model, train_pico_epoch, train_solar
+from src.engine import train_algorithm, evaluate_model, train_pico_epoch, train_comco_epoch, train_solar, train_comco_epoch
 
 def run_cour_training(args, loaders, train_config, device):
     """Runs the training pipeline for the Cour 2011 (PLL) model."""
@@ -32,6 +32,28 @@ def run_mcl_training(args, loaders, train_config, device, loss_type='log'):
     gc.collect()
     return accuracies
 
+def run_comco_training(args, loaders, train_config, comco_config, device):
+    """Runs the training pipeline for ComCo (CL)."""
+    from src.model_setup import setup_comco
+    print("\nTraining ComCo (CL)")
+    model, (cls_loss, cont_loss), optimizer, comco_args = setup_comco(args, train_config, comco_config, device)
+
+    accuracies = []
+    for epoch in range(args.epochs):
+        avg_loss = train_comco_epoch(comco_args, model, loaders['comco'],
+                                     cls_loss, cont_loss, optimizer, epoch, device)
+        current_accuracy = evaluate_model(model, loaders['test'], device)
+        print(f"Epoch [{epoch+1}/{args.epochs}], Loss: {avg_loss:.4f}, Test Accuracy: {current_accuracy:.2f}%")
+        accuracies.append(current_accuracy)
+        if epoch % 10 == 0:
+            torch.cuda.empty_cache()
+            gc.collect()
+
+    del model, cls_loss, cont_loss, optimizer
+    gc.collect()
+    return accuracies
+
+
 def run_pico_training(args, loaders, train_config, pico_config, pl_dataset_raw, original_targets, device):
     """Runs the training pipeline for the PiCO model."""
     from src.model_setup import setup_pico
@@ -56,6 +78,28 @@ def run_pico_training(args, loaders, train_config, pico_config, pl_dataset_raw, 
     del model, cls_loss, cont_loss, optimizer, pico_train_dataset
     gc.collect()
     return accuracies
+
+def run_comco_training(args, loaders, train_config, comco_config, device):
+    """Runs the training pipeline for the ComCo model."""
+    from src.model_setup import setup_comco
+    print("\nTraining ComCo (CL)")
+    model, (cls_loss, cont_loss), optimizer, comco_args = setup_comco(args, train_config, comco_config, device)
+
+    accuracies = []
+    for epoch in range(args.epochs):
+        avg_loss = train_comco_epoch(comco_args, model, loaders['comco'], cls_loss, cont_loss, optimizer, epoch, device)
+        current_accuracy = evaluate_model(model, loaders['test'], device)
+        print(f"Epoch [{epoch+1}/{args.epochs}], Loss: {avg_loss:.4f}, Test Accuracy: {current_accuracy:.2f}%")
+        accuracies.append(current_accuracy)
+
+        if epoch % 10 == 0:
+            torch.cuda.empty_cache()
+            gc.collect()
+
+    del model, cls_loss, cont_loss, optimizer
+    gc.collect()
+    return accuracies
+
 
 def run_solar_training(args, loaders, train_config, solar_config, solar_train_dataset, device):
     """Runs the training pipeline for the SoLar model."""
