@@ -12,6 +12,17 @@ training:
   momentum: 0.9
   weight_decay: 1e-4
 
+# ComCo Algorithm Parameters (Jiang et al., Neural Networks 2024)
+comco:
+  low_dim: 128        # MLP projection head output dimension
+  moco_queue: 8192    # Embedding queue size (paper: 8192 for CIFAR)
+  moco_m: 0.999       # Momentum for key encoder update
+  loss_weight: 0.3    # λ: weight for contrastive loss (paper: 0.3 for CIFAR)
+  temperature: 0.17   # τ for InfoNCE (paper: 0.17)
+  top_k: 1            # K pseudo-positive nearest neighbors (paper: K=1)
+  warmup_neg: 1       # Epoch to activate negative selection (paper: 1)
+  warmup_pos: 100     # Epoch to activate positive selection (paper: 100)
+
 # PiCO Algorithm Parameters
 pico:
   low_dim: 128
