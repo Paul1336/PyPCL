@@ -114,7 +114,16 @@ def main():
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
     pico_config  = cfg['pico']
-    comco_config = cfg['comco']
+    comco_config = cfg.get('comco', {
+        'low_dim':      128,
+        'moco_queue':   8192,
+        'moco_m':       0.999,
+        'loss_weight':  0.3,
+        'temperature':  0.17,
+        'top_k':        1,
+        'warmup_neg':   1,
+        'warmup_pos':   100,
+    })
 
     csv_path  = os.path.join(args.output_dir, 'results.csv')
     plots_dir = os.path.join('plots', 'pico_comco')
