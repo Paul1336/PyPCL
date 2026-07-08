@@ -82,6 +82,41 @@ def train_pico_epoch(pico_args, model, loader, loss_fn, loss_cont_fn, optimizer,
         progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
     return total_loss / len(loader)
 
+
+def train_pico_mclloss_epoch(pico_args, model, loader, loss_fn, loss_cont_fn, optimizer, epoch, device):
+    """Single training epoch for PiCO-MCL: uses MCL-LOG style cls loss instead of PartialLoss."""
+    model.train()
+    total_loss = 0
+    start_upd_prot = epoch >= pico_args['prot_start']
+
+    progress_bar = tqdm(loader, desc=f"PiCO-MCL Epoch {epoch + 1}/{pico_args['epochs']}")
+    for (images_w, images_s, partial_Y, true_labels, index) in progress_bar:
+        images_w  = images_w.to(device)
+        images_s  = images_s.to(device)
+        partial_Y = partial_Y.to(device)
+
+        cls_out, features, pseudo_target_cont, score_prot = model(images_w, images_s, partial_Y, pico_args)
+        batch_size = cls_out.shape[0]
+
+        mask = (
+            torch.eq(pseudo_target_cont[:batch_size].unsqueeze(1),
+                     pseudo_target_cont.unsqueeze(0)).float()
+            if start_upd_prot else None
+        )
+
+        loss_cls  = loss_fn(cls_out, partial_Y)
+        loss_cont = loss_cont_fn(features=features, mask=mask, batch_size=batch_size)
+        loss = loss_cls + pico_args['loss_weight'] * loss_cont
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
+    return total_loss / len(loader)
+
+
 def train_comco_epoch(comco_args, model, loader, cls_loss_fn, cont_loss_fn, optimizer, epoch, device):
     """Runs a single training epoch for the ComCo model."""
     model.train()

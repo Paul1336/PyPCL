@@ -101,6 +101,33 @@ def run_comco_training(args, loaders, train_config, comco_config, device):
     return accuracies
 
 
+def run_pico_mclloss_training(args, loaders, train_config, pico_config, device):
+    """Runs PiCO with MCL-LOG cls loss (no EMA confidence)."""
+    from src.model_setup import setup_pico_mclloss
+    from src.engine import train_pico_mclloss_epoch
+    print("\nTraining PiCO-MCL (PL)")
+
+    model, (cls_loss, cont_loss), optimizer, pico_args = setup_pico_mclloss(
+        args, train_config, pico_config, device
+    )
+
+    accuracies = []
+    for epoch in range(args.epochs):
+        avg_loss = train_pico_mclloss_epoch(
+            pico_args, model, loaders['pico'], cls_loss, cont_loss, optimizer, epoch, device
+        )
+        current_accuracy = evaluate_model(model, loaders['test'], device)
+        print(f"Epoch [{epoch+1}/{args.epochs}], Loss: {avg_loss:.4f}, Test Accuracy: {current_accuracy:.2f}%")
+        accuracies.append(current_accuracy)
+        if epoch % 10 == 0:
+            torch.cuda.empty_cache()
+            gc.collect()
+
+    del model, cls_loss, cont_loss, optimizer
+    gc.collect()
+    return accuracies
+
+
 def run_solar_training(args, loaders, train_config, solar_config, solar_train_dataset, device):
     """Runs the training pipeline for the SoLar model."""
     from src.model_setup import setup_solar

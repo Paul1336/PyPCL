@@ -104,6 +104,28 @@ def setup_comco(args, train_config, comco_config, device):
     return model, (cls_loss, cont_loss), optimizer, comco_args
 
 
+def setup_pico_mclloss(args, train_config, pico_config, device):
+    """Initializes PiCO with MCL-LOG partial label cls loss (no EMA confidence matrix)."""
+    from src.pico.mcl_cls_loss import PiCOMCLLoss
+    pico_args = {
+        'num_class':      train_config['num_classes'],
+        'epochs':         args.epochs,
+        'low_dim':        pico_config['low_dim'],
+        'moco_queue':     pico_config['moco_queue'],
+        'moco_m':         pico_config['moco_m'],
+        'proto_m':        pico_config['proto_m'],
+        'prot_start':     pico_config['prot_start'],
+        'loss_weight':    pico_config['loss_weight'],
+        'conf_ema_range': pico_config['conf_ema_range'],
+    }
+    model     = PiCOModel(pico_args).to(device)
+    cls_loss  = PiCOMCLLoss()
+    cont_loss = SupConLoss()
+    optimizer = optim.SGD(model.parameters(), lr=args.lr,
+                          momentum=args.momentum, weight_decay=args.weight_decay)
+    return model, (cls_loss, cont_loss), optimizer, pico_args
+
+
 def setup_solar(args, train_config, solar_config, solar_train_dataset, device):
     """Initializes model, loss, and optimizer for SoLar."""
     solar_args = {

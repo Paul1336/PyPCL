@@ -127,7 +127,7 @@ _CSV_FIELDS = [
     'total_classes', 'n_partial_labels', 'n_complementary_labels',
     'algorithm', 'final_accuracy', 'epochs',
     'batch_size', 'optimizer', 'lr', 'seed',
-    'timestamp',
+    'training_time_s', 'timestamp',
 ]
 
 
@@ -157,7 +157,8 @@ def _done_key(C, k, alg, batch_size, opt_type, lr, seed) -> tuple:
 
 def append_result(csv_path: str, C: int, k: int, algorithm: str,
                   accuracy: float, epochs: int,
-                  batch_size: int, opt_type: str, lr: float, seed: int):
+                  batch_size: int, opt_type: str, lr: float, seed: int,
+                  training_time_s: float):
     os.makedirs(os.path.dirname(os.path.abspath(csv_path)), exist_ok=True)
     file_exists = os.path.isfile(csv_path)
     with open(csv_path, 'a', newline='') as f:
@@ -175,6 +176,7 @@ def append_result(csv_path: str, C: int, k: int, algorithm: str,
             'optimizer':              opt_type,
             'lr':                     lr,
             'seed':                   seed,
+            'training_time_s':        round(training_time_s, 1),
             'timestamp':              datetime.now().isoformat(),
         })
 
@@ -262,12 +264,14 @@ def main():
                     else:
                         print(f"\n  Cour2011 | {tag}")
                         set_seed(seed)
+                        t0  = time.perf_counter()
                         acc = train_single('pl', CLPLSquaredHingeLoss(), C, loaders,
                                            args.epochs, opt_type, lr, device)
+                        elapsed = time.perf_counter() - t0
                         append_result(csv_path, C, k, 'Cour2011', acc,
-                                      args.epochs, batch_size, opt_type, lr, seed)
+                                      args.epochs, batch_size, opt_type, lr, seed, elapsed)
                         done.add(dk)
-                        print(f"    → {acc:.2f}%")
+                        print(f"    → {acc:.2f}%  ({elapsed/3600:.2f}h)")
 
                     # MCL-LOG
                     dk = _done_key(C, k, 'MCL-LOG', batch_size, opt_type, lr, seed)
@@ -276,12 +280,14 @@ def main():
                     else:
                         print(f"\n  MCL-LOG  | {tag}")
                         set_seed(seed)
+                        t0  = time.perf_counter()
                         acc = train_single('cl', MCL_LOG(num_classes=C), C, loaders,
                                            args.epochs, opt_type, lr, device)
+                        elapsed = time.perf_counter() - t0
                         append_result(csv_path, C, k, 'MCL-LOG', acc,
-                                      args.epochs, batch_size, opt_type, lr, seed)
+                                      args.epochs, batch_size, opt_type, lr, seed, elapsed)
                         done.add(dk)
-                        print(f"    → {acc:.2f}%")
+                        print(f"    → {acc:.2f}%  ({elapsed/3600:.2f}h)")
 
     print(f"\nGPU {args.gpu_id} finished. Results → {csv_path}")
 

@@ -64,12 +64,12 @@ def _fmt(seconds: float) -> str:
 
 _CSV_FIELDS = [
     'total_classes', 'n_partial_labels', 'n_complementary_labels',
-    'algorithm', 'final_accuracy', 'epochs', 'seed', 'timestamp',
+    'algorithm', 'final_accuracy', 'epochs', 'seed', 'training_time_s', 'timestamp',
 ]
 
 
 def append_result(csv_path, total_classes, n_partial_labels, algorithm,
-                  final_accuracy, epochs, seed):
+                  final_accuracy, epochs, seed, training_time_s):
     os.makedirs(os.path.dirname(os.path.abspath(csv_path)), exist_ok=True)
     new_file = not os.path.isfile(csv_path)
     with open(csv_path, 'a', newline='') as f:
@@ -84,6 +84,7 @@ def append_result(csv_path, total_classes, n_partial_labels, algorithm,
             'final_accuracy':         round(final_accuracy, 4),
             'epochs':                 epochs,
             'seed':                   seed,
+            'training_time_s':        round(training_time_s, 1),
             'timestamp':              datetime.now().isoformat(),
         })
 
@@ -167,18 +168,22 @@ def main():
             )
 
             # --- PiCO (PLL) ---
+            t0 = time.perf_counter()
             pico_accs  = run_pico_training(train_ns, loaders, train_config,
                                            pico_config, pl_ds, orig_targets, device)
+            pico_time  = time.perf_counter() - t0
             pico_final = pico_accs[-1]
-            append_result(csv_path, C, k, 'PiCO', pico_final, args.epochs, args.seed)
-            print(f"  PiCO   final accuracy: {pico_final:.2f}%")
+            append_result(csv_path, C, k, 'PiCO', pico_final, args.epochs, args.seed, pico_time)
+            print(f"  PiCO   final accuracy: {pico_final:.2f}%  ({_fmt(pico_time)})")
 
             # --- ComCo (CLL) ---
+            t0 = time.perf_counter()
             comco_accs  = run_comco_training(train_ns, loaders, train_config,
                                              comco_config, device)
+            comco_time  = time.perf_counter() - t0
             comco_final = comco_accs[-1]
-            append_result(csv_path, C, k, 'ComCo', comco_final, args.epochs, args.seed)
-            print(f"  ComCo  final accuracy: {comco_final:.2f}%")
+            append_result(csv_path, C, k, 'ComCo', comco_final, args.epochs, args.seed, comco_time)
+            print(f"  ComCo  final accuracy: {comco_final:.2f}%  ({_fmt(comco_time)})")
 
             results_for_C.append({'k': k, 'pico': pico_final, 'comco': comco_final})
             plot_accuracy_vs_k(

@@ -62,7 +62,7 @@ _MAIN_GPU_DIRS = [
 
 _CSV_FIELDS = [
     'total_classes', 'n_partial_labels', 'n_complementary_labels',
-    'algorithm', 'final_accuracy', 'epochs', 'seed', 'timestamp',
+    'algorithm', 'final_accuracy', 'epochs', 'seed', 'training_time_s', 'timestamp',
 ]
 
 
@@ -81,7 +81,7 @@ def _fmt(seconds: float) -> str:
 
 
 def append_result(csv_path, total_classes, n_partial_labels, algorithm,
-                  final_accuracy, epochs, seed):
+                  final_accuracy, epochs, seed, training_time_s):
     os.makedirs(os.path.dirname(os.path.abspath(csv_path)), exist_ok=True)
     file_exists = os.path.isfile(csv_path)
     with open(csv_path, 'a', newline='') as f:
@@ -96,6 +96,7 @@ def append_result(csv_path, total_classes, n_partial_labels, algorithm,
             'final_accuracy':         round(final_accuracy, 4),
             'epochs':                 epochs,
             'seed':                   seed,
+            'training_time_s':        round(training_time_s, 1),
             'timestamp':              datetime.now().isoformat(),
         })
 
@@ -240,15 +241,19 @@ def main():
             except Exception as e:
                 print(f"  [time estimate skipped: {e}]")
 
+            t0 = time.perf_counter()
             cour_accs = run_cour_training(train_ns, loaders, train_config, device)
+            cour_time = time.perf_counter() - t0
             cour_final = cour_accs[-1]
-            append_result(csv_path, C, k, 'Cour2011', cour_final, args.epochs, args.seed)
-            print(f"  Cour 2011  final accuracy: {cour_final:.2f}%")
+            append_result(csv_path, C, k, 'Cour2011', cour_final, args.epochs, args.seed, cour_time)
+            print(f"  Cour 2011  final accuracy: {cour_final:.2f}%  ({_fmt(cour_time)})")
 
+            t0 = time.perf_counter()
             mcl_accs = run_mcl_training(train_ns, loaders, train_config, device, loss_type='log')
+            mcl_time = time.perf_counter() - t0
             mcl_final = mcl_accs[-1]
-            append_result(csv_path, C, k, 'MCL-LOG', mcl_final, args.epochs, args.seed)
-            print(f"  MCL-LOG    final accuracy: {mcl_final:.2f}%")
+            append_result(csv_path, C, k, 'MCL-LOG', mcl_final, args.epochs, args.seed, mcl_time)
+            print(f"  MCL-LOG    final accuracy: {mcl_final:.2f}%  ({_fmt(mcl_time)})")
 
         # Regenerate combined plot for this C (main sweep + supplement results)
         results_combined = load_combined_results(C, csv_path)
