@@ -39,6 +39,16 @@ def setup_mcl(args, train_config, loss_type='log'):
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
     return model, loss, optimizer
 
+def setup_scl(args, train_config):
+    """Initializes model, loss, and optimizer for SCL-NL (Chou et al. 2020)."""
+    from src.scl_loss import SCL_NL
+    model     = create_model(train_config['num_classes'])
+    loss      = SCL_NL()
+    optimizer = optim.SGD(model.parameters(), lr=args.lr,
+                          momentum=args.momentum, weight_decay=args.weight_decay)
+    return model, loss, optimizer
+
+
 def setup_comco(args, train_config, comco_config, device):
     """Initializes model, losses, and optimizer for ComCo."""
     from src.comco.model import ComCoModel
@@ -102,6 +112,16 @@ def setup_comco(args, train_config, comco_config, device):
     cont_loss = ComCoContrastiveLoss(temperature=comco_args['temperature'], top_k=comco_args['top_k'])
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
     return model, (cls_loss, cont_loss), optimizer, comco_args
+
+
+def setup_wu(args, train_config):
+    """Initializes model, loss, and optimizer for Wu et al. proper PLL."""
+    from src.wu_loss import WuPLLLoss
+    model     = create_model(train_config['num_classes'])
+    loss      = WuPLLLoss()
+    optimizer = optim.SGD(model.parameters(), lr=args.lr,
+                          momentum=args.momentum, weight_decay=args.weight_decay)
+    return model, loss, optimizer
 
 
 def setup_pico_mclloss(args, train_config, pico_config, device):

@@ -32,6 +32,18 @@ def run_mcl_training(args, loaders, train_config, device, loss_type='log'):
     gc.collect()
     return accuracies
 
+def run_scl_training(args, loaders, train_config, device):
+    """Runs the training pipeline for SCL-NL (Chou et al. 2020)."""
+    from src.model_setup import setup_scl
+    print("\nTraining SCL-NL (CL)")
+    model, loss, optimizer = setup_scl(args, train_config)
+    accuracies = train_algorithm(model, loaders['cl'], loaders['test'],
+                                 loss, optimizer, args.epochs, device)
+    del model, loss, optimizer
+    gc.collect()
+    return accuracies
+
+
 def run_comco_training(args, loaders, train_config, comco_config, device):
     """Runs the training pipeline for ComCo (CL)."""
     from src.model_setup import setup_comco
@@ -97,6 +109,18 @@ def run_comco_training(args, loaders, train_config, comco_config, device):
             gc.collect()
 
     del model, cls_loss, cont_loss, optimizer
+    gc.collect()
+    return accuracies
+
+
+def run_wu_training(args, loaders, train_config, device):
+    """Runs the training pipeline for Wu et al. proper PLL."""
+    from src.model_setup import setup_wu
+    print("\nTraining Wu2022 (PL)")
+    model, loss, optimizer = setup_wu(args, train_config)
+    accuracies = train_algorithm(model, loaders['pl'], loaders['test'],
+                                 loss, optimizer, args.epochs, device)
+    del model, loss, optimizer
     gc.collect()
     return accuracies
 
