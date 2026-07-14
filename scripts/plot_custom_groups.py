@@ -50,11 +50,12 @@ GROUPS = [
     ),
     (
         'cour_proden_scl',
-        'Cour2011 vs PRODEN vs SCL-NL',
+        'Cour2011 vs PRODEN vs SCL-NL vs ComCo',
         [
-            ('Cour2011', 'Cour2011 (PLL, hinge)',  '#1f77b4', 'o', '-'),
-            ('Proden',   'PRODEN (PLL, weighted)', '#2ca02c', '^', '--'),
-            ('SCL-NL',   'SCL-NL (CLL, surrogate)','#ff7f0e', 'D', ':'),
+            ('Cour2011', 'Cour2011 (PLL, hinge)',   '#1f77b4', 'o', '-'),
+            ('Proden',   'PRODEN (PLL, weighted)',  '#2ca02c', '^', '--'),
+            ('SCL-NL',   'SCL-NL (CLL, surrogate)', '#ff7f0e', 'D', ':'),
+            ('ComCo',    'ComCo (CLL)',              '#8c564b', 's', '-.'),
         ],
     ),
 ]
@@ -129,8 +130,9 @@ def plot_group(C: int, group_suffix: str, title: str,
 
     ax.legend(fontsize=10, loc='best')
     fig.tight_layout()
-    os.makedirs(out_dir, exist_ok=True)
-    path = os.path.join(out_dir, f'C{C}_{group_suffix}.png')
+    group_dir = os.path.join(out_dir, group_suffix)
+    os.makedirs(group_dir, exist_ok=True)
+    path = os.path.join(group_dir, f'C{C}_{group_suffix}.png')
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f'  Saved: {path}')
