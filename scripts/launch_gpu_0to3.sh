@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch tmux sessions for GPU 0-3 (Cour2011, Wu2022, PRODEN, MCL-LOG)
+# Launch tmux sessions for GPU 1-3 (Cour2011, PRODEN, PiCO)
 # Run from anywhere inside the PyPCL repo:
 #   bash scripts/launch_gpu_0to3.sh
 
@@ -11,20 +11,21 @@ echo "Working dir: $WORKDIR"
 echo "Conda env:   $CONDA_ENV"
 echo ""
 
-for GPU_ID in 0 1 2 3; do
-    SESSION="adam_gpu${GPU_ID}"
+for IDX in 0 1 2; do
+    CUDA_GPU=$((IDX + 1))
+    SESSION="c20_gpu${CUDA_GPU}"
 
     tmux kill-session -t "$SESSION" 2>/dev/null
     tmux new-session -d -s "$SESSION"
 
     tmux send-keys -t "$SESSION" "cd \"$WORKDIR\"" Enter
     tmux send-keys -t "$SESSION" "conda activate $CONDA_ENV" Enter
-    tmux send-keys -t "$SESSION" "CUDA_VISIBLE_DEVICES=${GPU_ID} python ${SCRIPT} --gpu_id ${GPU_ID}" Enter
+    tmux send-keys -t "$SESSION" "CUDA_VISIBLE_DEVICES=${CUDA_GPU} python ${SCRIPT} --gpu_id ${IDX} --num_gpus 7" Enter
 
-    echo "  adam_gpu${GPU_ID}  →  GPU ${GPU_ID}"
+    echo "  ${SESSION}  →  physical GPU ${CUDA_GPU}  (algo idx ${IDX})"
 done
 
 echo ""
-echo "Attach:   tmux attach -t adam_gpu0   (or gpu1 / gpu2 / gpu3)"
+echo "Attach:   tmux attach -t c20_gpu1   (or c20_gpu2 / c20_gpu3)"
 echo "List:     tmux ls"
-echo "Kill all: tmux kill-session -t adam_gpu0; tmux kill-session -t adam_gpu1; tmux kill-session -t adam_gpu2; tmux kill-session -t adam_gpu3"
+echo "Kill all: for i in 1 2 3; do tmux kill-session -t c20_gpu\$i; done"

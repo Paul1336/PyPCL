@@ -57,15 +57,15 @@ from src.wu_loss import WuPLLLoss
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-C_VALUES     = [5, 40]
+C_VALUES     = [5, 20]
 LR           = 3e-4
 BS           = 512
 WD           = 1e-4
 REPORT_EVERY = 10      # print ETA every N epochs
 
-PLL_ALGOS = ['Cour2011', 'Wu2022', 'PRODEN', 'PiCO', 'PiCO-MCL']
+PLL_ALGOS = ['Cour2011', 'PRODEN', 'PiCO', 'PiCO-MCL']
 CLL_ALGOS = ['MCL-LOG', 'SCL-NL', 'ComCo']
-ALL_ALGOS = PLL_ALGOS + CLL_ALGOS   # index 0-7 → GPU 0-7
+ALL_ALGOS = PLL_ALGOS + CLL_ALGOS   # index 0-6 → GPU 1-7
 
 # ─── Visual style (shared across all 4 figures) ───────────────────────────────
 
@@ -337,9 +337,9 @@ def make_plots(res: dict, out_dir: str):
     os.makedirs(out_dir, exist_ok=True)
     ym = _global_ymax(res)
 
-    # Figure 1 — 2×2 PLL/CLL × C5/C40
+    # Figure 1 — 2×2 PLL/CLL × C5/C20
     fig, axes = plt.subplots(2, 2, figsize=(16, 10))
-    fig.suptitle('PLL vs CLL  —  C=5 and C=40', fontsize=13)
+    fig.suptitle('PLL vs CLL  —  C=5 and C=20', fontsize=13)
     for row, C in enumerate(C_VALUES):
         for col, (algos, paradigm) in enumerate([(PLL_ALGOS, 'PLL'), (CLL_ALGOS, 'CLL')]):
             ax = axes[row][col]
@@ -364,17 +364,17 @@ def make_plots(res: dict, out_dir: str):
     fig.savefig(os.path.join(out_dir, 'fig2_pico_comco_picomcl.png'), dpi=150, bbox_inches='tight')
     plt.close(fig)
 
-    # Figure 3 — ComCo / Wu2022 / MCL-LOG
+    # Figure 3 — ComCo / MCL-LOG
     fig, axes = plt.subplots(1, 2, figsize=(16, 5))
-    fig.suptitle('ComCo vs Wu2022 vs MCL-LOG', fontsize=13)
+    fig.suptitle('ComCo vs MCL-LOG', fontsize=13)
     for col, C in enumerate(C_VALUES):
         ax = axes[col]
         _setup_ax(ax, f'C = {C}', ym, ylabel=(col == 0))
-        for alg in ['ComCo', 'Wu2022', 'MCL-LOG']:
+        for alg in ['ComCo', 'MCL-LOG']:
             _draw(ax, alg, res.get(C, {}).get(alg, {}))
         ax.legend(fontsize=9, loc='best')
     fig.tight_layout()
-    fig.savefig(os.path.join(out_dir, 'fig3_comco_wu_mcl.png'), dpi=150, bbox_inches='tight')
+    fig.savefig(os.path.join(out_dir, 'fig3_comco_mcl.png'), dpi=150, bbox_inches='tight')
     plt.close(fig)
 
     # Figure 4 — Cour2011 / PRODEN / SCL-NL / ComCo
@@ -399,7 +399,7 @@ def main():
         description='All-8-methods sweep on C=5, C=40. Adam lr=3e-4 bs=512.')
     parser.add_argument('--gpu_id',    type=int, default=0,
                         help='GPU index (0-based). Determines which algorithm(s) to run.')
-    parser.add_argument('--num_gpus',  type=int, default=8,
+    parser.add_argument('--num_gpus',  type=int, default=7,
                         help='Total number of parallel GPU workers.')
     parser.add_argument('--data_dir',  default='./data')
     parser.add_argument('--out_dir',   default='results/adam_comparison/')
