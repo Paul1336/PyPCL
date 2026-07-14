@@ -468,6 +468,10 @@ def main():
     parser.add_argument('--config',    default='config.yaml')
     parser.add_argument('--epochs',    type=int, default=200)
     parser.add_argument('--seed',      type=int, default=42)
+    parser.add_argument('--only_c',    type=int, default=None,
+                        help='Run only this C value (e.g. 20). Default: all C values.')
+    parser.add_argument('--only_k',    type=int, default=None,
+                        help='Run only this k value (e.g. 7). Default: all k values.')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -495,8 +499,12 @@ def main():
     print(f'k schedule: C=5→{get_k_values(5)}  C=20→{get_k_values(20)}', flush=True)
     print(f'Resume: {len(done)} entries already in {csv_path}\n', flush=True)
 
-    for C in C_VALUES:
+    c_values = [args.only_c] if args.only_c is not None else C_VALUES
+
+    for C in c_values:
         k_vals = get_k_values(C)
+        if args.only_k is not None:
+            k_vals = [args.only_k]
         total_k = len(k_vals)
         print(f'\n{"="*65}', flush=True)
         print(f'C = {C}   k = {k_vals}', flush=True)
