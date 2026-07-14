@@ -1,5 +1,8 @@
 """
-PRODEN + Cour2011 single run: C=10, k=7, Adam lr=3e-4 bs=512 wd=1e-4.
+PRODEN + Cour2011 single run: C=10, k=7.
+
+PRODEN : SGD  momentum=0.9  lr=0.01  bs=256  wd=1e-4
+Cour   : Adam              lr=3e-4  bs=256  wd=1e-4
 
 Usage:
     python scripts/run_proden_single.py
@@ -32,9 +35,13 @@ def _fmt_eta(s):
     return f'{s/3600:.2f}h'
 
 
-def run_method(name, loss_fn, loaders, C, epochs, lr, wd, device):
+def run_method(name, loss_fn, opt_factory, loaders, C, epochs, device):
+    """
+    opt_factory: callable that takes model.parameters() and returns an optimizer.
+    A fresh model + optimizer are created here so methods don't share state.
+    """
     model = create_model(C).to(device)
-    opt   = optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
+    opt   = opt_factory(model.parameters())
 
     t_start   = time.perf_counter()
     final_acc = 0.0
@@ -65,22 +72,25 @@ def run_method(name, loss_fn, loaders, C, epochs, lr, wd, device):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--C',        type=int,   default=10)
-    parser.add_argument('--k',        type=int,   default=7)
-    parser.add_argument('--epochs',   type=int,   default=200)
-    parser.add_argument('--lr',       type=float, default=3e-4)
-    parser.add_argument('--bs',       type=int,   default=512)
-    parser.add_argument('--wd',       type=float, default=1e-4)
-    parser.add_argument('--seed',     type=int,   default=42)
-    parser.add_argument('--data_dir', type=str,   default='data/')
+    parser.add_argument('--C',          type=int,   default=10)
+    parser.add_argument('--k',          type=int,   default=7)
+    parser.add_argument('--epochs',     type=int,   default=200)
+    parser.add_argument('--bs',         type=int,   default=256)
+    parser.add_argument('--wd',         type=float, default=1e-4)
+    parser.add_argument('--proden_lr',  type=float, default=0.01, help='SGD lr for PRODEN')
+    parser.add_argument('--proden_mom', type=float, default=0.9,  help='SGD momentum for PRODEN')
+    parser.add_argument('--cour_lr',    type=float, default=3e-4, help='Adam lr for Cour2011')
+    parser.add_argument('--seed',       type=int,   default=42)
+    parser.add_argument('--data_dir',   type=str,   default='data/')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'Device: {device}')
-    print(f'C={args.C}  k={args.k}  epochs={args.epochs}  '
-          f'lr={args.lr}  bs={args.bs}  wd={args.wd}\n', flush=True)
+    print(f'C={args.C}  k={args.k}  epochs={args.epochs}  bs={args.bs}  wd={args.wd}')
+    print(f'PRODEN : SGD  lr={args.proden_lr}  momentum={args.proden_mom}')
+    print(f'Cour   : Adam lr={args.cour_lr}\n', flush=True)
 
-    # ── Data (shared between both methods) ────────────────────────────────────
+    # ── Data (shared) ─────────────────────────────────────────────────────────
     pl_raw, cl_raw, orig_targets, test_info, log_info = prepare_cifar100_subset(
         total_classes=args.C,
         n_partial_labels=args.k,
@@ -94,19 +104,26 @@ def main():
         pl_raw, cl_raw, orig_targets, test_info, batch_size=args.bs
     )
 
-    # ── PRODEN ────────────────────────────────────────────────────────────────
-    acc_proden = run_method('PRODEN', proden(), loaders,
-                            args.C, args.epochs, args.lr, args.wd, device)
+    # ── PRODEN  (SGD + momentum) ───────────────────────────────────────────────
+    acc_proden = run_method(
+        'PRODEN', proden(),
+        lambda p: optim.SGD(p, lr=args.proden_lr,
+                            momentum=args.proden_mom, weight_decay=args.wd),
+        loaders, args.C, args.epochs, device,
+    )
 
-    # ── Cour2011 ──────────────────────────────────────────────────────────────
-    acc_cour = run_method('Cour2011', CLPLSquaredHingeLoss(), loaders,
-                          args.C, args.epochs, args.lr, args.wd, device)
+    # ── Cour2011 (Adam) ────────────────────────────────────────────────────────
+    acc_cour = run_method(
+        'Cour2011', CLPLSquaredHingeLoss(),
+        lambda p: optim.Adam(p, lr=args.cour_lr, weight_decay=args.wd),
+        loaders, args.C, args.epochs, device,
+    )
 
     # ── Summary ───────────────────────────────────────────────────────────────
     print('=' * 45)
-    print(f'  C={args.C}  k={args.k}  epochs={args.epochs}')
-    print(f'  PRODEN  : {acc_proden:.2f}%')
-    print(f'  Cour2011: {acc_cour:.2f}%')
+    print(f'  C={args.C}  k={args.k}  epochs={args.epochs}  bs={args.bs}')
+    print(f'  PRODEN  (SGD  lr={args.proden_lr}): {acc_proden:.2f}%')
+    print(f'  Cour2011(Adam lr={args.cour_lr}  ): {acc_cour:.2f}%')
     print('=' * 45)
 
 
