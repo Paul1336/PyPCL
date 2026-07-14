@@ -159,6 +159,20 @@ def make_fig4(res, ym, out_dir):
     _save(fig, os.path.join(out_dir, 'fig4_comco_mcl_proden.png'))
 
 
+def make_fig5(res, ym, out_dir):
+    """Figure 5 — 2格  全部 7 個 algorithms"""
+    all_algos = PLL_ALGOS + CLL_ALGOS  # CLPL, PRODEN, PiCO, PiCO-MCL, MCL-LOG, SCL-NL, ComCo
+    fig, axes = plt.subplots(1, 2, figsize=(16, 5))
+    fig.suptitle('All Methods  —  C=5 and C=20', fontsize=13)
+    for col, C in enumerate(C_VALUES):
+        ax = axes[col]
+        _setup_ax(ax, f'C = {C}', ym, ylabel=(col == 0))
+        for alg in all_algos:
+            _draw(ax, alg, res.get(C, {}).get(alg, {}))
+        ax.legend(fontsize=8, loc='best')
+    _save(fig, os.path.join(out_dir, 'fig5_all_methods.png'))
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -183,6 +197,7 @@ def main():
     make_fig2(res, ym, args.out_dir)
     make_fig3(res, ym, args.out_dir)
     make_fig4(res, ym, args.out_dir)
+    make_fig5(res, ym, args.out_dir)
 
     print(f'\nDone. Figures saved to: {args.out_dir}')
 
