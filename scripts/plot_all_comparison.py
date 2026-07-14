@@ -44,25 +44,27 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 _ALGO_REGISTRY = [
     # PLL algorithms
-    ('Cour2011', 'Cour2011 (PLL)',          '#1f77b4', 'o', '-',  'pll'),
-    ('Wu2022',   'Wu2022 / Feng2020 (PLL)', '#17becf', 'D', '--', 'pll'),
-    ('Proden',   'Proden (PLL)',            '#2ca02c', '^', '-',  'pll'),
-    ('PiCO',     'PiCO (PLL)',              '#9467bd', 's', '--', 'pll'),
+    ('Cour2011',  'Cour2011 (PLL)',          '#1f77b4', 'o', '-',  'pll'),
+    ('Wu2022',    'Wu2022 / Feng2020 (PLL)', '#17becf', 'D', '--', 'pll'),
+    ('Proden',    'Proden (PLL)',            '#2ca02c', '^', '-',  'pll'),
+    ('PiCO',      'PiCO (PLL)',              '#9467bd', 's', '--', 'pll'),
+    ('PiCO-MCL',  'PiCO-MCL (PLL)',         '#bcbd22', 'p', ':',  'pll'),
     # CLL algorithms
-    ('MCL-LOG',  'MCL-LOG (CLL)',           '#d62728', 'o', '-',  'cll'),
-    ('SCL-NL',   'SCL-NL (CLL)',            '#ff7f0e', 'D', '--', 'cll'),
-    ('ComCo',    'ComCo (CLL)',             '#8c564b', '^', '-',  'cll'),
+    ('MCL-LOG',   'MCL-LOG (CLL)',           '#d62728', 'o', '-',  'cll'),
+    ('SCL-NL',    'SCL-NL (CLL)',            '#ff7f0e', 'D', '--', 'cll'),
+    ('ComCo',     'ComCo (CLL)',             '#8c564b', '^', '-',  'cll'),
 ]
 
 # Map algorithm name → canonical result dir (overridable via CLI)
 _DEFAULT_DIRS = {
-    'Cour2011': 'results/cifar100_v2/',
-    'MCL-LOG':  'results/cifar100_v2/',
-    'Wu2022':   'results/feng/',
-    'PiCO':     'results/pico_comco/',
-    'ComCo':    'results/pico_comco/',
-    'Proden':   'results/proden/',
-    'SCL-NL':   'results/scl/',
+    'Cour2011':  'results/cifar100_v2/',
+    'MCL-LOG':   'results/cifar100_v2/',
+    'Wu2022':    'results/feng/',
+    'PiCO':      'results/pico_comco/',
+    'ComCo':     'results/pico_comco/',
+    'PiCO-MCL':  'results/pico/pico_mclloss/',
+    'Proden':    'results/proden/',
+    'SCL-NL':    'results/scl/',
 }
 
 
@@ -155,23 +157,25 @@ def plot_one(C: int, algo_data: dict, out_dir: str):
 
 def main():
     parser = argparse.ArgumentParser(description='All-method comparison plot')
-    parser.add_argument('--cifar100_dir',  default='results/cifar100_v2/')
-    parser.add_argument('--feng_dir',      default='results/feng/')
-    parser.add_argument('--pico_comco_dir',default='results/pico_comco/')
-    parser.add_argument('--proden_dir',    default='results/proden/')
-    parser.add_argument('--scl_dir',       default='results/scl/')
-    parser.add_argument('--out_dir',       default='plots/all_comparison/')
+    parser.add_argument('--cifar100_dir',     default='results/cifar100_v2/')
+    parser.add_argument('--feng_dir',         default='results/feng/')
+    parser.add_argument('--pico_comco_dir',   default='results/pico_comco/')
+    parser.add_argument('--pico_mclloss_dir', default='results/pico/pico_mclloss/')
+    parser.add_argument('--proden_dir',       default='results/proden/')
+    parser.add_argument('--scl_dir',          default='results/scl/')
+    parser.add_argument('--out_dir',          default='plots/all_comparison/')
     args = parser.parse_args()
 
     # Override dirs from CLI
     dirs = {
-        'Cour2011': args.cifar100_dir,
-        'MCL-LOG':  args.cifar100_dir,
-        'Wu2022':   args.feng_dir,
-        'PiCO':     args.pico_comco_dir,
-        'ComCo':    args.pico_comco_dir,
-        'Proden':   args.proden_dir,
-        'SCL-NL':   args.scl_dir,
+        'Cour2011':  args.cifar100_dir,
+        'MCL-LOG':   args.cifar100_dir,
+        'Wu2022':    args.feng_dir,
+        'PiCO':      args.pico_comco_dir,
+        'ComCo':     args.pico_comco_dir,
+        'PiCO-MCL':  args.pico_mclloss_dir,
+        'Proden':    args.proden_dir,
+        'SCL-NL':    args.scl_dir,
     }
 
     # Load all data
