@@ -472,6 +472,8 @@ def main():
                         help='Run only this C value (e.g. 20). Default: all C values.')
     parser.add_argument('--only_k',    type=int, default=None,
                         help='Run only this k value (e.g. 7). Default: all k values.')
+    parser.add_argument('--algo',      type=str, default=None,
+                        help='Override algorithm assignment (e.g. PiCO). Ignores gpu_id round-robin.')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -481,9 +483,12 @@ def main():
     pico_config  = cfg['pico']
     comco_config = cfg['comco']
 
-    # Algorithm assignment: round-robin by gpu_id
-    my_algos = [alg for i, alg in enumerate(ALL_ALGOS)
-                if i % args.num_gpus == args.gpu_id]
+    # Algorithm assignment: explicit --algo overrides round-robin
+    if args.algo is not None:
+        my_algos = [args.algo]
+    else:
+        my_algos = [alg for i, alg in enumerate(ALL_ALGOS)
+                    if i % args.num_gpus == args.gpu_id]
 
     # Per-GPU CSV path to avoid concurrent write conflicts
     gpu_dir  = os.path.join(args.out_dir, f'gpu{args.gpu_id}')
