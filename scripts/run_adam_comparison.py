@@ -63,14 +63,16 @@ BS           = 512
 WD           = 1e-4
 REPORT_EVERY = 10      # print ETA every N epochs
 
-PLL_ALGOS = ['Cour2011', 'PRODEN', 'PiCO', 'PiCO-MCL']
+PLL_ALGOS = ['CLPL', 'PRODEN', 'PiCO', 'PiCO-MCL']
 CLL_ALGOS = ['MCL-LOG', 'SCL-NL', 'ComCo']
 ALL_ALGOS = PLL_ALGOS + CLL_ALGOS   # index 0-6 → GPU 1-7
 
 # ─── Visual style (shared across all 4 figures) ───────────────────────────────
 
+_RENAME = {'Cour2011': 'CLPL'}   # CSV key → display label
+
 STYLES = {
-    'Cour2011': dict(color='#1f77b4', marker='o', linestyle='-',  linewidth=2, markersize=6),
+    'CLPL':     dict(color='#1f77b4', marker='o', linestyle='-',  linewidth=2, markersize=6),
     'Wu2022':   dict(color='#17becf', marker='D', linestyle='--', linewidth=2, markersize=6),
     'PRODEN':   dict(color='#2ca02c', marker='^', linestyle='-',  linewidth=2, markersize=6),
     'PiCO':     dict(color='#9467bd', marker='s', linestyle='--', linewidth=2, markersize=6),
@@ -144,7 +146,7 @@ def _load_all_results(base_dir: str) -> dict:
                     seen.add(key)
                     C   = int(row['total_classes'])
                     k   = int(row['n_partial_labels'])
-                    alg = row['algorithm']
+                    alg = _RENAME.get(row['algorithm'], row['algorithm'])
                     acc = float(row['final_accuracy'])
                     res.setdefault(C, {}).setdefault(alg, {})[k] = acc
     return res
@@ -435,13 +437,13 @@ def make_plots(res: dict, out_dir: str):
     fig.savefig(os.path.join(out_dir, 'fig3_comco_mcl.png'), dpi=150, bbox_inches='tight')
     plt.close(fig)
 
-    # Figure 4 — Cour2011 / PRODEN / SCL-NL / ComCo
+    # Figure 4 — CLPL / PRODEN / SCL-NL / ComCo
     fig, axes = plt.subplots(1, 2, figsize=(16, 5))
-    fig.suptitle('Cour2011 vs PRODEN vs SCL-NL vs ComCo', fontsize=13)
+    fig.suptitle('CLPL vs PRODEN vs SCL-NL vs ComCo', fontsize=13)
     for col, C in enumerate(C_VALUES):
         ax = axes[col]
         _setup_ax(ax, f'C = {C}', ym, ylabel=(col == 0))
-        for alg in ['Cour2011', 'PRODEN', 'SCL-NL', 'ComCo']:
+        for alg in ['CLPL', 'PRODEN', 'SCL-NL', 'ComCo']:
             _draw(ax, alg, res.get(C, {}).get(alg, {}))
         ax.legend(fontsize=9, loc='best')
     fig.tight_layout()
