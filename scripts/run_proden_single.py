@@ -87,7 +87,7 @@ def main():
         data_dir=args.data_dir,
         seed=args.seed,
     )
-    print(f"Classes : {log_info['selected_classes']}")
+    print(f"Classes : {log_info['selected_class_names']}")
     print(f"Samples : {log_info['n_train']} train / {log_info['n_test']} test\n")
 
     loaders = get_subset_dataloaders(
