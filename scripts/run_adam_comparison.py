@@ -51,7 +51,7 @@ from src.models import create_model
 from src.pico.mcl_cls_loss import PiCOMCLLoss
 from src.pico.model import PiCOModel
 from src.pico.utils_loss import PartialLoss, SupConLoss
-from src.proden_loss import proden
+from src.proden_loss import ProdenLoss
 from src.scl_loss import SCL_NL
 from src.wu_loss import WuPLLLoss
 
@@ -192,6 +192,64 @@ def _train_simple_eta(loss_fn, loader_key: str, loaders: dict,
     gc.collect()
     torch.cuda.empty_cache()
     return last_accs[-1]
+
+
+class _IndexedDataset(torch.utils.data.Dataset):
+    """Wraps raw PL data; returns (img, index) for ProdenLoss."""
+    _TRAIN_TF = None
+
+    def __init__(self, data):
+        from torchvision import transforms as T
+        self.data = data
+        if _IndexedDataset._TRAIN_TF is None:
+            _IndexedDataset._TRAIN_TF = T.Compose([
+                T.RandomCrop(32, padding=4),
+                T.RandomHorizontalFlip(),
+                T.ToTensor(),
+                T.Normalize([0.4914, 0.4822, 0.4465], [0.247, 0.2435, 0.2616]),
+            ])
+
+    def __len__(self): return len(self.data)
+
+    def __getitem__(self, idx):
+        from PIL import Image
+        img = Image.fromarray(self.data[idx])
+        return self._TRAIN_TF(img), idx
+
+
+def _train_proden_eta(pl_ds, test_loader, C: int, epochs: int, device, tag: str) -> float:
+    """PRODEN with cross-epoch confidence accumulation (original paper algorithm)."""
+    model   = create_model(C).to(device)
+    loss_fn = ProdenLoss(pl_ds.targets, C).to(device)
+    opt     = optim.SGD(model.parameters(), lr=0.01, momentum=0.9, weight_decay=WD)
+
+    idx_loader = torch.utils.data.DataLoader(
+        _IndexedDataset(pl_ds.data), batch_size=BS, shuffle=True, num_workers=2,
+    )
+
+    chunk_t0  = time.perf_counter()
+    final_acc = 0.0
+
+    for ep in range(epochs):
+        model.train()
+        for imgs, indices in idx_loader:
+            imgs, indices = imgs.to(device), indices.to(device)
+            opt.zero_grad()
+            loss_fn(model(imgs), indices).backward()
+            opt.step()
+
+        if (ep + 1) % REPORT_EVERY == 0 or ep + 1 == epochs:
+            final_acc = evaluate_model(model, test_loader, device)
+            elapsed   = time.perf_counter() - chunk_t0
+            _print_eta(tag, ep + 1, epochs, elapsed, min(REPORT_EVERY, ep + 1))
+            chunk_t0  = time.perf_counter()
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    del model, loss_fn, opt
+    gc.collect()
+    torch.cuda.empty_cache()
+    return final_acc
 
 
 def _train_pico_eta(loaders: dict, C: int, pico_config: dict,
@@ -432,7 +490,7 @@ def main():
     print(f'GPU {args.gpu_id}/{args.num_gpus}  device={device}  '
           f'epochs={args.epochs}  lr={LR}  bs={BS}', flush=True)
     print(f'Algorithms: {my_algos}', flush=True)
-    print(f'k schedule: C=5→{get_k_values(5)}  C=40→{get_k_values(40)}', flush=True)
+    print(f'k schedule: C=5→{get_k_values(5)}  C=20→{get_k_values(20)}', flush=True)
     print(f'Resume: {len(done)} entries already in {csv_path}\n', flush=True)
 
     for C in C_VALUES:
@@ -475,9 +533,9 @@ def main():
                         WuPLLLoss(), 'pl',
                         loaders, C, args.epochs, device, tag)
                 elif alg == 'PRODEN':
-                    acc = _train_simple_eta(
-                        proden(), 'pl',
-                        loaders, C, args.epochs, device, tag)
+                    acc = _train_proden_eta(
+                        pl_ds, loaders['test'],
+                        C, args.epochs, device, tag)
                 elif alg == 'MCL-LOG':
                     acc = _train_simple_eta(
                         MCL_LOG(num_classes=C), 'cl',
