@@ -173,6 +173,19 @@ def make_fig5(res, ym, out_dir):
     _save(fig, os.path.join(out_dir, 'fig5_all_methods.png'))
 
 
+def make_fig6(res, ym, out_dir):
+    """Figure 6 — 2格  PiCO / ComCo only"""
+    fig, axes = plt.subplots(1, 2, figsize=(16, 5))
+    fig.suptitle('PiCO vs ComCo  —  C=5 and C=20', fontsize=13)
+    for col, C in enumerate(C_VALUES):
+        ax = axes[col]
+        _setup_ax(ax, f'C = {C}', ym, ylabel=(col == 0))
+        for alg in ['PiCO', 'ComCo']:
+            _draw(ax, alg, res.get(C, {}).get(alg, {}))
+        ax.legend(fontsize=9, loc='best')
+    _save(fig, os.path.join(out_dir, 'fig6_pico_comco.png'))
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -198,6 +211,7 @@ def main():
     make_fig3(res, ym, args.out_dir)
     make_fig4(res, ym, args.out_dir)
     make_fig5(res, ym, args.out_dir)
+    make_fig6(res, ym, args.out_dir)
 
     print(f'\nDone. Figures saved to: {args.out_dir}')
 
