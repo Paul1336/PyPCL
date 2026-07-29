@@ -45,7 +45,8 @@ from src.comco.model import ComCoModel
 from src.comco.utils_loss import ComCoCLSLoss, ComCoContrastiveLoss
 from src.engine import (evaluate_model, train_algorithm,
                          train_comco_epoch, train_pico_epoch,
-                         train_pico_mclloss_epoch)
+                         train_pico_mclloss_epoch, train_pico_sc_epoch)
+from src.pico_cls_loss import PiCOCLSLoss
 from src.mcl_losses import MCL_LOG
 from src.models import create_model
 from src.pico.mcl_cls_loss import PiCOMCLLoss
@@ -63,9 +64,9 @@ BS           = 512
 WD           = 1e-4
 REPORT_EVERY = 10      # print ETA every N epochs
 
-PLL_ALGOS = ['CLPL', 'PRODEN', 'PiCO', 'PiCO-MCL']
+PLL_ALGOS = ['CLPL', 'PRODEN', 'PiCO', 'PiCO-MCL', 'PiCO-SC']
 CLL_ALGOS = ['MCL-LOG', 'SCL-NL', 'ComCo']
-ALL_ALGOS = PLL_ALGOS + CLL_ALGOS   # index 0-6 → GPU 1-7
+ALL_ALGOS = PLL_ALGOS + CLL_ALGOS   # index 0-7 → GPU assignment
 
 # ─── Visual style (shared across all 4 figures) ───────────────────────────────
 
@@ -77,6 +78,7 @@ STYLES = {
     'PRODEN':   dict(color='#2ca02c', marker='^', linestyle='-',  linewidth=2, markersize=6),
     'PiCO':     dict(color='#9467bd', marker='s', linestyle='--', linewidth=2, markersize=6),
     'PiCO-MCL': dict(color='#bcbd22', marker='p', linestyle=':',  linewidth=2, markersize=6),
+    'PiCO-SC':  dict(color='#98df8a', marker='h', linestyle='--', linewidth=2, markersize=6),
     'MCL-LOG':  dict(color='#d62728', marker='o', linestyle='-',  linewidth=2, markersize=6),
     'SCL-NL':   dict(color='#ff7f0e', marker='D', linestyle='--', linewidth=2, markersize=6),
     'ComCo':    dict(color='#8c564b', marker='^', linestyle='-',  linewidth=2, markersize=6),
@@ -330,6 +332,50 @@ def _train_pico_mcl_eta(loaders: dict, C: int, pico_config: dict,
     return acc
 
 
+def _train_pico_sc_eta(loaders: dict, C: int, pico_config: dict,
+                       pl_ds, epochs: int, device, tag: str) -> float:
+    """PiCO-SC: full PiCO architecture but confidence updated from cls softmax,
+    not from prototype similarity scores."""
+    pico_args = {
+        'num_class':      C,
+        'epochs':         epochs,
+        'low_dim':        pico_config['low_dim'],
+        'moco_queue':     pico_config['moco_queue'],
+        'moco_m':         pico_config['moco_m'],
+        'proto_m':        pico_config['proto_m'],
+        'prot_start':     pico_config['prot_start'],
+        'loss_weight':    pico_config['loss_weight'],
+        'conf_ema_range': pico_config['conf_ema_range'],
+    }
+    model     = PiCOModel(pico_args).to(device)
+    cls_loss  = PiCOCLSLoss(
+        pl_ds.targets,
+        C,
+        conf_ema_range=tuple(pico_config['conf_ema_range']),
+        epochs=epochs,
+    ).to(device)
+    cont_loss = SupConLoss()
+    opt       = _adam(model.parameters())
+
+    chunk_t0 = time.perf_counter()
+    for ep in range(epochs):
+        cls_loss.set_conf_ema_m(ep)   # PiCOCLSLoss takes only epoch (not args dict)
+        train_pico_sc_epoch(pico_args, model, loaders['pico'],
+                             cls_loss, cont_loss, opt, ep, device)
+        if (ep + 1) % REPORT_EVERY == 0 or ep + 1 == epochs:
+            elapsed = time.perf_counter() - chunk_t0
+            _print_eta(tag, ep + 1, epochs, elapsed, min(REPORT_EVERY, ep + 1))
+            chunk_t0 = time.perf_counter()
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    acc = evaluate_model(model, loaders['test'], device)
+    del model, cls_loss, cont_loss, opt
+    gc.collect()
+    torch.cuda.empty_cache()
+    return acc
+
+
 def _train_comco_eta(loaders: dict, C: int, comco_config: dict,
                      epochs: int, device, tag: str) -> float:
     comco_args = {
@@ -567,6 +613,10 @@ def main():
                     acc = _train_pico_mcl_eta(
                         loaders, C, pico_config,
                         args.epochs, device, tag)
+                elif alg == 'PiCO-SC':
+                    acc = _train_pico_sc_eta(
+                        loaders, C, pico_config,
+                        pl_ds, args.epochs, device, tag)
                 elif alg == 'ComCo':
                     acc = _train_comco_eta(
                         loaders, C, comco_config,
