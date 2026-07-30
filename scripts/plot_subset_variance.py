@@ -44,19 +44,17 @@ def make_plot(base_dir, out_path):
         print('No results found.')
         return
 
-    fig, axes = plt.subplots(1, 2, figsize=(16, 5))
+    fig, ax = plt.subplots(1, 1, figsize=(9, 5))
     fig.suptitle(
         'Accuracy Distribution across CIFAR-100 10-class Subsets\nC=10, k=7',
         fontsize=12,
     )
 
-    for col, alg in enumerate(['PRODEN', 'ComCo']):
-        ax   = axes[col]
-        accs = res.get(alg, [])
-        if not accs:
-            ax.set_title(f'{alg}  (no data)')
-            continue
-
+    alg  = 'PRODEN'
+    accs = res.get(alg, [])[:80]
+    if not accs:
+        ax.set_title(f'{alg}  (no data)')
+    else:
         counts, edges = np.histogram(accs, bins=BINS)
         centers = [(edges[i] + edges[i+1]) / 2 for i in range(len(counts))]
         widths  = [edges[i+1] - edges[i] for i in range(len(counts))]
@@ -70,9 +68,9 @@ def make_plot(base_dir, out_path):
                    label=f'mean={mean_acc:.1f}%')
         ax.set_title(f'{alg}  —  n={len(accs)}\nmean={mean_acc:.1f}%  std={std_acc:.1f}%', fontsize=11)
         ax.set_xlabel('Test Accuracy (%)', fontsize=9)
-        if col == 0:
-            ax.set_ylabel('Count', fontsize=9)
+        ax.set_ylabel('Count', fontsize=9)
         ax.set_xlim(0, 100)
+        ax.set_xticks(range(0, 101, 10))
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3, axis='y')
 

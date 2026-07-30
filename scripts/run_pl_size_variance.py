@@ -274,7 +274,7 @@ def _train_comco(cl_ds, orig_targets, test_loader, epochs, comco_config, device,
 BINS = list(range(0, 101, 5))
 
 
-def make_plot(base_dir, plots_dir, n_seeds_done):
+def make_plot(base_dir, plots_dir):
     res = _load_results(base_dir)
     if not res:
         return
@@ -282,8 +282,7 @@ def make_plot(base_dir, plots_dir, n_seeds_done):
     os.makedirs(plots_dir, exist_ok=True)
     fig, axes = plt.subplots(1, 2, figsize=(16, 5))
     fig.suptitle(
-        f'Accuracy Distribution — PL size variance effect\n'
-        f'C=10, mean PL size=7, {n_seeds_done} seeds completed',
+        'Accuracy Distribution — PL size variance effect\nC=10, mean PL size=7',
         fontsize=12,
     )
 
@@ -418,8 +417,7 @@ def main():
                 done.add((seed, var_level, 'ComCo'))
                 print(f'  ComCo   var={var_level}  acc={acc:.2f}%  ({elapsed/60:.1f} min)', flush=True)
 
-        n_done = sum(1 for (s, vl, a) in done if a == 'PRODEN' and vl == 1)
-        make_plot(args.out_dir, args.plots_dir, n_done)
+        make_plot(args.out_dir, args.plots_dir)
 
     print('\nAll done.')
 
