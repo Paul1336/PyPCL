@@ -99,8 +99,8 @@ def make_plot(res, out_dir):
     _save_fig(res, ['PiCO', 'PiCO-CLS', 'PRODEN'],
               'PiCO / PiCO-CLS / PRODEN',
               os.path.join(out_dir, 'c20_base.png'))
-    _save_fig(res, ['PiCO', 'PiCO-CLS', 'PRODEN', 'PiCO-SC'],
-              'PiCO / PiCO-CLS / PRODEN / PiCO-SC',
+    _save_fig(res, ['PiCO', 'PiCO-CLS', 'PRODEN', 'PiCO-SC', 'ComCo'],
+              'PiCO / PiCO-CLS / PRODEN / PiCO-SC / ComCo',
               os.path.join(out_dir, 'c20_with_sc.png'))
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
