@@ -34,12 +34,12 @@ DISPLAY_NAME = {'OP-W': 'OP'}
 
 STYLES = {
     'OP':      dict(color='#1f77b4', marker='D', linestyle='-',  linewidth=2, markersize=6),
-    'CPE':     dict(color='#ff7f0e', marker='o', linestyle='-',  linewidth=2, markersize=6),
+
     'ComCo':   dict(color='#8c564b', marker='^', linestyle='-',  linewidth=2, markersize=6),
     'MCL-LOG': dict(color='#d62728', marker='s', linestyle='--', linewidth=2, markersize=6),
     'SoLar':   dict(color='#e8b13f', marker='*', linestyle='-',  linewidth=2, markersize=9),
 }
-PLOT_ALGOS = ['OP', 'CPE', 'ComCo', 'MCL-LOG', 'SoLar']
+PLOT_ALGOS = ['OP', 'ComCo', 'MCL-LOG', 'SoLar']
 
 # ─── CSV loading ──────────────────────────────────────────────────────────────
 
@@ -107,7 +107,7 @@ def main():
     res = {}
 
     op_pat    = os.path.join(args.op_cpe_dir, '**', 'results.csv')
-    res.update(_load_csv(op_pat, C, {'OP-W', 'CPE'}))
+    res.update(_load_csv(op_pat, C, {'OP-W'}))
 
     adam_pat  = os.path.join(args.adam_dir, '**', 'results.csv')
     res.update(_load_csv(adam_pat, C, {'ComCo', 'MCL-LOG'}))
