@@ -63,14 +63,12 @@ def _load_csv(pattern, target_c, target_algs):
 
 # ─── Plot ─────────────────────────────────────────────────────────────────────
 
-def make_plot(res, out_path):
-    vals = [acc for alg_d in res.values() for acc in alg_d.values()]
+def _draw_ax(ax, res, algs, title):
+    vals = [acc for alg in algs for acc in res.get(alg, {}).values()]
     ym   = 80 if not vals else int(np.ceil(max(vals) / 10) * 10) + 5
 
-    fig, ax = plt.subplots(figsize=(8, 5))
-    fig.suptitle(f'C = {C}  —  Test Accuracy vs k (partial labels)', fontsize=13)
-
-    for alg in PLOT_ALGOS:
+    ax.set_title(title, fontsize=11)
+    for alg in algs:
         k_acc = res.get(alg, {})
         if not k_acc:
             print(f'  [warn] no data for {alg}')
@@ -85,11 +83,25 @@ def make_plot(res, out_path):
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=10, loc='best')
 
+
+def _save_fig(res, algs, title, out_path):
+    fig, ax = plt.subplots(figsize=(8, 5))
+    fig.suptitle(f'C = {C}  —  Test Accuracy vs k (partial labels)', fontsize=13)
+    _draw_ax(ax, res, algs, title)
     fig.tight_layout()
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f'[plot] → {out_path}')
+
+
+def make_plot(res, out_dir):
+    _save_fig(res, ['PiCO', 'PiCO-CLS', 'PRODEN'],
+              'PiCO / PiCO-CLS / PRODEN',
+              os.path.join(out_dir, 'c20_base.png'))
+    _save_fig(res, ['PiCO', 'PiCO-CLS', 'PRODEN', 'PiCO-SC'],
+              'PiCO / PiCO-CLS / PRODEN / PiCO-SC',
+              os.path.join(out_dir, 'c20_with_sc.png'))
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
@@ -98,7 +110,7 @@ def main():
     parser.add_argument('--adam_dir',     default='results/adam_comparison/')
     parser.add_argument('--pico_cls_dir', default='results/pico_cls/')
     parser.add_argument('--pico_sc_dir',  default='results/pico_sc/')
-    parser.add_argument('--out',          default='plots/c20_comparison/c20_comparison_sc.png')
+    parser.add_argument('--out_dir',      default='plots/c20_comparison/')
     args = parser.parse_args()
 
     res = {}
@@ -112,7 +124,7 @@ def main():
     sc_pat = os.path.join(args.pico_sc_dir, 'results.csv')
     res.update(_load_csv(sc_pat, C, {'PiCO-SC'}))
 
-    make_plot(res, args.out)
+    make_plot(res, args.out_dir)
 
 
 if __name__ == '__main__':
