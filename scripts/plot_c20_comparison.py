@@ -33,8 +33,9 @@ STYLES = {
     'MCL-LOG':  dict(color='#d62728', marker='D', linestyle='-',  linewidth=2, markersize=6),
     'PiCO':     dict(color='#9467bd', marker='s', linestyle='--', linewidth=2, markersize=6),
     'PiCO-CLS': dict(color='#e377c2', marker='*', linestyle='-',  linewidth=2, markersize=8),
+    'ComCo':    dict(color='#8c564b', marker='^', linestyle='-',  linewidth=2, markersize=6),
 }
-PLOT_ALGOS = ['PRODEN', 'MCL-LOG', 'PiCO', 'PiCO-CLS']
+PLOT_ALGOS = ['PRODEN', 'MCL-LOG', 'PiCO', 'PiCO-CLS', 'ComCo']
 
 # ─── CSV loading ──────────────────────────────────────────────────────────────
 
@@ -100,7 +101,7 @@ def main():
     res = {}
 
     adam_pat = os.path.join(args.adam_dir, '**', 'results.csv')
-    res.update(_load_csv(adam_pat, C, {'PRODEN', 'MCL-LOG', 'PiCO'}))
+    res.update(_load_csv(adam_pat, C, {'PRODEN', 'MCL-LOG', 'PiCO', 'ComCo'}))
 
     cls_pat = os.path.join(args.pico_cls_dir, 'results.csv')
     res.update(_load_csv(cls_pat, C, {'PiCO-CLS'}))
