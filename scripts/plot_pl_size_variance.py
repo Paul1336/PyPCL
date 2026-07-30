@@ -48,32 +48,29 @@ def make_plot(base_dir, out_path):
         print('No results found.')
         return
 
-    fig, axes = plt.subplots(1, 2, figsize=(16, 5))
+    fig, ax = plt.subplots(1, 1, figsize=(9, 5))
     fig.suptitle(
         'Accuracy Distribution — PL size variance effect\nC=10, mean PL size=7',
         fontsize=12,
     )
 
-    for col, alg in enumerate(['PRODEN', 'ComCo']):
-        ax       = axes[col]
-        alg_data = res.get(alg, {})
-        if not alg_data:
-            ax.set_title(f'{alg}  (no data yet)')
-            continue
-
+    alg      = 'PRODEN'
+    alg_data = res.get(alg, {})
+    if not alg_data:
+        ax.set_title(f'{alg}  (no data yet)')
+    else:
         ax.set_title(alg, fontsize=11)
         ax.set_xlabel('Test Accuracy (%)', fontsize=9)
-        if col == 0:
-            ax.set_ylabel('Count', fontsize=9)
+        ax.set_ylabel('Count', fontsize=9)
         ax.set_xlim(0, 100)
         ax.grid(True, alpha=0.3, axis='y')
 
-        ym = max(np.histogram(accs, bins=BINS)[0].max()
+        ym = max(np.histogram(accs[:80], bins=BINS)[0].max()
                  for accs in alg_data.values() if accs)
         ax.set_ylim(0, ym * 1.15)
 
         for vl in VAR_LEVELS:
-            accs = alg_data.get(vl, [])
+            accs = alg_data.get(vl, [])[:80]
             if not accs:
                 continue
             counts, edges = np.histogram(accs, bins=BINS)
