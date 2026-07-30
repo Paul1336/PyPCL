@@ -37,9 +37,9 @@ STYLES = {
     'CPE':     dict(color='#ff7f0e', marker='o', linestyle='-',  linewidth=2, markersize=6),
     'ComCo':   dict(color='#8c564b', marker='^', linestyle='-',  linewidth=2, markersize=6),
     'MCL-LOG': dict(color='#d62728', marker='s', linestyle='--', linewidth=2, markersize=6),
-    'PRODEN':  dict(color='#2ca02c', marker='p', linestyle='-',  linewidth=2, markersize=6),
+    'SoLar':   dict(color='#e8b13f', marker='*', linestyle='-',  linewidth=2, markersize=9),
 }
-PLOT_ALGOS = ['OP', 'CPE', 'ComCo', 'MCL-LOG', 'PRODEN']
+PLOT_ALGOS = ['OP', 'CPE', 'ComCo', 'MCL-LOG', 'SoLar']
 
 # ─── CSV loading ──────────────────────────────────────────────────────────────
 
@@ -98,18 +98,22 @@ def make_plot(res, out_path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--adam_dir',    default='results/adam_comparison/')
-    parser.add_argument('--op_cpe_dir',  default='results/op_cpe_comparison/')
-    parser.add_argument('--out',         default='plots/c20_op_cpe/c20_op_cpe.png')
+    parser.add_argument('--adam_dir',   default='results/adam_comparison/')
+    parser.add_argument('--op_cpe_dir', default='results/op_cpe_comparison/')
+    parser.add_argument('--solar_dir',  default='results/solar_comparison/')
+    parser.add_argument('--out',        default='plots/c20_op_cpe/c20_op_cpe.png')
     args = parser.parse_args()
 
     res = {}
 
-    op_pat   = os.path.join(args.op_cpe_dir, '**', 'results.csv')
+    op_pat    = os.path.join(args.op_cpe_dir, '**', 'results.csv')
     res.update(_load_csv(op_pat, C, {'OP-W', 'CPE'}))
 
-    adam_pat = os.path.join(args.adam_dir, '**', 'results.csv')
-    res.update(_load_csv(adam_pat, C, {'ComCo', 'MCL-LOG', 'PRODEN'}))
+    adam_pat  = os.path.join(args.adam_dir, '**', 'results.csv')
+    res.update(_load_csv(adam_pat, C, {'ComCo', 'MCL-LOG'}))
+
+    solar_pat = os.path.join(args.solar_dir, '**', 'results.csv')
+    res.update(_load_csv(solar_pat, C, {'SoLar'}))
 
     make_plot(res, args.out)
 
