@@ -29,13 +29,13 @@ for GPU_ID in 0 1 2 3; do
     tmux send-keys -t "$SESSION" "cd \"$WORKDIR\"" Enter
     tmux send-keys -t "$SESSION" "conda activate $CONDA_ENV" Enter
 
-    for K in 5 10 15; do
+    for K in 5 10 15 6 7 8 9 11 12 13 14; do
         tmux send-keys -t "$SESSION" \
             "CUDA_VISIBLE_DEVICES=${GPU_ID} python ${SCRIPT} --alg ${ALG} --C ${C} --k ${K}" \
             Enter
     done
 
-    echo "  ${SESSION}  →  GPU ${GPU_ID}  alg=${ALG}  k=5,10,15"
+    echo "  ${SESSION}  →  GPU ${GPU_ID}  alg=${ALG}  k=5,10,15 then 6,7,8,9,11,12,13,14"
 done
 
 echo ""
