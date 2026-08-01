@@ -287,7 +287,8 @@ def run(args, cfg, device):
     os.makedirs(out_dir, exist_ok=True)
 
     loss_curve_path = os.path.join(out_dir, 'loss_curve.csv')
-    lc_fields = ['epoch', 'cls_loss', 'cont_loss', 'total_loss', 'overall_acc']
+    lc_fields = ['epoch', 'cls_loss', 'cont_loss', 'total_loss',
+                 'cls_ratio', 'wcont_ratio', 'overall_acc']
     _ensure_csv(loss_curve_path, lc_fields)
     done_epochs = _load_done_epochs(loss_curve_path)
 
@@ -313,13 +314,8 @@ def run(args, cfg, device):
 
     if alg in ('PiCO', 'PiCO-SC'):
         model     = PiCOModel(pico_args).to(device)
-        loss_fn   = PartialLoss(
-            torch.zeros(len(pl_ds), C).scatter_(
-                1,
-                torch.stack([t for t in pl_ds.targets]).clamp(min=0),
-                1.0,
-            ) if False else _build_pico_conf(pl_ds, C)
-        ).to(device)
+        loss_fn   = PartialLoss(_build_pico_conf(pl_ds, C)).to(device)
+        loss_fn.confidence = loss_fn.confidence.to(device)
         cont_fn   = SupConLoss(temperature=0.07).to(device)
         optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
         loader    = loaders['pico']
@@ -368,12 +364,20 @@ def run(args, cfg, device):
         if (ep + 1) % LOG_EVERY == 0 or ep + 1 == epochs:
             acc, _, _ = _log_validation(model, test_loader, device, C, ep + 1, out_dir)
 
+        if tot_l > 0:
+            cls_ratio   = cls_l / tot_l
+            wcont_ratio = (tot_l - cls_l) / tot_l   # = loss_weight * cont_l / tot_l
+        else:
+            cls_ratio = wcont_ratio = 0.0
+
         _append_row(loss_curve_path, lc_fields, {
-            'epoch':      ep + 1,
-            'cls_loss':   round(cls_l,  6),
-            'cont_loss':  round(cont_l, 6),
-            'total_loss': round(tot_l,  6),
-            'overall_acc': round(acc,   4),
+            'epoch':       ep + 1,
+            'cls_loss':    round(cls_l,       6),
+            'cont_loss':   round(cont_l,      6),
+            'total_loss':  round(tot_l,       6),
+            'cls_ratio':   round(cls_ratio,   6),
+            'wcont_ratio': round(wcont_ratio, 6),
+            'overall_acc': round(acc,         4),
         })
 
         elapsed = time.perf_counter() - t0
@@ -407,23 +411,38 @@ def _plot_loss_curve(out_dir, plots_dir, alg, C, k):
         print(f'  [warn] no loss_curve.csv for {alg} C={C} k={k}')
         return
 
-    epochs_list, cls_l, cont_l, tot_l = [], [], [], []
+    epochs_list, cls_l, cont_l, tot_l, cls_r, wcont_r = [], [], [], [], [], []
     with open(path, newline='') as f:
         for row in csv.DictReader(f):
             epochs_list.append(int(row['epoch']))
             cls_l.append(float(row['cls_loss']))
             cont_l.append(float(row['cont_loss']))
             tot_l.append(float(row['total_loss']))
+            cls_r.append(float(row.get('cls_ratio',   0)))
+            wcont_r.append(float(row.get('wcont_ratio', 0)))
 
-    fig, ax = plt.subplots(figsize=(9, 4))
-    ax.plot(epochs_list, cls_l,  label='cls loss',   color='#1f77b4', linewidth=1.5)
-    ax.plot(epochs_list, cont_l, label='cont loss',  color='#ff7f0e', linewidth=1.5)
-    ax.plot(epochs_list, tot_l,  label='total loss', color='#2ca02c', linewidth=2, linestyle='--')
-    ax.set_xlabel('Epoch', fontsize=10)
-    ax.set_ylabel('Loss', fontsize=10)
-    ax.set_title(f'{alg}  C={C}  k={k}  —  Loss Curves', fontsize=12)
-    ax.legend(fontsize=9)
-    ax.grid(True, alpha=0.3)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 4))
+    fig.suptitle(f'{alg}  C={C}  k={k}  —  Loss Curves', fontsize=12)
+
+    ax1.plot(epochs_list, cls_l,  label='cls loss',   color='#1f77b4', linewidth=1.5)
+    ax1.plot(epochs_list, cont_l, label='cont loss',  color='#ff7f0e', linewidth=1.5)
+    ax1.plot(epochs_list, tot_l,  label='total loss', color='#2ca02c', linewidth=2, linestyle='--')
+    ax1.set_xlabel('Epoch', fontsize=10)
+    ax1.set_ylabel('Loss', fontsize=10)
+    ax1.set_title('Absolute loss', fontsize=10)
+    ax1.legend(fontsize=9)
+    ax1.grid(True, alpha=0.3)
+
+    ax2.stackplot(epochs_list, cls_r, wcont_r,
+                  labels=['cls / total', 'w·cont / total'],
+                  colors=['#1f77b4', '#ff7f0e'], alpha=0.75)
+    ax2.set_xlabel('Epoch', fontsize=10)
+    ax2.set_ylabel('Ratio', fontsize=10)
+    ax2.set_ylim(0, 1)
+    ax2.set_title('Weighted loss ratio', fontsize=10)
+    ax2.legend(fontsize=9, loc='lower right')
+    ax2.grid(True, alpha=0.3)
+
     fig.tight_layout()
     out = os.path.join(plots_dir, 'loss_curve.png')
     os.makedirs(plots_dir, exist_ok=True)
