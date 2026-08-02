@@ -312,10 +312,17 @@ def run(args, cfg, device):
     pico_args.update({'num_class': C, 'epochs': epochs})
     comco_args.update({'num_class': C, 'epochs': epochs})
 
-    if alg in ('PiCO', 'PiCO-SC'):
+    if alg == 'PiCO':
         model     = PiCOModel(pico_args).to(device)
         loss_fn   = PartialLoss(_build_pico_conf(pl_ds, C)).to(device)
         loss_fn.confidence = loss_fn.confidence.to(device)
+        cont_fn   = SupConLoss(temperature=0.07).to(device)
+        optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
+        loader    = loaders['pico']
+
+    elif alg == 'PiCO-SC':
+        model     = PiCOModel(pico_args).to(device)
+        loss_fn   = PiCOCLSLoss(pl_ds.targets, C, epochs=epochs).to(device)
         cont_fn   = SupConLoss(temperature=0.07).to(device)
         optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
         loader    = loaders['pico']
