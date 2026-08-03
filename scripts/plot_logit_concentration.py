@@ -42,7 +42,7 @@ def available_epochs(base, alg, C, k):
         return []
     out = []
     for fname in sorted(os.listdir(d)):
-        if fname.startswith('ep') and fname.endswith('.csv') and len(fname) == 11:
+        if fname.startswith('ep') and fname.endswith('.csv') and len(fname) == 10:
             try:
                 out.append(int(fname[2:6]))
             except ValueError:
