@@ -69,7 +69,10 @@ def read_loss_curve(alg, k):
                 rows.append([float(v) for v in row])
     if not rows:
         return None
-    arr = np.array(rows)
+    # Pad inhomogeneous rows to max length (some early rows may lack cls_ratio cols)
+    max_cols = max(len(r) for r in rows)
+    padded = [r + [float('nan')] * (max_cols - len(r)) for r in rows]
+    arr = np.array(padded)
     d = {
         'epoch':       arr[:, 0].astype(int),
         'cls_loss':    arr[:, 1],
