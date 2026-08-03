@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 C    = 20
-KS   = list(range(5, 20))   # 5 … 19
+KS   = list(range(5, 16))   # 5 … 15
 ALGS = ['PiCO', 'PiCO-CLS', 'PiCO-SC', 'ComCo']
 
 COLORS  = {'PiCO': '#9467bd', 'PiCO-CLS': '#e377c2', 'PiCO-SC': '#d4a800', 'ComCo': '#8c564b'}
