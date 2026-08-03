@@ -1,13 +1,14 @@
 """
-Combined heatmap comparing PiCO vs PiCO-SC (PiCO-softmax) side by side.
+Side-by-side heatmap comparison of two algorithms.
 
-Layout (2 rows × 2 cols):
-  [acc  PiCO] [acc  PiCO-SC]
-  [loss PiCO] [loss PiCO-SC]
+Layout:
+  Default (2×2): acc row + loss row
+  --acc_only   : acc row only (1×2)
 
 Usage:
-    python scripts/plot_combined_heatmap_pair.py --k 5
-    python scripts/plot_combined_heatmap_pair.py --k 5 10 15 19 --show_class_names
+    python scripts/plot_combined_heatmap_pair.py --alg_l PiCO --alg_r ComCo --k 19
+    python scripts/plot_combined_heatmap_pair.py --alg_l PiCO --alg_r PiCO-Uniform --k 5 10 15 19 --acc_only
+    python scripts/plot_combined_heatmap_pair.py --alg_l PiCO --alg_r ComCo --k 19 --show_class_names
 """
 
 import argparse
@@ -24,16 +25,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 BASE_DIR = 'results/extended_analysis'
 OUT_DIR  = 'plots/extended_analysis'
-ALG_L   = 'PiCO'
-ALG_R   = 'PiCO-Uniform'
-LABEL_L = 'PiCO'
-LABEL_R = 'PiCO-Uniform'
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 
 def load_per_class(alg, k, C, base_dir):
     path = os.path.join(base_dir, alg, f'C{C}_k{k}', 'per_class_loss.csv')
     if not os.path.isfile(path):
+        print(f'  [skip] {alg} k={k} — not found: {path}')
         return None
     rows = []
     with open(path, newline='') as f:
@@ -87,46 +85,60 @@ def _draw(ax, mat, epochs, cmap, vmin, vmax, C, class_names,
     return im
 
 
-def plot_pair(k, C, base_dir, out_dir, class_names=None):
-    dL = load_per_class(ALG_L, k, C, base_dir)
-    dR = load_per_class(ALG_R, k, C, base_dir)
-
+def plot_pair(alg_l, alg_r, k, C, base_dir, out_dir, class_names=None, acc_only=False):
+    dL = load_per_class(alg_l, k, C, base_dir)
+    dR = load_per_class(alg_r, k, C, base_dir)
     if dL is None and dR is None:
         print(f'  [skip] k={k} — no data for either alg')
         return
 
-    # Use whichever epochs list is available (should be identical)
     epochs = (dL or dR)['epochs']
-    T = len(epochs)
-
-    fig_w = max(14, T * 0.32 * 2 + 2)
-    fig_h = max(5,  C * 0.32 + 1.5)
-
-    fig, axes = plt.subplots(
-        1, 2,
-        figsize=(fig_w, fig_h),
-        gridspec_kw={'wspace': 0.04},
-    )
-
-    acc_l = dL['acc_mat'] if dL else np.full((T, C), np.nan)
-    acc_r = dR['acc_mat'] if dR else np.full((T, C), np.nan)
+    T      = len(epochs)
 
     fa_l = f'{dL["overall"][-1]:.1f}%' if dL else 'N/A'
     fa_r = f'{dR["overall"][-1]:.1f}%' if dR else 'N/A'
 
-    im_acc_l = _draw(axes[0], acc_l, epochs, 'RdYlGn', 0, 100, C, class_names,
-                     show_xlabel=True, show_ylabel=True, ylabel='Class')
-    im_acc_r = _draw(axes[1], acc_r, epochs, 'RdYlGn', 0, 100, C, class_names,
-                     show_xlabel=True, show_ylabel=False)
+    acc_l  = dL['acc_mat']  if dL else np.full((T, C), np.nan)
+    acc_r  = dR['acc_mat']  if dR else np.full((T, C), np.nan)
 
-    axes[0].set_title(f'{LABEL_L}  (final {fa_l})', fontsize=11, fontweight='bold')
-    axes[1].set_title(f'{LABEL_R}  (final {fa_r})', fontsize=11, fontweight='bold')
+    n_rows = 1 if acc_only else 2
+    fig_w  = max(14, T * 0.32 * 2 + 2)
+    fig_h  = max(5 * n_rows, C * 0.32 * n_rows + 1.5)
 
-    fig.colorbar(im_acc_l, ax=axes, label='Accuracy (%)', shrink=0.85, pad=0.01)
+    fig, axes = plt.subplots(
+        n_rows, 2,
+        figsize=(fig_w, fig_h),
+        gridspec_kw={'hspace': 0.06, 'wspace': 0.04},
+        squeeze=False,
+    )
 
-    fig.suptitle(f'{LABEL_L} vs {LABEL_R}  —  C={C}  k={k}', fontsize=13, fontweight='bold')
+    # ── Accuracy row ──
+    im_acc_l = _draw(axes[0, 0], acc_l, epochs, 'RdYlGn', 0, 100, C, class_names,
+                     show_xlabel=acc_only, show_ylabel=True, ylabel='Accuracy (%)')
+    im_acc_r = _draw(axes[0, 1], acc_r, epochs, 'RdYlGn', 0, 100, C, class_names,
+                     show_xlabel=acc_only, show_ylabel=False)
+    axes[0, 0].set_title(f'{alg_l}  (final {fa_l})', fontsize=11, fontweight='bold')
+    axes[0, 1].set_title(f'{alg_r}  (final {fa_r})', fontsize=11, fontweight='bold')
+    fig.colorbar(im_acc_l, ax=axes[0, :], label='Accuracy (%)', shrink=0.85, pad=0.01)
 
-    out_path = os.path.join(out_dir, f'{ALG_L}_vs_{ALG_R}', f'C{C}_k{k}_combined.png')
+    # ── Loss row (optional) ──
+    if not acc_only:
+        loss_l = dL['loss_mat'] if dL else np.full((T, C), np.nan)
+        loss_r = dR['loss_mat'] if dR else np.full((T, C), np.nan)
+        all_loss = [m for m in [loss_l, loss_r] if not np.all(np.isnan(m))]
+        loss_vmax = np.nanpercentile(np.concatenate(all_loss), 97)
+
+        im_loss_l = _draw(axes[1, 0], loss_l, epochs, 'RdYlGn_r', 0, loss_vmax, C, class_names,
+                          show_xlabel=True, show_ylabel=True, ylabel='CE Loss')
+        im_loss_r = _draw(axes[1, 1], loss_r, epochs, 'RdYlGn_r', 0, loss_vmax, C, class_names,
+                          show_xlabel=True, show_ylabel=False)
+        fig.colorbar(im_loss_l, ax=axes[1, :], label='CE loss', shrink=0.85, pad=0.01)
+
+    fig.suptitle(f'{alg_l} vs {alg_r}  —  C={C}  k={k}', fontsize=13, fontweight='bold')
+
+    tag  = 'acc' if acc_only else 'acc_loss'
+    name = f'{alg_l}_vs_{alg_r}'
+    out_path = os.path.join(out_dir, name, f'C{C}_k{k}_{tag}.png')
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
@@ -136,13 +148,16 @@ def plot_pair(k, C, base_dir, out_dir, class_names=None):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--k',    type=int, nargs='+', required=True)
-    parser.add_argument('--C',    type=int, default=20)
-    parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--alg_l', required=True, help='Left algorithm')
+    parser.add_argument('--alg_r', required=True, help='Right algorithm')
+    parser.add_argument('--k',     type=int, nargs='+', required=True)
+    parser.add_argument('--C',     type=int, default=20)
+    parser.add_argument('--seed',  type=int, default=42)
+    parser.add_argument('--acc_only',         action='store_true', help='Only accuracy row (1×2)')
+    parser.add_argument('--show_class_names', action='store_true')
     parser.add_argument('--base_dir', default=BASE_DIR)
     parser.add_argument('--out_dir',  default=OUT_DIR)
     parser.add_argument('--data_dir', default='./data')
-    parser.add_argument('--show_class_names', action='store_true')
     args = parser.parse_args()
 
     class_names = None
@@ -150,8 +165,9 @@ def main():
         class_names = load_class_names(args.C, args.seed, args.data_dir)
 
     for k in args.k:
-        print(f'k={k}')
-        plot_pair(k, args.C, args.base_dir, args.out_dir, class_names)
+        print(f'{args.alg_l} vs {args.alg_r}  k={k}')
+        plot_pair(args.alg_l, args.alg_r, k, args.C,
+                  args.base_dir, args.out_dir, class_names, args.acc_only)
 
     print('Done.')
 
