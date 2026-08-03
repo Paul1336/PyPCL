@@ -329,9 +329,11 @@ def _acc_at_epoch(d, at_epoch=None):
     return float(d['overall'][idx])
 
 
-def _plot_A1_single(ax, at_epoch=None):
+def _plot_A1_single(ax, at_epoch=None, algs=None):
+    if algs is None:
+        algs = ALGS
     label_ep = f'ep {at_epoch}' if at_epoch else 'final'
-    for alg in ALGS:
+    for alg in algs:
         xs, ys = [], []
         for k in KS:
             d = read_per_class(alg, k)
@@ -363,6 +365,13 @@ def plot_A1():
     _plot_A1_single(ax, at_epoch=200)
     ax.set_title('Accuracy @ ep200 vs k  —  C=20', fontsize=12)
     _save(fig, OUT_CMP, 'A1_ep200_acc_vs_k.png')
+
+    # without ComCo
+    no_comco = [a for a in ALGS if a != 'ComCo']
+    fig, ax = plt.subplots(figsize=(8, 5))
+    _plot_A1_single(ax, at_epoch=None, algs=no_comco)
+    ax.set_title('Final Accuracy vs k  —  C=20, epoch 500  (PLL methods only)', fontsize=12)
+    _save(fig, OUT_CMP, 'A1_final_acc_vs_k_no_comco.png')
 
 
 # ── A2: Learning curves ────────────────────────────────────────────────────────
