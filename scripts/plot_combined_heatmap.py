@@ -102,7 +102,7 @@ def plot_combined(alg, k, C, base_dir, out_dir, class_names=None):
     )
     fig.suptitle(
         f'{alg}  C={C}  k={k}  —  final acc {final_acc:.1f}%',
-        fontsize=12, fontweight='bold', y=1.01,
+        fontsize=12, fontweight='bold',
     )
 
     # ── Top: accuracy ──────────────────────────────────────────────────────
