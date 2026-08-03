@@ -317,33 +317,71 @@ def plot_per_run(class_names=None):
 
 # ── A1: Final accuracy vs k ────────────────────────────────────────────────────
 
-def plot_A1():
-    print('A1  Final accuracy vs k')
-    fig, ax = plt.subplots(figsize=(8, 5))
+def _acc_at_epoch(d, at_epoch=None):
+    """Return accuracy at the closest checkpoint <= at_epoch. None = last."""
+    if at_epoch is None:
+        return float(d['overall'][-1])
+    epochs = np.array(d['epochs'])
+    mask = epochs <= at_epoch
+    if not mask.any():
+        return None
+    idx = np.where(mask)[0][-1]
+    return float(d['overall'][idx])
+
+
+def _plot_A1_single(ax, at_epoch=None):
+    label_ep = f'ep {at_epoch}' if at_epoch else 'final'
     for alg in ALGS:
         xs, ys = [], []
         for k in KS:
             d = read_per_class(alg, k)
             if d is not None:
-                xs.append(k)
-                ys.append(float(d['overall'][-1]))
+                acc = _acc_at_epoch(d, at_epoch)
+                if acc is not None:
+                    xs.append(k)
+                    ys.append(acc)
         if xs:
             _alg_line(ax, alg, xs, ys)
     ax.set_xlabel('k  (# partial labels)', fontsize=11)
-    ax.set_ylabel('Final Overall Accuracy (%)', fontsize=11)
-    ax.set_title('Final Accuracy vs k  —  C=20, epoch 500', fontsize=12)
+    ax.set_ylabel(f'Accuracy @ {label_ep} (%)', fontsize=11)
     ax.set_xticks(KS)
     ax.grid(alpha=0.3)
     ax.legend(fontsize=9)
+
+
+def plot_A1():
+    print('A1  Final accuracy vs k  (+ep200 version)')
+
+    # full (final epoch)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    _plot_A1_single(ax, at_epoch=None)
+    ax.set_title('Final Accuracy vs k  —  C=20, epoch 500', fontsize=12)
     _save(fig, OUT_CMP, 'A1_final_acc_vs_k.png')
+
+    # epoch-200 snapshot
+    fig, ax = plt.subplots(figsize=(8, 5))
+    _plot_A1_single(ax, at_epoch=200)
+    ax.set_title('Accuracy @ ep200 vs k  —  C=20', fontsize=12)
+    _save(fig, OUT_CMP, 'A1_ep200_acc_vs_k.png')
 
 
 # ── A2: Learning curves ────────────────────────────────────────────────────────
 
 def plot_A2():
     print('A2  Learning curves')
-    fig, axes = plt.subplots(1, len(KS), figsize=(5 * len(KS), 5))
-    for ax, k in zip(axes, KS):
+    fig, axes = plt.subplots(1, len(KS), figsize=(5 * len(KS), 5), sharey=True)
+
+    # collect global acc range for explicit ylim
+    all_acc = []
+    for alg in ALGS:
+        for k in KS:
+            d = read_per_class(alg, k)
+            if d is not None:
+                all_acc.extend(d['overall'].tolist())
+    ymin = max(0,   min(all_acc) - 3) if all_acc else 0
+    ymax = min(100, max(all_acc) + 3) if all_acc else 100
+
+    for i, (ax, k) in enumerate(zip(axes, KS)):
         for alg in ALGS:
             d = read_per_class(alg, k)
             if d is not None:
@@ -353,7 +391,9 @@ def plot_A2():
                         label=alg, linewidth=1.5, alpha=0.9)
         ax.set_title(f'k = {k}', fontsize=11)
         ax.set_xlabel('Epoch', fontsize=9)
-        ax.set_ylabel('Overall Accuracy (%)', fontsize=9)
+        if i == 0:
+            ax.set_ylabel('Overall Accuracy (%)', fontsize=9)
+        ax.set_ylim(ymin, ymax)
         ax.grid(alpha=0.3)
         ax.legend(fontsize=7, loc='lower right')
     fig.suptitle('Learning Curves  —  C=20', fontsize=13)
