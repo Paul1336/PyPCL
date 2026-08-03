@@ -181,15 +181,15 @@ def plot_A2():
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     for ax, k in zip(axes, sel):
         for alg in ALGS:
-            d = read_loss_curve(alg, k)
+            d = read_per_class(alg, k)   # only has eval checkpoints
             if d is not None:
-                ax.plot(d['epoch'], d['overall_acc'],
+                ax.plot(d['epochs'], d['overall'],
                         color=COLORS[alg], linestyle=LS[alg],
+                        marker=MARKERS[alg], markersize=4,
                         label=alg, linewidth=1.5, alpha=0.9)
         ax.set_title(f'k = {k}', fontsize=11)
         ax.set_xlabel('Epoch', fontsize=9)
         ax.set_ylabel('Overall Accuracy (%)', fontsize=9)
-        ax.set_xlim(1, 200)
         ax.grid(alpha=0.3)
         _add_legend(ax, loc='lower right')
     fig.suptitle('Learning Curves  —  C=20', fontsize=13)
