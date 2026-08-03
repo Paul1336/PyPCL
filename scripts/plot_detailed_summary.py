@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 C    = 20
-KS   = list(range(5, 16))   # 5 … 15
+KS   = list(range(5, 20))   # 5 … 19
 ALGS = ['PiCO', 'PiCO-CLS', 'PiCO-SC', 'ComCo']
 
 COLORS  = {'PiCO': '#9467bd', 'PiCO-CLS': '#e377c2', 'PiCO-SC': '#d4a800', 'ComCo': '#8c564b'}
@@ -159,10 +159,10 @@ def plot_A1():
     for alg in ALGS:
         xs, ys = [], []
         for k in KS:
-            d = read_loss_curve(alg, k)
+            d = read_per_class(alg, k)   # only eval checkpoints, no stale zeros
             if d is not None:
                 xs.append(k)
-                ys.append(d['overall_acc'][-1])
+                ys.append(float(d['overall'][-1]))
         _alg_line(ax, alg, xs, ys)
     ax.set_xlabel('k  (# partial labels per sample)', fontsize=11)
     ax.set_ylabel('Final Overall Accuracy (%)', fontsize=11)
@@ -431,6 +431,71 @@ def plot_E1():
     _save(fig, 'E1_accuracy_trajectory.png')
 
 
+# ── E2: Per-class accuracy trajectory heatmap (one figure per alg) ───────────
+
+def plot_E2(class_names=None):
+    """
+    20 figures (one per class), each identical in layout to E1:
+    1×4 subplots (one per alg), X=k, Y=epoch checkpoint, color=per-class accuracy.
+    Saved as E2_class{c:02d}_{name}.png
+    """
+    print('E2  Per-class accuracy trajectory (20 figures)')
+
+    # Pre-load all data: all_data[alg][k] = per_class dict
+    all_data   = {alg: {} for alg in ALGS}
+    epochs_ref = None
+    max_t      = 0
+    for alg in ALGS:
+        for k in KS:
+            d = read_per_class(alg, k)
+            if d is not None:
+                all_data[alg][k] = d
+                if epochs_ref is None:
+                    epochs_ref = d['epochs']
+                max_t = max(max_t, len(d['overall']))
+
+    if epochs_ref is None:
+        epochs_ref = list(range(10, 10 * max_t + 1, 10))
+
+    for c in range(C):
+        cls_label = class_names[c] if class_names else f'class_{c}'
+        fig, axes = plt.subplots(1, len(ALGS),
+                                  figsize=(4 * len(ALGS), 6),
+                                  sharey=True)
+        fig.suptitle(
+            f'Per-class Accuracy Trajectory  —  C={C}  [{c}] {cls_label}',
+            fontsize=12, fontweight='bold')
+
+        im_ref = None
+        for ax, alg in zip(axes, ALGS):
+            mat = np.full((max_t, len(KS)), np.nan)
+            for k_idx, k in enumerate(KS):
+                if k in all_data[alg]:
+                    col_data = all_data[alg][k]['acc_mat'][:, c]
+                    mat[:len(col_data), k_idx] = col_data
+
+            im_ref = ax.imshow(mat, aspect='auto', origin='lower',
+                               cmap='RdYlGn', vmin=0, vmax=100,
+                               interpolation='nearest')
+            ax.set_title(alg, fontsize=10, fontweight='bold')
+            ax.set_xlabel('k', fontsize=9)
+            ax.set_xticks(range(len(KS)))
+            ax.set_xticklabels(KS, fontsize=7)
+
+            if ax is axes[0]:
+                ax.set_ylabel('Epoch checkpoint', fontsize=9)
+                ax.set_yticks(range(len(epochs_ref)))
+                ax.set_yticklabels(epochs_ref, fontsize=6)
+
+        if im_ref is not None:
+            fig.colorbar(im_ref, ax=list(axes),
+                         label=f'Accuracy (%)  [{cls_label}]',
+                         shrink=0.7, pad=0.02)
+
+        fname = f'E2_class{c:02d}_{cls_label}.png'
+        _save(fig, fname)
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
@@ -470,6 +535,7 @@ def main():
     run('D2', plot_D2)
     run('D3', plot_D3, class_names)
     run('E1', plot_E1)
+    run('E2', plot_E2, class_names)
 
     print(f'\nAll done — output: {OUT}/')
 
