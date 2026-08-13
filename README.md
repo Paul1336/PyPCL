@@ -42,7 +42,23 @@ For generated datasets, the following parameters are available:
 
 ## Usage
 
-Run experiments using `run_experiment.py`. Hyperparameters can be set via command-line arguments or in `config.yaml`.
+### Comparing algorithms (recommended)
+
+`scripts/run_pipeline.py` trains and compares all algorithms above on CIFAR-100 class-subsets (choose how many classes `C` and how many candidate labels `k` per sample):
+
+```bash
+python scripts/run_pipeline.py run --run_name demo \
+    --algorithms CLPL PRODEN MCL-LOG PiCO ComCo SoLar \
+    --c_values 5 20 --epochs 200
+
+python scripts/run_pipeline.py plot --runs demo --out plots/demo/summary.png
+```
+
+It also supports multi-GPU sharding (`--gpu_id`/`--num_gpus`), resuming interrupted runs, and merging results independently of training (`merge` subcommand). See `CLAUDE.md` for the full option list and `src/pipeline/` for the implementation.
+
+### Full-dataset experiments
+
+`run_experiment.py` trains PiCO, Proden, SoLar, and MCL on complete CIFAR-10/CIFAR-20/CLCIFAR datasets. Hyperparameters can be set via command-line arguments or in `config.yaml`.
 
 | Parameter | Description |
 | --- | --- |
