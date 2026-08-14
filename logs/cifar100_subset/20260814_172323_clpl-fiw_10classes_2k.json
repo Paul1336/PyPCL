@@ -1,0 +1,10 @@
+{
+  "dataset": "clpl-fiw",
+  "total_classes": 10,
+  "n_partial_labels": 2,
+  "n_complementary_labels": 8,
+  "seed": 42,
+  "n_train": 400,
+  "n_test": 100,
+  "timestamp": "2026-08-14T17:23:23.946640"
+}

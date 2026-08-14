@@ -1,0 +1,2 @@
+total_classes,k,algorithm,seed,final_accuracy,epochs,training_time_s,timestamp,git_commit
+5,1,SoLar,42,76.6,2,269.1,2026-08-13T23:48:13.414331,74c48a0

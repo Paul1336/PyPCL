@@ -1,8 +1,75 @@
 # 論文 ↔ 實作對應：主引導文件
 
-> **這份文件是給「未來 session」的入口點**，不是任務本身的完成報告。目前只完成了「文件骨架 +
-> 程式碼對應」，論文公式逐項比對、`fixed_` 修正實作、實驗 config 都還沒開始（見下方各節的
-> 前置條件與範圍）。如果你是被指派來接續這個任務的 session，請先讀完這份文件再開始動手。
+> **這份文件是給「未來 session」的入口點**。截至 **2026-08-14**：使用者提供了 6 篇論文 PDF
+> （`C:\Users\User\Desktop\papers\{CLPL,ComCo,MCL-LOG,PRODEN,PiCO,SCL-NL}.pdf`），這 6 篇已經
+> **完整跑完 Step 1-5**（README/程式碼註解、公式逐項比對、benchmark 查證、fixed 版本、實驗
+> config）。剩下 **SoLar、OP-W 兩篇還沒有 PDF**，仍停留在 Step 1 骨架階段，需要使用者提供 PDF
+> 才能繼續。如果你是被指派來接續這個任務的 session，請先讀完下方「完成度追蹤表」確認目前狀態，
+> 再決定要做哪一塊。
+>
+> **同一天（2026-08-14）稍後**：pipeline 進一步擴充，新增了 `--dataset` 旗標，讓 6 篇論文的
+> **原始 benchmark**（不只是 CIFAR 衍生資料）現在真的可以透過主 pipeline 跑實驗。詳見下方
+> 「資料集支援（`--dataset`）」一節，以及 `docs/dataset_availability_report.md`。
+>
+> **同一天再稍後**：裝了 `pypdf`（純文字擷取，不需要 poppler/pdftoppm），對 6 篇論文全部重新做
+> 一次逐字覆核（不是重新讀論文，是拿已經寫好的文件對照論文原文抓漏）。**結果：6 篇文件的公式
+> 轉錄跟保真度判定全部正確，沒有發現新的錯誤**，包括先前發現的兩個 bug（MCL-LOG 的 scaling
+> factor、ComCo 的分類損失 scaling）都用論文原文的精確字句再次確認過。每篇文件的開頭都補上了
+> 「二次覆核」段落，附上關鍵原文引用。這次覆核順便也用同樣的方法確認了 CIFAR-100-H 的真正生成
+> 方式（見「資料集支援」一節），過程中發現並修正了一個原本沒抓到的落差（k-based vs 論文實際的
+> q-based 生成）。
+
+## 資料集支援（`--dataset`）
+
+前面 Step 3 的比對發現：這 6 篇論文的原始 benchmark 大多不是 CIFAR（見「Step 3 的一個重要提醒」
+一節）。這次新增了一個**資料集註冊架構**（仿照既有的演算法 registry pattern，見
+`src/pipeline/datasets/`），讓 `scripts/run_pipeline.py run` 可以用 `--dataset <name>` 選擇
+訓練資料集，不再只能用 CIFAR-100 子集。**每一個都在本機真的跑過一次端到端訓練驗證過**（不只是
+語法檢查），細節見 `src/pipeline/datasets/` 底下每個模組的 docstring。
+
+| `--dataset` 值 | 對應論文 | 型態 | 備註 |
+|---|---|---|---|
+| `cifar100-subset`（預設） | — | 影像 | 原本就有，行為完全不變（已用回歸測試確認） |
+| `mnist` / `fashion-mnist` / `kmnist` | PRODEN, MCL-LOG, SCL-NL | 影像（灰階，28×28） | torchvision 內建；不支援 PiCO/ComCo/SoLar（灰階） |
+| `dermatology` / `ecoli` / `abalone` / `yeast` / `synthetic-control` | PRODEN, MCL-LOG | 表格（UCI） | MLP backbone；只支援 simple-shape 演算法 |
+| `20newsgroups` | MCL-LOG | 文字（TF-IDF） | MLP backbone；只支援 simple-shape 演算法 |
+| `cub200` | PiCO, ComCo | 影像（RGB，實際下載自 HuggingFace mirror，官方 Caltech 連結已死） | 64×64 resize（原始解析度跟本專案 CNN 架構不搭，細節見 `cub200.py` docstring） |
+| `cifar100-h` | PiCO | 影像 | CIFAR-100 + 階層式（同 coarse superclass）候選集生成，q=0.5（**論文原文逐字確認過**，見下方） |
+| `sun397` | ComCo | 影像（RGB） | **程式碼已寫好、已註冊，但因資料集過大（~17-37GB）沒有實際下載驗證過**，見下方 |
+| `lost` / `msrcv2` / `birdsong` / `soccer-player` / `yahoo-news` | PRODEN, MCL-LOG | 表格（**真實候選集**，非合成） | 5 個經典 PLL 真實資料集；CL 為 PL 補集合成，訓練時會印出警告 |
+| `clpl-lost` | CLPL | 影像（RGB，**真實候選集**） | CLPL 論文自己的原始資料，跟 `lost`（表格版）是同一組底層資料的兩種特徵表示 |
+| `clpl-fiw` | CLPL | 影像（灰階，48×48） | CLPL 論文的 LFW 衍生資料，乾淨標籤，合成生成候選集 |
+
+**已知限制/待辦**：
+- ~~`soccer-player`、`yahoo-news` 未驗證~~ **已解決（2026-08-14 稍後補做）**：兩個都實際下載
+  （36MB/28.7MB）+ 解析 + 訓練驗證過，維度跟論文完全吻合（Soccer Player：17472 樣本/279 特徵/
+  171 類；Yahoo!News：22991 樣本/163 特徵/219 類）。5 個真實 PLL 資料集現在全部驗證完畢。
+- ~~`cifar100-h` 定義未經論文原文確認~~ **已解決**：改用 `pypdf`（純文字擷取，不需要
+  `pdftoppm`/poppler）直接讀出 PiCO 論文 Section 4.4 原文，逐字確認："CIFAR-100 with hierarchical
+  labels (CIFAR-100-H), where we generate candidate labels that belong to the same superclass...
+  We set q=0.5 for CIFAR-100 with hierarchical labels"——**是 q 機率式生成（每個同 superclass 的
+  假標籤各自獨立以機率 q 被加入候選集），不是固定大小 k**，跟原本實作的 k-based 版本不同。已修正：
+  `ComparisonDataGenerator` 新增 `generate_pl_dataset_hierarchical_variable(q, class_coarse)`
+  （論文精確版），`--dataset cifar100-h` 現在預設用這個（q=0.5，論文 Table 3 的主要設定），原本的
+  k-based 版本（`generate_pl_dataset_hierarchical`）保留但不再是 `--dataset cifar100-h` 的預設路徑
+  ——因為本 pipeline 的 CLI 是圍繞 k-sweep 設計的，q-based 生成改成單一 cell（`DatasetSpec.
+  sweeps_k=False`，跟 preambiguous 資料集共用同一套機制），不支援像 k 一樣 sweep 多個 q 值。用
+  獨立單元測試驗證過生成邏輯正確（候選集絕不跨 superclass、平均候選集大小 ≈ 3.03，符合
+  q=0.5 時 1+Binomial(4,0.5) 的理論期望值 3）。**用小 C 子集跑時，大部分樣本會因為同 superclass
+  的其他類別沒被選進子集而 fallback 成均勻採樣**（C=20 時約 85% fallback）——這個模式在 C 接近
+  100（用滿所有類別）時才最有意義，程式碼會印出 fallback 比例，不會靜默發生。
+- `sun397`（ComCo Section 5.6 的補充實驗）**程式碼已經寫好、註冊進 registry**（跟 `cub200` 同一套
+  lazy-path 載入機制，`src/pipeline/datasets/sun397.py`），但這次沒有實際觸發下載——HuggingFace
+  上找到的最小 mirror（`tanganke/sun397`）也要 ~17GB，官方 torchvision 版本更是 ~37GB，評估後
+  判斷這次不值得為了驗證下載這麼大的資料。**第一次真的用 `--dataset sun397` 之前，建議先用
+  `--epochs 1 --batch_size 16` 之類的小規模設定跑一次 smoke test**，確認下載、解壓、訓練整條路徑
+  沒問題，不要直接假設能跑。
+- `--dataset` 目前只有 `run` 子指令支援；`plot` 子指令、`results.py::load_results` 還沒有
+  按資料集分開畫圖的邏輯（多資料集混在同一個 run 裡畫圖時，同樣的 (C,k,algorithm) 在不同資料集
+  下會互相覆蓋，只是畫圖層級的限制，`results.csv` 本身的資料是正確分開存的）。
+- Phase 0 的探測腳本 `scripts/probe_dataset_availability.py` 值得定期重跑，因為這次用到的幾個
+  外部資料來源都是個人學術網頁/非官方鏡像（`timotheecour.com`、`palm.seu.edu.cn`），沒有 SLA
+  保證長期可用。
 
 ## 任務由來
 
@@ -18,7 +85,11 @@
 這 5 步驟工作量很大、且部分依賴讀論文原文才能完成，因此**先產出這份引導文件**，讓工作可以被拆分到
 多個 session 接力完成，而不是一次做完。
 
-## 前置條件：主 Pipeline 尚未驗證可跑
+## Pipeline 狀態：已在 server 上驗證可跑
+
+**2026-08-14 更新**：使用者已在自己的 server 上（已有下載好的 CIFAR-100）成功跑過新版 pipeline，
+Step 4/5 的前置條件已解除。以下維持原本對兩套 pipeline 架構的記錄，供之後理解程式碼時參考；
+「尚未驗證可跑」的內容已不適用，僅保留在文件下方當歷史記錄。
 
 repo 裡現在有兩套 pipeline：
 
@@ -64,20 +135,23 @@ config key 對得上），但**在本機環境從來沒有成功跑完一次真�
 
 ## 論文 ↔ 程式碼對應總表
 
-| 論文 | Algorithm ID | 主要程式碼 | 新版 entry point | 舊版 entry point | 對應文件 |
+| 論文 | Algorithm ID | Fixed 版 Algorithm ID | 主要程式碼 | 新版 entry point | 對應文件 |
 |---|---|---|---|---|---|
-| PRODEN — Lv et al., ICML 2020 | `PRODEN` | `src/proden_loss.py` (`ProdenLoss`) | `run_proden`（`pipeline/algorithms/runners.py:194`） | `setup_proden`（`model_setup.py:21`）/ `run_proden_training`（`training_pipelines.py:15`） | [proden_explanation.md](proden_explanation.md) |
-| Cour 2011 / CLPL — Cour, Sapp & Taskar, JMLR 2011 | `CLPL` | `src/clpl_loss.py` (`CLPLSquaredHingeLoss`) | `run_clpl`（`runners.py:126`） | `setup_cour`（`model_setup.py:14`）/ `run_cour_training`（`training_pipelines.py:5`） | [cour2011_explanation.md](cour2011_explanation.md)（**已修正**，原本誤指到孤兒檔案，見下方已知缺陷） |
-| PiCO — Wang et al., ICLR 2022 | `PiCO` | `src/pico/model.py` (`PiCOModel`), `src/pico/utils_loss.py` (`PartialLoss`, `SupConLoss`) | `run_pico`（`runners.py:228`） | `setup_pico`（`model_setup.py:78`）/ `run_pico_training`（`training_pipelines.py:69`） | [pico_explanation.md](pico_explanation.md) |
-| SoLar — Wang et al., NeurIPS 2022 | `SoLar` | `src/solar/utils_loss.py` (`partial_loss`), `src/solar/utils_algo.py` (`sinkhorn`, `linear_rampup`) | `run_solar`（`runners.py:387`） | `setup_solar`（`model_setup.py:149`）/ `run_solar_training`（`training_pipelines.py:155`） | [solar_explanation.md](solar_explanation.md) |
-| MCL-LOG — Feng et al., ICML 2020 | `MCL-LOG` | `src/mcl_losses.py` (`MCL_LOG`；`MCL_MAE`/`MCL_EXP` 同檔) | `run_mcl_log`（`runners.py:134`） | `setup_mcl`（`model_setup.py:28`，`loss_type` 參數化）/ `run_mcl_training`（`training_pipelines.py:25`） | [mcl_explanation.md](mcl_explanation.md) |
-| SCL-NL — Chou et al., ICML 2020 | `SCL-NL` | `src/scl_loss.py` (`SCL_NL`) | `run_scl_nl`（`runners.py:138`） | `setup_scl`（`model_setup.py:42`）/ `run_scl_training`（`training_pipelines.py:35`） | [scl_nl_explanation.md](scl_nl_explanation.md) |
-| OP-W — Liu et al., AISTATS 2023 | `OP-W`（`OP` 亦存在） | `src/op_loss.py` (`OPWLoss`；`OPLoss`同檔) | `run_op_w`（`runners.py:146`），`run_op`（`runners.py:142`） | 無（只在新版 pipeline） | [op_w_explanation.md](op_w_explanation.md) |
-| ComCo — Jiang, Sun & Tian, Neural Networks 2024 | `ComCo` | `src/comco/model.py` (`ComCoModel`), `src/comco/utils_loss.py` (`ComCoCLSLoss`, `ComCoContrastiveLoss`) | `run_comco`（`runners.py:348`） | `setup_comco`（`model_setup.py`，**重複定義**見下）/ `run_comco_training`（`training_pipelines.py`，**重複定義**見下） | [comco_explanation.md](comco_explanation.md) |
+| PRODEN — Lv et al., ICML 2020 | `PRODEN` | 不需要（`ProdenLoss` 忠實） | `src/proden_loss.py` (`ProdenLoss`) | `run_proden`（`runners.py:194`） | [proden_explanation.md](proden_explanation.md) |
+| Cour 2011 / CLPL — Cour, Sapp & Taskar, JMLR 2011 | `CLPL` | 不需要（忠實） | `src/clpl_loss.py` (`CLPLSquaredHingeLoss`) | `run_clpl`（`runners.py:126`） | [cour2011_explanation.md](cour2011_explanation.md)（**已修正**，原本誤指到孤兒檔案） |
+| PiCO — Wang et al., ICLR 2022 | `PiCO` | `PiCO-Fixed`（warm-up 機制修正） | `src/pico/model.py`、`src/pico/utils_loss.py` | `run_pico`（`runners.py`） | [pico_explanation.md](pico_explanation.md) |
+| SoLar — Wang et al., NeurIPS 2022 | `SoLar` | **尚無 PDF，未開始** | `src/solar/utils_loss.py`、`src/solar/utils_algo.py` | `run_solar`（`runners.py`） | [solar_explanation.md](solar_explanation.md) |
+| MCL-LOG — Feng et al., ICML 2020 | `MCL-LOG` | `MCL-LOG-Fixed`（URE scaling 修正） | `src/mcl_losses.py` (`MCL_LOG`) | `run_mcl_log`（`runners.py`） | [mcl_explanation.md](mcl_explanation.md) |
+| SCL-NL — Chou et al., ICML 2020 | `SCL-NL` | 不需要（單CL公式忠實） | `src/scl_loss.py` (`SCL_NL`) | `run_scl_nl`（`runners.py`） | [scl_nl_explanation.md](scl_nl_explanation.md) |
+| OP-W — Liu et al., AISTATS 2023 | `OP-W`（`OP` 亦存在） | **尚無 PDF，未開始** | `src/op_loss.py` (`OPWLoss`) | `run_op_w`（`runners.py`） | [op_w_explanation.md](op_w_explanation.md) |
+| ComCo — Jiang, Sun & Tian, Neural Networks 2024 | `ComCo` | `ComCo-Fixed`（分類損失 scaling 修正） | `src/comco/model.py`、`src/comco/utils_loss.py` | `run_comco`（`runners.py`） | [comco_explanation.md](comco_explanation.md) |
 
 > repo 內另外還有 6 個沒有對應到使用者這份論文清單的演算法（`Wu2022`、`PiCO-MCL`、`PiCO-SC`、
-> `PiCO-CLS`、`MCL-MAE`、`MCL-EXP`、`CPE`）。依使用者指示，**這份引導文件不處理它們**，範圍只限定在
-> 上表 8 篇論文。
+> `PiCO-CLS`、`MCL-MAE`/`MCL-EXP`、`CPE`）。依使用者指示，**這份引導文件不處理它們**，範圍只限定在
+> 上表 8 篇論文。（`MCL-MAE`/`MCL-EXP` 的 fixed 版本 `FixedMCLMae`/`FixedMCLExp` 已經在
+> `src/fixed_mcl_losses.py` 裡順手寫好——因為跟 `MCL_LOG` 是同一個 scaling bug、同一個檔案，
+> 修 `MCL_LOG` 時一起改了——但目前**沒有註冊進 pipeline registry**，因為 MAE/EXP 本身不在這次
+> 8 篇論文範圍內，是否要註冊留給之後需要用到的 session 決定。）
 
 ## 完成度追蹤表
 
@@ -86,70 +160,98 @@ config key 對得上），但**在本機環境從來沒有成功跑完一次真�
 
 | 論文 | Step 1（README+註解） | Step 2（保真度比對） | Step 3（benchmark 標註） | Step 4（fixed 實作） | Step 5（實驗 config） |
 |---|---|---|---|---|---|
-| PRODEN | ☐ | ☐（骨架已建，公式比對待填） | ☐（待填） | ☐ | ☐ |
-| Cour2011/CLPL | ☐ | ☐（骨架已建並修正程式碼指向，公式比對待填） | ☐（待填） | ☐ | ☐ |
-| PiCO | ☐ | ☐（骨架已建，公式比對待填） | ☐（待填） | ☐ | ☐ |
-| SoLar | ☐ | ☐（骨架已建，公式比對待填） | ☐（待填） | ☐ | ☐ |
-| MCL-LOG | ☐ | ☐（骨架已建，公式比對待填） | ☐（待填） | ☐ | ☐ |
-| SCL-NL | ☐ | ☐（骨架已建，公式比對待填） | ☐（待填） | ☐ | ☐ |
-| OP-W | ☐ | ☐（骨架已建，公式比對待填） | ☐（待填） | ☐ | ☐ |
-| ComCo | ☐ | ☐（骨架已建，公式比對待填） | ☐（待填） | ☐ | ☐ |
+| PRODEN | ✅ | ✅ 忠實（`ProdenLoss`）；`proden`（舊版 pipeline 專用）有錯但不影響 Step 5 | ✅ MNIST/F-MNIST/K-MNIST/CIFAR-10 + UCI，非本專案資料集 | ✅ 不需要 | ✅ `scripts/run_paper_alignment_experiments.sh` |
+| Cour2011/CLPL | ✅ | ✅ 完全忠實（Eq. 2） | ✅ **完全不是 CIFAR**（UCI/人臉/真實電視劇弱標註） | ✅ 不需要 | ✅ 同上 |
+| PiCO | ✅ | ✅ 核心機制忠實；⚠️ warm-up 機制與預設值不符論文 | ✅ CIFAR-10/100/CUB-200/CIFAR-100-H | ✅ `PiCO-Fixed` | ✅ 同上 |
+| SoLar | ☐ | ☐（骨架已建，**待 PDF**） | ☐（待填） | ☐ | ☐ |
+| MCL-LOG | ✅ | ✅ Loss 公式忠實；❌ **URE scaling factor 錯誤**（已修正） | ✅ MNIST/F-MNIST/K-MNIST/20News/CIFAR-10 + UCI | ✅ `MCL-LOG-Fixed` | ✅ 同上 |
+| SCL-NL | ✅ | ✅ 單CL公式忠實；multi-CL wrapper 無論文依據（非錯誤，僅記錄） | ✅ MNIST/K-MNIST/F-MNIST/CIFAR-10 | ✅ 不需要 | ✅ 同上 |
+| OP-W | ☐ | ☐（骨架已建，**待 PDF**） | ☐（待填） | ☐ | ☐ |
+| ComCo | ✅ | ✅ 對比損失完全忠實；❌ **分類損失 scaling 錯誤**（已修正） | ✅ 6 資料集 5 協定，遠比本專案評測範圍廣 | ✅ `ComCo-Fixed` | ✅ 同上 |
 
-Step 4/5 在 pipeline 前置條件（見上）完成之前不要開始。
+**SoLar、OP-W 需要使用者提供論文 PDF 才能繼續**（放到 `C:\Users\User\Desktop\papers\SoLar.pdf`、
+`C:\Users\User\Desktop\papers\OP-W.pdf`，流程比照這次 6 篇的做法：讀 PDF → 對照
+`src/solar/utils_loss.py`/`utils_algo.py`（或 `src/op_loss.py`）逐項比對 → 更新對應骨架文件 →
+視發現決定是否需要 fixed 版本）。
+
+## Step 5 實驗腳本
+
+`scripts/run_paper_alignment_experiments.sh` 已經把這 6 篇論文的實驗 config 整理成一支可執行腳本：
+- Group A：3 組有 bug 的演算法（`MCL-LOG`/`ComCo`/`PiCO`）跟各自的 `-Fixed` 版本並排跑
+- Group B：3 個已驗證忠實、不需要 fixed 版本的演算法（`CLPL`/`PRODEN`/`SCL-NL`）
+- Group C（選用）：貼近各篇論文原始訓練規模的對照組（batch size / epoch 數不同，仍在本專案的
+  CIFAR-100 子集資料上跑，不是複現論文原始 benchmark——後者需要新的 dataset loader，見上方
+  「Step 3 的一個重要提醒」）
+
+之後 SoLar、OP-W 做完 Step 4/5，應該把對應的 `run_pipeline.py` 指令一併加進這支腳本，保持
+「一支腳本涵蓋所有已完成論文的實驗」。
 
 ## `fixed_` 命名慣例（Step 4 用）
 
 - 單檔案演算法（PRODEN、CLPL、MCL、SCL-NL、OP-W）：在同一層新增 `fixed_<原檔名>.py`
-  （例如 `src/fixed_proden_loss.py`），類別名稱前綴 `Fixed`（例如 `FixedProdenLoss`）。
+  （例如 `src/fixed_mcl_losses.py`），類別名稱前綴 `Fixed`（例如 `FixedMCLLog`）。
 - 子套件演算法（PiCO、SoLar、ComCo）：在同一子套件目錄下新增 `fixed_<原檔名>.py`
-  （例如 `src/pico/fixed_utils_loss.py`），不要新建整個平行子套件。
+  （例如 `src/comco/fixed_utils_loss.py`），不要新建整個平行子套件。例外：PiCO 這次的落差在
+  訓練迴圈（`src/engine.py::train_pico_epoch`）而不是 loss/model 檔案，因此放在
+  `src/fixed_pico_engine.py`（跟 `src/pico/` 平行，不是子套件內），內含
+  `train_pico_epoch_fixed`——如果未來又遇到「落差在訓練迴圈而非 loss class」的情況，可以參考這個
+  先例，不用勉強塞進 loss 檔案的 `fixed_` 版本裡。
 - **每個 `fixed_*` 檔案開頭要有一段註解，寫清楚**：改了哪裡、對應到該論文 Step 2 文件裡的哪一項
   差異、為什麼這樣改才符合原論文。不要沒有依據地「順手改」——所有修改都必須能回溯到 Step 2 的
   比對結論。
-- `fixed_*` 完成後，要註冊進 `src/pipeline/algorithms/__init__.py`（新增一個 `AlgorithmSpec`，
-  Algorithm ID 建議用 `<原ID>-Fixed`，例如 `PRODEN-Fixed`），並在該論文的 Step 4 章節補上連結。
-- 寫完後至少跑一次 pipeline smoke test（1 epoch）確認能跑，再進入 Step 5。
+- `fixed_*` 完成後，要註冊進 `src/pipeline/algorithms/__init__.py`（新增一個 `AlgorithmSpec`）、
+  `src/pipeline/algorithms/hparams.py`（`ALGO_HPARAMS` 加一行，通常跟原版用同一組超參數）、
+  以及對應的 `run_*_fixed` 函式（`src/pipeline/algorithms/runners.py`），Algorithm ID 用
+  `<原ID>-Fixed`。已完成的三個範例可以直接參考：`MCL-LOG-Fixed`、`PiCO-Fixed`、`ComCo-Fixed`。
+- **不是每篇論文都需要 fixed 版本**——這次 6 篇裡有 3 篇（PRODEN 的 `ProdenLoss`、CLPL、SCL-NL
+  的單CL公式）逐項比對後完全忠實，沒有產出 fixed 版本，這是正確且預期的結果，不要為了「湊數」
+  硬找一個要修的地方。
 
-## 已知程式碼缺陷（Step 2/4 時請一併留意）
+## 已知程式碼缺陷
 
-這些是本次探索（讀程式碼，尚未讀論文）已經發現、但還沒有處理的問題：
-
-1. **`src/cour_loss.py` 是孤兒檔案**：定義 `UniformCandidateCrossEntropyLoss`（別名 `CourLoss`），
-   均等平均候選標籤的 CE loss，但完全沒有被 `model_setup.py`、`training_pipelines.py`、
-   `pipeline/algorithms/runners.py` 任何一處匯入。它自己的 docstring 也承認「NOTE: This is NOT the
-   CLPL loss from Cour, Sapp & Taskar (JMLR 2011)... kept for reference and backward-compatibility
-   with earlier experiment runs」。真正被使用、對應論文的是 `src/clpl_loss.py` 的
-   `CLPLSquaredHingeLoss`。**下一個 session 處理 CLPL 論文文件時，需要決定 `cour_loss.py` 到底要
-   刪除、保留當歷史備查、還是重新命名成不會混淆的名字**——不要直接刪，先確認是否有舊實驗結果依賴它。
-2. **`setup_comco` 重複定義**：`src/model_setup.py` 裡定義了兩次（約第 52 行、第 96 行），內容幾乎
-   相同，後者會覆蓋前者。`src/training_pipelines.py` 的 `run_comco_training` 同樣重複定義。屬於
-   copy-paste 遺留的死碼，處理 ComCo 論文文件時要清理。
-3. **`MCL_MAE`/`MCL_EXP` 未註冊進新版 pipeline**：兩者都在 `src/mcl_losses.py` 裡定義好，且能透過
-   舊版 pipeline 的 `setup_mcl(loss_type='mae'|'exp')` 執行，但 `pipeline/algorithms/__init__.py`
-   只註冊了 `MCL-LOG`。使用者這次只要求 MCL-LOG 對應的論文（Feng et al. 2020 涵蓋三種變體），
-   Step 2 文件應該提到 MAE/EXP 的存在，但註冊與否留給該 session 判斷是否在範圍內。
-4. **`moco_queue % batch_size` 的 assert 隱患**：`src/pico/model.py:34`、`src/comco/model.py:35`
-   都有 `assert args['moco_queue'] % batch_size == 0`。目前預設 `batch_size=512`、
-   `moco_queue=8192`（能整除）所以沒事，但 Step 5 設計實驗 config 時，若要用非預設 batch size 掃
-   PiCO / PiCO-MCL / PiCO-SC / ComCo，要先確認整除，否則會直接 crash。
-5. **`scripts/run_pipeline.py` docstring 與現實不符**：宣稱舊 script 已搬到 `scripts/legacy/`，但
-   該目錄不存在，57 支舊 script 仍全部留在 `scripts/` 底下。屬於遷移工作本身沒做完，不影響
-   Step 1–5 的內容，但如果之後有 session 要動 `scripts/` 目錄結構，先知道這件事。
+1. **`src/cour_loss.py` 是孤兒檔案**（**尚未處理**）：定義 `UniformCandidateCrossEntropyLoss`
+   （別名 `CourLoss`），均等平均候選標籤的 CE loss，但完全沒有被 `model_setup.py`、
+   `training_pipelines.py`、`pipeline/algorithms/runners.py` 任何一處匯入。它自己的 docstring
+   也承認「NOTE: This is NOT the CLPL loss from Cour, Sapp & Taskar (JMLR 2011)...」。真正被使用、
+   對應論文的是 `src/clpl_loss.py` 的 `CLPLSquaredHingeLoss`（已於 2026-08-14 驗證忠實）。
+   **仍待決定**：`cour_loss.py` 到底要刪除、保留當歷史備查、還是重新命名——不要直接刪，先確認是否
+   有舊實驗結果依賴它。
+2. **`setup_comco` 重複定義**（**尚未處理**）：`src/model_setup.py` 裡定義了兩次（約第 52 行、
+   第 96 行），內容幾乎相同，後者會覆蓋前者。`src/training_pipelines.py` 的 `run_comco_training`
+   同樣重複定義。屬於 copy-paste 遺留的死碼，只影響舊版 pipeline，不影響 Step 5 用的新版 pipeline。
+3. **`MCL_MAE`/`MCL_EXP` 未註冊進新版 pipeline**（**部分處理**）：兩者的 scaling bug 已經跟
+   `MCL_LOG` 一起修正，`FixedMCLMae`/`FixedMCLExp` 已經寫在 `src/fixed_mcl_losses.py` 裡，但
+   **原版跟 fixed 版都還沒註冊進 `pipeline/algorithms/__init__.py`**（不在這次 8 篇論文範圍內）。
+4. **`moco_queue % batch_size` 的 assert 隱患**（**仍要留意**）：`src/pico/model.py:34`、
+   `src/comco/model.py:35` 都有 `assert args['moco_queue'] % batch_size == 0`。目前預設
+   `batch_size=512`、`moco_queue=8192`（能整除）所以沒事，但若要用非預設 batch size 掃
+   PiCO / PiCO-Fixed / PiCO-MCL / PiCO-SC / ComCo / ComCo-Fixed，要先確認整除，否則會直接 crash。
+5. ~~`scripts/run_pipeline.py` docstring 與現實不符~~ **已解決**：`scripts/legacy/` 已建立，
+   57 支舊 script 都搬過去了（2026-08-14 之前完成，詳見「Pipeline 狀態」一節）。
 
 ## Step 3 的一個重要提醒：原論文 benchmark 不一定是 CIFAR
 
 目前 pipeline（新舊皆然）只支援 CIFAR-10 / CIFAR-20 / CIFAR-100 子集 / CLCIFAR-10 / CLCIFAR-20。
-但論文原始實驗不一定用 CIFAR。已知的落差（尚未逐篇查證，僅先標記提醒）：
+但論文原始實驗不一定用 CIFAR。**6 篇已完成查證的論文，結論如下**：
 
-- **Cour 2011**：原論文用的是 Yahoo! News、MSRCv2、Lost 等人臉/物件辨識 partial-label 資料集，
-  跟 CIFAR 完全是不同模態的資料。用 CIFAR 近似是「借用同一套損失函數在不同資料集上驗證」，並不是
-  複現原論文的實驗設定，Step 3 文件要把這點講清楚，不要含糊帶過。
-- 其餘 7 篇論文大多本來就有用 CIFAR-10/CIFAR-100（有些變體），需要在各自 Step 3 文件裡確認真正
-  用的是哪個切分、有沒有用 PLL/CLL 特化的合成噪聲設定，再對照目前 pipeline 的 CIFAR-10/20/100
-  子集生成方式（`src/data_setup.py`、`src/cifar100_subset.py`）是否一致。
-- 如果原論文 benchmark 現有 pipeline 無法近似（例如需要全新的 dataset loader），**不要自行假設
-  要不要新增**——先在該論文的 Step 3 文件寫清楚落差，交由使用者決定是否要擴充 pipeline 支援新資料集，
-  這超出「用現有主 pipeline 生成 config」的範圍。
+- **CLPL (Cour 2011)**：原論文完全沒用 CIFAR，用的是 UCI 表格資料（dermatology/ecoli/abalone）、
+  LFW 人臉、以及真實電視劇（*Lost*/*C.S.I.*）弱標註資料。用 CIFAR 近似是「借用同一套損失函數在
+  不同資料集上驗證」，不是複現原論文實驗。
+- **PRODEN**：用 MNIST/Fashion-MNIST/Kuzushiji-MNIST/CIFAR-10 + UCI + 5 個真實 PLL 資料集，
+  **沒有 CIFAR-20/CLCIFAR**。CIFAR-10 用 12 層 ConvNet／32 層 ResNet（本專案是 ResNet-18）。
+- **PiCO**：CIFAR-10/CIFAR-100/CUB-200/CIFAR-100-H，**沒有本專案的 CIFAR-20/CLCIFAR**。
+- **MCL-LOG**：MNIST/Kuzushiji-MNIST/Fashion-MNIST/20Newsgroups/CIFAR-10 + UCI，**沒有 CIFAR-20**。
+- **SCL-NL**：MNIST/Kuzushiji-MNIST/Fashion-MNIST/CIFAR-10，**沒有 CIFAR-20**。
+- **ComCo**：MNIST/Fashion-MNIST/KMNIST/CIFAR-10/CIFAR-100/CUB-200/SUN-397，共 6 資料集 5 種
+  互補標籤生成協定，遠比本專案評測範圍廣，且生成方式（unbiased/biased/MCLL）跟本專案的
+  PL-補集生成方式都不一樣。
+
+**共同結論：本專案在 CIFAR-100 子集上跑這些方法，都不是「複現論文結果」，是「用同一套已驗證忠實的
+損失函數在架構上做驗證」。** 若要真正複現任何一篇論文的原始 benchmark，需要新增對應的 dataset
+loader（UCI/人臉/語音、或補齊 CUB-200/SUN-397/20Newsgroups 等），這超出「用現有主 pipeline 生成
+config」的範圍，不要自行假設要不要新增，留給使用者決定。
+
+**SoLar、OP-W 尚未查證**，需要等 PDF。
 
 ## 每篇論文文件的標準模板
 

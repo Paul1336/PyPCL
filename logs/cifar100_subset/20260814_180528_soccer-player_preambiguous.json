@@ -1,0 +1,9 @@
+{
+  "dataset": "soccer-player",
+  "total_classes": 171,
+  "mode": "preambiguous",
+  "n_train": 13978,
+  "n_test": 3494,
+  "seed": 42,
+  "timestamp": "2026-08-14T18:05:28.698800"
+}

@@ -23,6 +23,21 @@ from src.data_utils import ComparisonDataGenerator, WeaklySupervisedDataset
 _MEAN = [0.4914, 0.4822, 0.4465]
 _STD  = [0.247,  0.2435, 0.2616]
 
+# CIFAR-100's fine-label (0-99) -> coarse-superclass (0-19) mapping, extracted
+# directly from the dataset's own pickled 'coarse_labels' field (see
+# docs/00_paper_alignment_guide.md's Phase 3 notes) -- not reconstructed from
+# memory, to avoid a transcription error across 100 entries. Used by the
+# 'cifar100-h' DatasetSpec (src/pipeline/datasets/cifar100_h.py) for
+# hierarchical (same-superclass) partial-label generation, per PiCO's
+# "CIFAR-100-H" setting.
+_CIFAR100_FINE_TO_COARSE = [
+    4, 1, 14, 8, 0, 6, 7, 7, 18, 3, 3, 14, 9, 18, 7, 11, 3, 9, 7, 11,
+    6, 11, 5, 10, 7, 6, 13, 15, 3, 15, 0, 11, 1, 10, 12, 14, 16, 9, 11, 5,
+    5, 19, 8, 8, 15, 13, 14, 17, 18, 10, 16, 4, 17, 4, 2, 0, 17, 4, 18, 17,
+    10, 3, 2, 12, 12, 16, 12, 1, 9, 19, 2, 10, 0, 1, 16, 12, 9, 13, 15, 13,
+    16, 19, 2, 4, 6, 19, 5, 5, 8, 19, 18, 1, 2, 15, 6, 0, 17, 8, 14, 13,
+]
+
 # ---------------------------------------------------------------------------
 # In-process CIFAR-100 cache
 # Avoids re-reading the ~170 MB dataset from disk on every (C, k) call.
@@ -113,6 +128,8 @@ def prepare_cifar100_subset(
     data_dir: str,
     seed: int = 42,
     log_dir: str = "logs/cifar100_subset",
+    hierarchical: bool = False,
+    hierarchical_q: float = None,
 ):
     """
     Loads CIFAR-100, selects `total_classes` classes, generates PL labels
@@ -122,9 +139,23 @@ def prepare_cifar100_subset(
     Args:
         total_classes:    Number of classes to use (2–100).
         n_partial_labels: k, number of candidate labels per sample (1 ≤ k ≤ C-1).
+                           Ignored when hierarchical_q is set (q-based generation
+                           has no fixed candidate-set size).
         data_dir:         Directory where CIFAR-100 is / will be downloaded.
         seed:             RNG seed for class selection (fixed per total_classes).
         log_dir:          Directory for JSON selection logs.
+        hierarchical:     If True, candidate labels are drawn preferentially from
+                           the same CIFAR-100 coarse superclass as the true label,
+                           with a FIXED candidate-set size k (an adaptation of
+                           PiCO's "CIFAR-100-H" setting to fit this repo's k-swept
+                           CLI -- see ComparisonDataGenerator.generate_pl_dataset_hierarchical).
+                           Mutually exclusive with hierarchical_q.
+        hierarchical_q:   If set (0-1), uses the PAPER-EXACT CIFAR-100-H generation
+                           (Wang et al., ICLR 2022, Sec 4.4): each same-superclass
+                           false label independently included with probability q
+                           (see ComparisonDataGenerator.generate_pl_dataset_hierarchical_variable).
+                           Takes priority over `hierarchical` and `n_partial_labels`
+                           if both are given.
 
     Returns:
         pl_dataset_raw:   WeaklySupervisedDataset with PL targets.
@@ -133,7 +164,7 @@ def prepare_cifar100_subset(
         test_info:        (test_data: np.ndarray, test_targets: list[int]).
         log_info:         dict with selection metadata.
     """
-    if not (1 <= n_partial_labels <= total_classes - 1):
+    if hierarchical_q is None and not (1 <= n_partial_labels <= total_classes - 1):
         raise ValueError(
             f"n_partial_labels must be in [1, {total_classes - 1}], got {n_partial_labels}"
         )
@@ -164,10 +195,20 @@ def prepare_cifar100_subset(
     )
     generator = ComparisonDataGenerator(subset_ds, noise_type='clean', eta=0.0)
 
-    if n_partial_labels == 1:
+    if hierarchical_q is not None:
+        remapped_coarse = [_CIFAR100_FINE_TO_COARSE[orig] for orig in selected_indices]
+        pl_dataset_raw = generator.generate_pl_dataset_hierarchical_variable(
+            q=hierarchical_q, class_coarse=remapped_coarse)
+    elif n_partial_labels == 1:
         # Special case: candidate set = {true_label} only.
         pl_targets = [torch.tensor([t], dtype=torch.long) for t in train_targets]
         pl_dataset_raw = WeaklySupervisedDataset(train_data, pl_targets)
+    elif hierarchical:
+        # Remap the coarse-superclass id of each SELECTED class into the
+        # 0..C-1 label space (same remap as the fine labels themselves).
+        remapped_coarse = [_CIFAR100_FINE_TO_COARSE[orig] for orig in selected_indices]
+        pl_dataset_raw = generator.generate_pl_dataset_hierarchical(
+            k=n_partial_labels, class_coarse=remapped_coarse)
     else:
         pl_dataset_raw = generator.generate_pl_dataset(k=n_partial_labels)
 
@@ -186,25 +227,31 @@ def prepare_cifar100_subset(
         "selected_class_indices":  selected_indices,
         "selected_class_names":    selected_class_names,
         "total_classes":           total_classes,
-        "n_partial_labels":        n_partial_labels,
-        "n_complementary_labels":  total_classes - n_partial_labels,
+        "n_partial_labels":        n_partial_labels if hierarchical_q is None else None,
+        "hierarchical_q":          hierarchical_q,
+        "n_complementary_labels":  total_classes - n_partial_labels if hierarchical_q is None else None,
         "seed":                    seed,
         "n_train":                 len(train_targets),
         "n_test":                  len(test_targets),
         "timestamp":               datetime.now().isoformat(),
     }
     os.makedirs(log_dir, exist_ok=True)
-    log_fname = (
-        f"{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        f"_{total_classes}classes_{n_partial_labels}k.json"
-    )
+    log_suffix = f"{n_partial_labels}k" if hierarchical_q is None else f"q{hierarchical_q}"
+    log_fname = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{total_classes}classes_{log_suffix}.json"
     with open(os.path.join(log_dir, log_fname), "w") as f:
         json.dump(log_info, f, indent=2)
-    print(
-        f"  [log] {total_classes} classes ({selected_class_names[:3]}...), "
-        f"k={n_partial_labels}, m={total_classes - n_partial_labels}, "
-        f"train={len(train_targets)}, test={len(test_targets)}"
-    )
+    if hierarchical_q is None:
+        print(
+            f"  [log] {total_classes} classes ({selected_class_names[:3]}...), "
+            f"k={n_partial_labels}, m={total_classes - n_partial_labels}, "
+            f"train={len(train_targets)}, test={len(test_targets)}"
+        )
+    else:
+        print(
+            f"  [log] {total_classes} classes ({selected_class_names[:3]}...), "
+            f"hierarchical q={hierarchical_q}, "
+            f"train={len(train_targets)}, test={len(test_targets)}"
+        )
 
     return pl_dataset_raw, cl_dataset_raw, original_targets, (test_data, test_targets), log_info
 

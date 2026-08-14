@@ -30,16 +30,19 @@ def _build_registry() -> dict:
         'Wu2022':   AlgorithmSpec('Wu2022',   'PLL', r.run_wu),
         'PRODEN':   AlgorithmSpec('PRODEN',   'PLL', r.run_proden),
         'PiCO':     AlgorithmSpec('PiCO',     'PLL', r.run_pico),
+        'PiCO-Fixed': AlgorithmSpec('PiCO-Fixed', 'PLL', r.run_pico_fixed),
         'PiCO-MCL': AlgorithmSpec('PiCO-MCL', 'PLL', r.run_pico_mcl),
         'PiCO-SC':  AlgorithmSpec('PiCO-SC',  'PLL', r.run_pico_sc),
         'PiCO-CLS': AlgorithmSpec('PiCO-CLS', 'PLL', r.run_pico_cls),
         'SoLar':    AlgorithmSpec('SoLar',    'PLL', r.run_solar),
         'MCL-LOG':  AlgorithmSpec('MCL-LOG',  'CLL', r.run_mcl_log),
+        'MCL-LOG-Fixed': AlgorithmSpec('MCL-LOG-Fixed', 'CLL', r.run_mcl_log_fixed),
         'SCL-NL':   AlgorithmSpec('SCL-NL',   'CLL', r.run_scl_nl),
         'OP':       AlgorithmSpec('OP',       'CLL', r.run_op),
         'OP-W':     AlgorithmSpec('OP-W',     'CLL', r.run_op_w),
         'CPE':      AlgorithmSpec('CPE',      'CLL', r.run_cpe),
         'ComCo':    AlgorithmSpec('ComCo',    'CLL', r.run_comco),
+        'ComCo-Fixed': AlgorithmSpec('ComCo-Fixed', 'CLL', r.run_comco_fixed),
     }
 
 

@@ -53,7 +53,18 @@ def train_algorithm(model, loader, test_loader, loss_fn, optimizer, epochs, devi
     return accuracies
 
 def train_pico_epoch(pico_args, model, loader, loss_fn, loss_cont_fn, optimizer, epoch, device):
-    """Runs a single training epoch for the PiCO model."""
+    """Runs a single training epoch for the PiCO model.
+
+    KNOWN DISCREPANCY (2026-08-14, see docs/pico_explanation.md): the paper
+    (Wang et al., ICLR 2022, Appendix B.1) describes warm-up as omitting
+    L_cont from the total loss entirely for the first `prot_start` epochs.
+    This function instead keeps L_cont active during warm-up but switches
+    SupConLoss to its unsupervised MoCo mode (mask=None). The default
+    `prot_start=80` in config.yaml also doesn't match either paper-reported
+    value (1 epoch default, 100 for CIFAR-100 @ q=0.1). See
+    src/fixed_pico_engine.py::train_pico_epoch_fixed (algorithm ID
+    PiCO-Fixed) for the paper-faithful version.
+    """
     model.train()
     total_loss = 0
     start_upd_prot = epoch >= pico_args['prot_start']

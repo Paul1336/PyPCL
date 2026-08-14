@@ -1,0 +1,23 @@
+{
+  "selected_class_indices": [
+    44,
+    45,
+    53,
+    70,
+    83
+  ],
+  "selected_class_names": [
+    "lizard",
+    "lobster",
+    "orange",
+    "rose",
+    "sweet_pepper"
+  ],
+  "total_classes": 5,
+  "n_partial_labels": 1,
+  "n_complementary_labels": 4,
+  "seed": 42,
+  "n_train": 2500,
+  "n_test": 500,
+  "timestamp": "2026-08-14T16:38:51.303729"
+}

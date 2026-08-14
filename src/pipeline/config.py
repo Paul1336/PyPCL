@@ -11,6 +11,7 @@ import yaml
 class PipelineConfig:
     run_name: str
     algorithms: list
+    dataset: str
     c_values: list
     epochs: int
     batch_size: int
@@ -35,6 +36,7 @@ def load_config(args) -> PipelineConfig:
     return PipelineConfig(
         run_name=args.run_name,
         algorithms=args.algorithms,
+        dataset=getattr(args, 'dataset', 'cifar100-subset'),
         c_values=args.c_values,
         epochs=args.epochs,
         batch_size=args.batch_size,

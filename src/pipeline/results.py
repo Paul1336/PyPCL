@@ -7,9 +7,16 @@ Layout:
                                     when multiple GPU processes train in parallel)
         results.csv                merged canonical table, (re)written by merge_shards()
 
-CSV columns (one row per completed (C, k, algorithm) cell):
-    total_classes, k, algorithm, seed, final_accuracy, epochs, training_time_s,
+CSV columns (one row per completed (dataset, C, k, algorithm) cell):
+    dataset, total_classes, k, algorithm, seed, final_accuracy, epochs, training_time_s,
     timestamp, git_commit
+
+`dataset` was added 2026-08-14 (see docs/00_paper_alignment_guide.md's dataset-support
+plan). Older results.csv/shard files written before that have no `dataset` column;
+`load_done`/`merge_shards`/`load_results` all default a missing value to
+'cifar100-subset' (the only dataset that existed before), so old result files keep
+working and don't collide with new-dataset runs that happen to reuse the same
+(total_classes, k, algorithm) triple.
 """
 
 import csv
@@ -19,8 +26,10 @@ import os
 import subprocess
 from datetime import datetime
 
-FIELDS = ['total_classes', 'k', 'algorithm', 'seed', 'final_accuracy',
+FIELDS = ['dataset', 'total_classes', 'k', 'algorithm', 'seed', 'final_accuracy',
           'epochs', 'training_time_s', 'timestamp', 'git_commit']
+
+_DEFAULT_DATASET = 'cifar100-subset'
 
 
 def _git_commit() -> str:
@@ -41,17 +50,18 @@ def merged_path(results_dir: str) -> str:
 
 
 def load_done(shard: str) -> set:
-    """Set of (total_classes, k, algorithm) already recorded in this shard."""
+    """Set of (dataset, total_classes, k, algorithm) already recorded in this shard."""
     done = set()
     if not os.path.isfile(shard):
         return done
     with open(shard, newline='') as f:
         for row in csv.DictReader(f):
-            done.add((int(row['total_classes']), int(row['k']), row['algorithm']))
+            dataset = row.get('dataset') or _DEFAULT_DATASET
+            done.add((dataset, int(row['total_classes']), int(row['k']), row['algorithm']))
     return done
 
 
-def append_result(shard: str, C: int, k: int, algorithm: str, seed: int,
+def append_result(shard: str, dataset: str, C: int, k: int, algorithm: str, seed: int,
                    final_accuracy: float, epochs: int, training_time_s: float):
     os.makedirs(os.path.dirname(shard), exist_ok=True)
     new_file = not os.path.isfile(shard)
@@ -60,6 +70,7 @@ def append_result(shard: str, C: int, k: int, algorithm: str, seed: int,
         if new_file:
             w.writeheader()
         w.writerow({
+            'dataset': dataset,
             'total_classes': C,
             'k': k,
             'algorithm': algorithm,
@@ -74,12 +85,14 @@ def append_result(shard: str, C: int, k: int, algorithm: str, seed: int,
 
 def merge_shards(results_dir: str) -> str:
     """Merge all shards/worker*.csv into a single results.csv, deduping by
-    (total_classes, k, algorithm, seed) — last write wins."""
+    (dataset, total_classes, k, algorithm, seed) — last write wins."""
     rows = {}
     for path in sorted(glob.glob(os.path.join(results_dir, 'shards', 'worker*.csv'))):
         with open(path, newline='') as f:
             for row in csv.DictReader(f):
-                key = (row['total_classes'], row['k'], row['algorithm'], row['seed'])
+                dataset = row.get('dataset') or _DEFAULT_DATASET
+                row['dataset'] = dataset
+                key = (dataset, row['total_classes'], row['k'], row['algorithm'], row['seed'])
                 rows[key] = row
 
     out_path = merged_path(results_dir)
@@ -93,7 +106,14 @@ def merge_shards(results_dir: str) -> str:
 
 
 def load_results(run_dirs: list) -> dict:
-    """Merge one or more run dirs' results.csv into res[C][algorithm][k] = accuracy."""
+    """Merge one or more run dirs' results.csv into res[C][algorithm][k] = accuracy.
+
+    Note: this keeps the pre-existing (C, algorithm, k) shape for backward
+    compatibility with the plotting code, which doesn't yet distinguish by
+    dataset. If a run mixes multiple datasets, results for the same (C, k,
+    algorithm) across different datasets will collide here (last one wins) --
+    fine for now since callers currently pass one dataset per plot; revisit
+    if cross-dataset plots become a common need."""
     res = {}
     for run_dir in run_dirs:
         path = merged_path(run_dir)

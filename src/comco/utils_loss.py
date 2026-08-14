@@ -12,6 +12,16 @@ class ComCoCLSLoss(nn.Module):
     where m = number of complementary labels for that sample.
 
     Reduces to SCL-NL (-log(1 - g_ybar)) for single complementary label.
+
+    KNOWN BUG (2026-08-14, see docs/comco_explanation.md): Eq. 3 in the paper
+    is only a generic wrapper ("L_cls = L-bar(g(x),ybar)"); Section 5.1
+    states explicitly "we choose SCL-NL as complementary loss" -- i.e. the
+    paper's own classification loss is *plain, unscaled* SCL-NL, not this
+    MCL-NL-style (C-1)/(C-m)-scaled formula (borrowed from Feng et al. 2020,
+    a different paper ComCo only cites as a baseline). This only matches the
+    paper when m=1 (scale=1); for m>1 it diverges. Use FixedComCoCLSLoss
+    (src/comco/fixed_utils_loss.py, algorithm ID ComCo-Fixed) for the
+    corrected version.
     """
 
     def forward(self, logits: torch.Tensor, comp_mask: torch.Tensor) -> torch.Tensor:

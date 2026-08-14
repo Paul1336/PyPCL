@@ -7,6 +7,9 @@ class CLPLSquaredHingeLoss(nn.Module):
     """
     Cour, Sapp & Taskar (JMLR 2011) CLPL with squared-hinge surrogate.
 
+    Verified against the paper's Eq. 2 term-for-term (2026-08-14) -- exact
+    match, no fixed_ version needed. See docs/cour2011_explanation.md.
+
     For each sample i with candidate set Y_i:
 
         L_i = psi( mean_{a in Y_i} g_a(x_i) )

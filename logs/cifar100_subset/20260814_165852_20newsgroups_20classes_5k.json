@@ -1,0 +1,10 @@
+{
+  "dataset": "20newsgroups",
+  "total_classes": 20,
+  "n_partial_labels": 5,
+  "n_complementary_labels": 15,
+  "seed": 42,
+  "n_train": 15077,
+  "n_test": 3769,
+  "timestamp": "2026-08-14T16:58:52.627933"
+}

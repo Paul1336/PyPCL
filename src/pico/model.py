@@ -5,6 +5,13 @@ from src.pico.resnet import SupConResNet
 from tqdm import tqdm
 
 class PiCOModel(nn.Module):
+    """
+    Wang et al., ICLR 2022 (PiCO). Verified 2026-08-14 against Eq. 7
+    (prototype EMA update, driven by the classifier's own candidate-masked
+    softmax argmax) and Eq. 2/3 (MoCo queue / contrastive pool) -- exact
+    match. See docs/pico_explanation.md.
+    """
+
     def __init__(self, args):
         super().__init__()
         self.encoder_q = SupConResNet(num_class=args['num_class'], feat_dim=args['low_dim'])

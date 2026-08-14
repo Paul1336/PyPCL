@@ -1,0 +1,10 @@
+{
+  "dataset": "cub200",
+  "total_classes": 200,
+  "n_partial_labels": 50,
+  "n_complementary_labels": 150,
+  "seed": 42,
+  "n_train": 5994,
+  "n_test": 5794,
+  "timestamp": "2026-08-14T17:00:04.800640"
+}

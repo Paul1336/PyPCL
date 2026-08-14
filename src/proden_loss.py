@@ -7,6 +7,12 @@ class ProdenLoss(nn.Module):
     """
     PRODEN with cross-epoch confidence accumulation (original paper algorithm).
 
+    Verified against Lv et al., ICML 2020, Algorithm 1 (2026-08-14) -- exact
+    match, including the one-step lag between loss computation (uses the
+    previously stored confidence) and the confidence refresh (uses the
+    current forward pass, under no_grad). This is the class actually used by
+    the new pipeline (run_proden). See docs/proden_explanation.md.
+
     Maintains a persistent confidence matrix conf[N, C] for every training sample:
       - Initialised uniformly over candidate labels.
       - forward() uses the *stored* confidence as soft-label weights for the loss,
@@ -50,6 +56,23 @@ class ProdenLoss(nn.Module):
 
 
 class proden(nn.Module):
+    """
+    Legacy/simplified PRODEN variant -- only reachable via the OLD pipeline
+    (setup_proden in src/model_setup.py), not the new pipeline (which uses
+    ProdenLoss above via run_proden).
+
+    KNOWN BUG (2026-08-14, see docs/proden_explanation.md): unlike the
+    paper's Algorithm 1, the candidate-restricted softmax weights computed
+    here are (a) used to weight the SAME forward pass's own loss with no
+    one-step lag, and (b) never detached from the autograd graph, so
+    gradients flow through the weighting term itself. The paper treats these
+    weights as a latent, non-differentiable EM-style quantity. This makes
+    `proden` closer to the paper's own documented failure case
+    (PRODEN-sudden, which the paper shows underperforms) than to a valid
+    simplification of PRODEN. Left unfixed since it is not on the new
+    pipeline's execution path.
+    """
+
     def __init__(self):
         super(proden, self).__init__()
     def forward(self, outputs, partial_labels):

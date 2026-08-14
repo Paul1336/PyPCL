@@ -164,12 +164,12 @@ class Identity(nn.Module):
 
 class SupConResNet(nn.Module):
     """ResNet backbone with a projection head for supervised contrastive learning."""
-    def __init__(self, name='resnet18', head='mlp', feat_dim=128, num_class=10):
+    def __init__(self, name='resnet18', head='mlp', feat_dim=128, num_class=10, in_channels=3):
         super(SupConResNet, self).__init__()
         model_fun, dim_in = models.resnet18, 512
         self.encoder = model_fun(num_classes=num_class)
-        # Adapt for CIFAR-10.
-        self.encoder.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        # Adapt for CIFAR-10 (or other small-image RGB datasets via in_channels).
+        self.encoder.conv1 = nn.Conv2d(in_channels, 64, kernel_size=3, stride=1, padding=1, bias=False)
         self.encoder.maxpool = nn.Identity()
         
         self.fc_layer = self.encoder.fc

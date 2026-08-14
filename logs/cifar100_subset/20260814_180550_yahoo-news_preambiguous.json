@@ -1,0 +1,9 @@
+{
+  "dataset": "yahoo-news",
+  "total_classes": 219,
+  "mode": "preambiguous",
+  "n_train": 18393,
+  "n_test": 4598,
+  "seed": 42,
+  "timestamp": "2026-08-14T18:05:50.694060"
+}

@@ -1,0 +1,14 @@
+{
+  "run_name": "smoke_solar",
+  "algorithms": [
+    "SoLar"
+  ],
+  "c_values": [
+    5
+  ],
+  "epochs": 2,
+  "batch_size": 512,
+  "seed": 42,
+  "gpu_id": 0,
+  "num_gpus": 1
+}

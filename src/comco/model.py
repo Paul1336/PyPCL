@@ -5,6 +5,14 @@ from src.pico.resnet import SupConResNet
 
 
 class ComCoModel(nn.Module):
+    """
+    Jiang, Sun & Tian, Neural Networks 2024 (ComCo). Verified 2026-08-14 --
+    dual momentum encoder + queue architecture, unmasked argmax pseudo-label
+    (no candidate set in CLL), and queue_comp bookkeeping all match the
+    paper's Section 3.4. See docs/comco_explanation.md. The one confirmed
+    discrepancy is in ComCoCLSLoss (src/comco/utils_loss.py), not here.
+    """
+
     def __init__(self, args):
         super().__init__()
         self.encoder_q = SupConResNet(num_class=args['num_class'], feat_dim=args['low_dim'])

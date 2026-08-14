@@ -1,0 +1,18 @@
+{
+  "run_name": "smoke",
+  "algorithms": [
+    "CLPL",
+    "PRODEN",
+    "MCL-LOG",
+    "PiCO",
+    "ComCo"
+  ],
+  "c_values": [
+    5
+  ],
+  "epochs": 2,
+  "batch_size": 512,
+  "seed": 42,
+  "gpu_id": 0,
+  "num_gpus": 1
+}

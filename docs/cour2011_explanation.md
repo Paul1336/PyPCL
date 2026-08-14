@@ -12,8 +12,16 @@
 > 下面已重寫「核心思想」與「在本專案中的實作」章節以反映這個事實；原本的均等平均版本移到
 > [附錄：`cour_loss.py`（孤兒檔案）](#附錄cour_losspy孤兒檔案) 保留參考。
 >
-> **這份文件目前只完成 Step 1（程式碼對應）與 Step 3 起手式，Step 2 的公式逐項比對（squared-hinge
-> 是否真的忠實對應論文原始寫法）尚未對照論文原文逐條驗證，標記為 TODO，交給下一個 session 完成。**
+> **2026-08-14 更新**：Step 2（公式逐項比對）與 Step 3（benchmark 查證）已完成，直接對照論文 PDF
+> （`C:\Users\User\Desktop\papers\CLPL.pdf`）逐條驗證。結論：**`CLPLSquaredHingeLoss` 與論文 Eq. 2
+> 完全一致（squared-hinge 版本），不需要 fixed 版本**。詳見下方「演算法保真度比對」與「原論文使用的
+> Benchmark」兩節。
+>
+> **2026-08-14 二次覆核**：改用 `pypdf` 直接擷取 PDF 純文字（不需要 poppler/pdftoppm）重新逐字比對
+> 論文原文：Eq. 2 原文 `Lψ(g(x),y) = ψ(1/|y| Σ_{a∈y} ga(x)) + Σ_{a∉y} ψ(−ga(x))` 跟下方公式、
+> 跟程式碼逐項一致；Table 2 的 benchmark 維度（dermatology 366/34/6、ecoli 336/8/8、
+> abalone 4177/8/29、FIW 系列、Lost audio 522/50/19）也逐一核對過，跟下方表格完全吻合。這次沒有
+> 發現需要修正的地方。
 
 **論文來源：** Cour, T., Sapp, B., & Taskar, B. (2011).
 *Learning from Partial Labels.* JMLR 12, 1501–1536.
@@ -64,15 +72,60 @@ CLPL 不依賴模型自身對候選標籤的相對信心排名（沒有 Proden �
 
 ---
 
-## 為什麼有效（理論保證）— TODO
+## 演算法保真度比對（Step 2，已完成）
 
-> **Step 2 待辦**：論文的核心貢獻之一是一個 consistency/generalization 定理。下面這段是舊版文件對
-> **均等平均 cross-entropy 版本**（非目前實作）寫的理論直覺，尚未針對 squared-hinge 版本重新對照
-> JMLR 論文原文驗證，也還沒確認論文本身是否包含這裡描述的 consistency 論述。下一個 session 做 Step 2
-> 時請直接讀論文原文重寫這節，不要假設下面的敘述仍然適用於 squared-hinge 版本。
+### 論文原始公式
 
-（暫存舊敘述，待驗證後改寫或刪除）：當候選集生成滿足某些條件（候選集足夠稀疏、隨機生成），最小化
-候選集相關的損失在樣本數趨近無窮大時，其最小化解會等價於監督式學習的解。
+論文 Section 4.1 的 **Eq. 2**（Convex Loss for Partial Labels）：
+
+$$\mathcal{L}_\psi(g(x), Y) = \psi\!\Big(\tfrac{1}{|Y|}\sum_{a\in Y} g_a(x)\Big) + \sum_{a\notin Y}\psi(-g_a(x))$$
+
+論文對 $\psi$ 只要求「凸、遞減、下有界」的代理函數（hinge、squared hinge、exponential、logistic 都可以），
+在 SVM 實驗中主要用的就是 squared hinge：$\psi(u) = \max(0,1-u)^2$（論文 p.1510、Section 4.4/5.1）。
+
+論文特別強調 Eq. 2 是「**候選集內取平均**」（mean），並明確跟另外兩個變體區分開：
+- **"naive" loss**（論文 Eq. 3，引用 Jin & Ghahramani 2002）：對每個候選 label 個別套用 $\psi$
+  再平均，`(1/|Y|)Σ_{a∈Y}ψ(g_a) + Σ_{a∉Y}ψ(-g_a)`
+- **"sum" 變體**（論文 Eq. 6）：候選集內**取和**而非取平均，`ψ(Σ_{a∈Y}g_a) + Σ_{a∉Y}ψ(-g_a)`
+
+CLPL（Eq. 2，"mean" 模型）在論文 **Proposition 6** 被證明是比 naive loss 更緊的凸上界
+（`2·L_ambiguous ≤ L_max_ψ ≤ L_ψ(CLPL) ≤ L_naive_ψ`）。
+
+### 逐項比對結果：**完全一致**
+
+| 論文 Eq. 2 | `src/clpl_loss.py` | 是否一致 |
+|---|---|---|
+| $\psi\big((1/\|Y\|)\sum_{a\in Y}g_a(x)\big)$（候選集**平均**分數） | `avg_score = (outputs*candidate_mask).sum(1)/count`，`positive_loss = relu(1-avg_score)^2` | ✅ 完全一致，正確用的是論文的「mean」模型，不是 naive/sum 變體 |
+| $\sum_{a\notin Y}\psi(-g_a(x))$ | `negative_loss = (negative_mask*relu(1+outputs)^2).sum(1)`（因 $1+g_a = 1-(-g_a)$） | ✅ 完全一致 |
+| $\psi(u)=\max(0,1-u)^2$ | `F.relu(...).pow(2)` | ✅ 完全一致 |
+| $g_a(x)$ 為**未經過 softmax 的原始判別分數** | 程式碼明確要求 `outputs` 是 logits，docstring 也強調 NOT softmax | ✅ 一致，且這點很關鍵：squared hinge 的 margin=1 是針對無界實數分數設計的，如果誤用 softmax 機率（有界在 [0,1]）會讓 margin 幾乎打不到，這是深度學習重現這篇論文時最容易犯的錯，這份程式碼沒有犯 |
+| 無額外正則化/kernel 項混在 loss 裡 | 沒有 | ✅ 一致（論文的 $\frac{1}{2}\|w\|^2$ 正則化是在 optimizer 層級加的，不在 loss 定義裡；程式碼對應到 optimizer 的 `weight_decay`） |
+
+**結論：`CLPLSquaredHingeLoss` 是論文 Eq. 2（squared-hinge 版本）逐項精確的實作，沒有發現任何數學
+上的落差。**
+
+### 論文的模型假設 vs 本專案的深度網路
+
+論文本身只用**線性模型**（$g_a(x)=w_a\cdot f(x)$，Section 4）和**kernel SVM / boosting**
+（Section 6、Appendix A）做實驗，2011 年的論文沒有深度網路。這點對移植到深度學習有兩個含義：
+
+1. **Consistency 定理（Proposition 5）是模型無關的**：證明是在「假設空間 $\mathcal{G}\to\mathbb{R}^L$
+   任意豐富」的極限下做的，原則上可以套用到深度網路，但需要滿足：(a) $\psi$ 可微、凸、下界、遞減，
+   $\psi'(0)<0$；(b) 「最可能的真實標籤」也必須是「最可能出現在候選集裡的標籤」；(c) 一個
+   dominance condition（論文 p.1511 給了一個具體反例說明這個條件不成立時 CLPL 會選錯標籤）。
+   **本專案目前沒有驗證 CIFAR 衍生的候選集生成方式是否滿足這個 dominance condition**——
+   這是 Step 2 額外發現的一個新 TODO，建議在設計 Step 5 實驗時一併記錄。
+2. **有限樣本 generalization bound（Propositions 7–8）是針對線性/kernel 模型证明的**，
+   不會自動套用到深度網路——換句話說，用這個 loss 訓練 CNN 在數學上仍然是在做同一件事
+   （最小化 Eq. 2），但論文對「這個 loss 訓練出來的分類器有多好」的**理論保證不會自動移植過來**，
+   這是一個誠實的落差，不是程式碼錯誤，只是理論適用範圍的邊界。
+
+### 其他理論結果（供參考，不影響實作忠實度）
+
+- **Proposition 1**：模型無關的界，把「候選集 0/1 loss」跟「真實 0/1 loss」用 *ambiguity degree*
+  $\epsilon$ 連起來：$E[L_a] \le E[L] \le \frac{1}{1-\epsilon}E[L_a]$
+- **Proposition 5**：CLPL 的一致性（consistency）證明，條件見上
+- **Proposition 6**：CLPL 比 naive loss 更緊的凸上界（見上）
 
 ---
 
@@ -120,31 +173,85 @@ return (positive_loss + negative_loss).mean()
 
 ---
 
-## 原論文使用的 Benchmark — TODO（Step 3）
+## 原論文使用的 Benchmark（Step 3，已完成）
 
-> **尚未查證。** 根據論文標題與年代（2011，pre-deep-learning 影像分類），Cour 2011 的原始實驗**很可能
-> 不是用 CIFAR**，而是傳統的人臉辨識/物件辨識 partial-label 資料集（例如 Yahoo! News、MSRCv2、Lost
-> 等在 PLL 文獻中常見的 benchmark），需要下一個 session 實際查閱論文確認資料集清單、規模、
-> partial label 生成方式。
+**確認：論文完全沒有用 CIFAR，用的是 2011 年代的 UCI 表格資料、人臉資料、真實電視劇弱標註資料。**
+（論文 Table 2 / Section 7-8）
+
+| 資料集 | 樣本數 | 特徵維度 | 類別數 | 任務 | 候選集來源 |
+|---|---|---|---|---|---|
+| UCI: dermatology | 366 | 34 | 6 | 疾病診斷 | 合成（人工加噪聲） |
+| UCI: ecoli | 336 | 8 | 8 | 蛋白質位置預測 | 合成 |
+| UCI: abalone | 4177 | 8 | 29 | 年齡估計 | 合成 |
+| FIW(10b)（Faces in the Wild） | 500 | 50（PCA） | 10（平衡） | 人臉辨識 | 合成 |
+| FIW(10) | 1456 | 50（PCA） | 10（不平衡） | 人臉辨識 | 合成 |
+| FIW(100) | 3011 | 50（PCA） | 100（不平衡） | 人臉辨識 | 合成 |
+| *Lost* 影集語音 | 522 | 50（PCA，MFCC+pitch+LPC） | 19 | 語者辨識 | **真實**（劇本字幕與語音強制對齊） |
+| TV+movies（*Lost*/*C.S.I.* 人臉） | 10,000 | 50（PCA） | 100 | 人臉命名 | **真實**（劇本場景提及的角色當候選集） |
+
+- **UCI 三個資料集**：標準 UCI repository 表格資料，候選集用論文自己的 p/q/ε 噪聲模型合成生成
+  （p=有候選集歧義的樣本比例，q=額外加入的假標籤數，ε=ambiguity degree，控制假標籤集中程度）。
+- **FIW（LFW 人臉）**：LFW 人臉照片，裁切成 60×90 灰階，PCA 降到 50 維，候選集同樣是合成的。
+- ***Lost* 語音語者辨識**：真實弱監督——522 段語音片段，用 HTK 把劇本字幕跟語音做強制對齊，
+  候選集是「這段音軌對應到的那幾句台詞裡出現的角色」，19 個語者。
+- **TV+movies（人臉命名，Section 8 的旗艦實驗）**：100 小時的 *Lost* + *C.S.I.* 影片，人臉軌跡用
+  OpenCV+part-detector 抽出，候選集是「該場景劇本提到/出現的角色名單」（*Lost* 平均候選集大小
+  2.13，*C.S.I.* 2.17），對照約 3,000 張人工標註的 ground truth 人臉（論文貢獻的 "Annotated Faces
+  on TV" 資料集，40 個角色，8 集）。旗艦結果：**8-way 角色命名 6% 錯誤率**（32-way 為 13%）。
+- **Train/test split**：inductive 實驗 50/50 切分，20 次隨機重跑取平均±標準差；transductive
+  實驗訓練/評估用同一批（全部有候選集標註的）樣本，同樣 20 次重跑。
+- **評估指標**：平均 0/1 分類錯誤率；人臉命名任務另外用 precision-recall 曲線（含拒絕預測機制）。
+
+### 對 Step 5 的影響
+
+**這意味著 Step 5「用現有 CIFAR pipeline 生成實驗 config」不能宣稱是「複現原論文實驗」**——資料模態
+完全不同（表格資料/人臉/語音 vs. 自然影像分類），候選集生成方式也不同（真實弱標註 vs. 本專案的合成
+partial label 生成）。Step 5 若要用本專案的 CIFAR pipeline 驗證 `CLPL`，只能定位成「用同一個
+squared-hinge loss 公式在 CIFAR 衍生的合成 partial label 資料集上做架構驗證」，不是論文結果的複現。
+若要真正複現，需要另外實作 UCI/FIW/Lost 對應的 dataset loader，這超出目前 pipeline 範圍，留給使用者
+決定是否要做。
+
+---
+
+## Fixed 版本 — 不需要
+
+Step 2 逐項比對後**沒有發現任何需要修正的數學落差**（見上方比對表，逐項全部 ✅）。
+`CLPLSquaredHingeLoss` 已經是論文 Eq. 2（squared-hinge 版本）的忠實實作，**不會產出
+`fixed_clpl_loss.py`**。
+
+## 實驗 Config（Step 5）
+
+> **2026-08-14 更新**：上面「對 Step 5 的影響」一節說「本專案沒有實作原論文的 UCI/人臉/語音資料集」
+> ——這件事後來做了。`--dataset clpl-lost`（CLPL 論文自己的 1122 張 90×90 *Lost* 人臉截圖，
+> **真實**劇本推導候選集）跟 `--dataset lost`（同一組底層資料的 108 維手工特徵版本，可與
+> `PRODEN`/`MCL-LOG` 常用的 "Lost" 表格 benchmark 直接比較）都已經在本機驗證過可以端到端訓練。
+> 詳見 [00_paper_alignment_guide.md](00_paper_alignment_guide.md) 的「資料集支援」一節。
 >
-> 這意味著 Step 5（用現有 CIFAR pipeline 生成實驗 config）**不能宣稱是「複現原論文實驗」**，只能算是
-> 「用同一個 squared-hinge loss 在 CIFAR 衍生資料集上驗證」。如果要真正複現原論文 benchmark，需要
-> 新增對應的 dataset loader，這超出目前 pipeline 範圍，需要另外跟使用者確認是否要做。
+> ```bash
+> python scripts/run_pipeline.py run --run_name clpl_original_benchmark \
+>     --algorithms CLPL --dataset clpl-lost --epochs 100
+> ```
+>
+> 下方原本的 CIFAR sweep 建議仍然有效，適合跟其他方法做架構層級的橫向比較。
 
----
+依[主引導文件](00_paper_alignment_guide.md)，pipeline 已在使用者的 server 上驗證可跑。由於 CLPL
+不需要 fixed 版本，可以直接用現有的 `CLPLSquaredHingeLoss`（algorithm ID `CLPL`）產生實驗 config。
 
-## Fixed 版本 — 尚未開始（Step 4）
+**重要提醒（承接上方 Step 3 的結論）**：這裡的實驗**不是複現論文結果**，只是在 CIFAR 衍生資料集上
+驗證這個 squared-hinge loss 的訓練行為，跟 CLPL/PRODEN/MCL-LOG 等其他方法做橫向比較。
 
-Step 2 的公式逐項比對還沒完成，因此還不知道 `CLPLSquaredHingeLoss` 跟論文原始寫法是否有需要修正的
-落差。等 Step 2 完成後，若有落差，修正版會放在 `src/fixed_clpl_loss.py`
-（class `FixedCLPLSquaredHingeLoss`），並在這裡補上連結與修改說明。
+建議掃描設定（沿用本專案既有的 C×k sweep 慣例）：
 
----
+```bash
+python scripts/run_pipeline.py run --run_name clpl_fidelity_check \
+    --algorithms CLPL --c_values 5 20 --epochs 200
+```
 
-## 實驗 Config — 尚未開始（Step 5）
-
-等 Step 3（benchmark 查證）與 Step 4（fixed 實作，若需要）完成、且[主引導文件](00_paper_alignment_guide.md)
-列出的 pipeline 前置條件（重新下載 CIFAR-100、跑通至少一次 smoke test）確認可行後才開始。
+- `c_values 5 20`：對照主引導文件既有的 C×k sweep 慣例（`src/pipeline/data.py` 的 k-schedule）
+- 之後可以跟 `PRODEN`（同為 PLL、cross-entropy 型）、`MCL-LOG`（CLL 對照組）的結果並排比較，
+  驗證 squared-hinge margin loss 跟 cross-entropy 系方法在候選集大小變化下的行為差異
+- 若要更貼近論文本身的實驗設計（Section 7 的 p/q/ε 噪聲模型），需要另外在 `src/data_setup.py`
+  加一個對應的候選集生成模式，這超出本次範圍，留待使用者決定是否要做
 
 ---
 

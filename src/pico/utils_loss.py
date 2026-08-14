@@ -3,6 +3,18 @@ import torch.nn.functional as F
 import torch.nn as nn
     
 class PartialLoss(nn.Module):
+    """
+    Wang et al., ICLR 2022 (PiCO). Verified 2026-08-14 against Eq. 1 (loss)
+    and Eq. 6 (confidence_update) -- exact match, including using
+    prototype-similarity (score_prot, passed in as temp_un_conf by the
+    caller) rather than the classifier's own softmax as the signal driving
+    the pseudo-target here, as distinct from the classifier-softmax signal
+    used to update prototypes in PiCOModel.forward (Eq. 7). See
+    docs/pico_explanation.md. The one confirmed discrepancy is in the
+    warm-up scheduling (src/engine.py::train_pico_epoch vs.
+    src/fixed_pico_engine.py::train_pico_epoch_fixed), not in this class.
+    """
+
     def __init__(self, confidence):
         super().__init__()
         self.confidence = confidence

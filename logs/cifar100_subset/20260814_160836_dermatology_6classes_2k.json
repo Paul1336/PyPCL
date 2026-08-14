@@ -1,0 +1,10 @@
+{
+  "dataset": "dermatology",
+  "total_classes": 6,
+  "n_partial_labels": 2,
+  "n_complementary_labels": 4,
+  "seed": 42,
+  "n_train": 293,
+  "n_test": 73,
+  "timestamp": "2026-08-14T16:08:36.375888"
+}

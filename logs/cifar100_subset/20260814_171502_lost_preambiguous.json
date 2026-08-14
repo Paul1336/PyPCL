@@ -1,0 +1,9 @@
+{
+  "dataset": "lost",
+  "total_classes": 16,
+  "mode": "preambiguous",
+  "n_train": 898,
+  "n_test": 224,
+  "seed": 42,
+  "timestamp": "2026-08-14T17:15:02.763981"
+}

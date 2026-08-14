@@ -37,13 +37,20 @@ from src.pipeline.algorithms import ALL_ALGORITHM_NAMES
 from src.pipeline.config import load_config
 from src.pipeline import results as results_mod
 from src.pipeline.plotting import plot_accuracy_vs_k
+from src.pipeline.datasets import ALL_DATASET_NAMES
 
 
 def _add_run_parser(sub):
     p = sub.add_parser('run', help='Train algorithms and record results')
     p.add_argument('--run_name', required=True, help='Name of this experiment; results go to results/<run_name>/')
     p.add_argument('--algorithms', nargs='+', default=ALL_ALGORITHM_NAMES, choices=ALL_ALGORITHM_NAMES)
-    p.add_argument('--c_values', nargs='+', type=int, default=[5, 20])
+    p.add_argument('--dataset', default='cifar100-subset', choices=ALL_DATASET_NAMES,
+                    help="Which dataset to train on. 'cifar100-subset' (default) is the original "
+                         "C-class-subset sweep; other values train on a fixed-class-count dataset "
+                         "(see docs/00_paper_alignment_guide.md) and ignore --c_values (forced to "
+                         "the dataset's native class count).")
+    p.add_argument('--c_values', nargs='+', type=int, default=[5, 20],
+                    help='Only used for --dataset cifar100-subset; ignored otherwise.')
     p.add_argument('--epochs', type=int, default=200)
     p.add_argument('--batch_size', type=int, default=512)
     p.add_argument('--seed', type=int, default=42)

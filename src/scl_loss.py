@@ -26,6 +26,15 @@ class SCL_NL(nn.Module):
     complementary label set independently and averaging, so that samples with
     different |Y_bar| contribute equally to the batch loss.
 
+    Verified 2026-08-14 (see docs/scl_nl_explanation.md): the single-CL
+    formula (Eq. 11) matches the paper exactly. The MCLL averaging wrapper
+    above, however, has NO basis in Chou et al. (2020) -- the paper's theory
+    and all its experiments assume exactly one complementary label per
+    sample; it only *cites* multi-CL as separate related work (Feng et al.
+    2020, this repo's MCL-LOG). No fixed_ version was produced since the
+    paper provides no alternative multi-CL formula to fix towards -- this is
+    a repo-side extrapolation, not a verified-wrong implementation.
+
     Note:
         - Averaging (not summing) over complementary labels makes the loss scale
           independent of |Y_bar|, which is important for fair comparison across k.

@@ -14,15 +14,18 @@ ALGO_HPARAMS = {
     'Wu2022':   _ADAM,
     'PRODEN':   _SGD,
     'MCL-LOG':  _ADAM,
+    'MCL-LOG-Fixed': _ADAM,
     'SCL-NL':   _ADAM,
     'OP':       _ADAM,
     'OP-W':     _ADAM,
     'CPE':      _ADAM,
     'PiCO':     _ADAM,
+    'PiCO-Fixed': _ADAM,
     'PiCO-MCL': _ADAM,
     'PiCO-SC':  _ADAM,
     'PiCO-CLS': _ADAM,
     'ComCo':    _ADAM,
+    'ComCo-Fixed': _ADAM,
     'SoLar':    _SGD,
 }
 
