@@ -1,0 +1,10 @@
+{
+  "dataset": "texture",
+  "total_classes": 11,
+  "n_partial_labels": 2,
+  "n_complementary_labels": 9,
+  "seed": 42,
+  "n_train": 4400,
+  "n_test": 1100,
+  "timestamp": "2026-08-15T13:54:13.614568"
+}

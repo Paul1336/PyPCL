@@ -26,8 +26,16 @@ python scripts/run_pipeline.py run --run_name paper_original_mnist_family \
 python scripts/run_pipeline.py run --run_name paper_original_mnist_family \
     --algorithms CLPL PRODEN MCL-LOG MCL-LOG-Fixed SCL-NL --dataset kmnist --epochs 100
 
-# ─── PRODEN / MCL-LOG: UCI tabular real-world benchmarks ───────────────────
-for ds in dermatology ecoli abalone yeast synthetic-control; do
+# ─── CLPL (Cour et al. 2011)'s OWN UCI benchmark: dermatology/ecoli/abalone.
+# NOT the same set as PRODEN/MCL-LOG below -- only dermatology overlaps. ────
+for ds in dermatology ecoli abalone; do
+    python scripts/run_pipeline.py run --run_name paper_original_clpl_uci \
+        --algorithms CLPL --dataset "$ds" --epochs 200
+done
+
+# ─── PRODEN / MCL-LOG's OWN UCI benchmark: yeast/texture/dermatology/
+# synthetic-control (texture comes from OpenML id=40499, not ucimlrepo). ────
+for ds in yeast texture dermatology synthetic-control; do
     python scripts/run_pipeline.py run --run_name paper_original_uci \
         --algorithms CLPL PRODEN MCL-LOG MCL-LOG-Fixed --dataset "$ds" --epochs 200
 done
@@ -71,8 +79,8 @@ python scripts/run_pipeline.py run --run_name paper_original_cifar100h \
 #     --algorithms CLPL ComCo ComCo-Fixed --dataset sun397 --epochs 1 --batch_size 16
 
 # ─── Merge everything into one results.csv per run_name ────────────────────
-for run in paper_original_mnist_family paper_original_uci paper_original_20news \
-           paper_original_real_pll paper_original_clpl_tv paper_original_cub200 \
-           paper_original_cifar100h; do
+for run in paper_original_mnist_family paper_original_clpl_uci paper_original_uci \
+           paper_original_20news paper_original_real_pll paper_original_clpl_tv \
+           paper_original_cub200 paper_original_cifar100h; do
     python scripts/run_pipeline.py merge --run "$run"
 done

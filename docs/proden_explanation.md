@@ -149,16 +149,23 @@ to the winners, resulting in their poorer performance"）——`proden` 因為�
 ## 實驗 Config（Step 5）
 
 > **2026-08-14 更新**：論文用的 MNIST/Fashion-MNIST/Kuzushiji-MNIST、UCI 表格資料
-> （dermatology/ecoli/abalone/yeast/synthetic-control）、以及 5 個真實世界 PLL 資料集
-> （Lost/MSRCv2/BirdSong/Soccer Player/Yahoo!News）現在都可以透過 `--dataset` 直接跑，且都在
-> 本機驗證過端到端訓練（Soccer Player/Yahoo!News 因檔案較大只驗證了下載連結有效，還沒驗證訓練）。
-> 詳見 [00_paper_alignment_guide.md](00_paper_alignment_guide.md) 的「資料集支援」一節。
+> （**yeast/texture/dermatology/synthetic-control**——注意不是 ecoli/abalone，那兩個是 CLPL
+> 論文用的另一組 UCI 資料集，只有 dermatology 重疊）、以及 5 個真實世界 PLL 資料集
+> （Lost/MSRCv2/BirdSong/Soccer Player/Yahoo!News）現在都可以透過 `--dataset` 直接跑，全部都在
+> 本機驗證過端到端訓練。詳見 [00_paper_alignment_guide.md](00_paper_alignment_guide.md) 的
+> 「資料集支援」一節。
 >
 > ```bash
 > python scripts/run_pipeline.py run --run_name proden_original_benchmark \
 >     --algorithms PRODEN --dataset mnist --epochs 200
-> python scripts/run_pipeline.py run --run_name proden_original_benchmark \
->     --algorithms PRODEN --dataset lost --epochs 200
+> for ds in yeast texture dermatology synthetic-control; do
+>     python scripts/run_pipeline.py run --run_name proden_original_benchmark \
+>         --algorithms PRODEN --dataset "$ds" --epochs 200
+> done
+> for ds in lost msrcv2 birdsong soccer-player yahoo-news; do
+>     python scripts/run_pipeline.py run --run_name proden_original_benchmark \
+>         --algorithms PRODEN --dataset "$ds" --epochs 200
+> done
 > ```
 
 Pipeline 已在使用者的 server 上驗證可跑。`PRODEN` 走的是忠實的 `ProdenLoss`，可以直接用：

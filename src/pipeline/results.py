@@ -149,6 +149,16 @@ def merge_shards(results_dir: str) -> str:
         _repair_shard_if_needed(path)
         with open(path, newline='') as f:
             for row in csv.DictReader(f):
+                if None in row or any(v is None for v in row.values()):
+                    # Torn read: another process (often a sibling GPU worker
+                    # sharing this results_dir over NFS) was mid-append to
+                    # this exact file when we opened it, so this row has
+                    # extra/missing columns relative to the header --
+                    # csv.DictReader stuffs the mismatch into a `None` key.
+                    # Skip it for this pass; the next scheduled merge_shards()
+                    # call (after the next completed cell) will see the fully
+                    # flushed row and pick it up correctly.
+                    continue
                 dataset = row.get('dataset') or _DEFAULT_DATASET
                 row['dataset'] = dataset
                 key = (dataset, row['total_classes'], row['k'], row['algorithm'], row['seed'])

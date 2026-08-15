@@ -230,6 +230,14 @@ Step 2 逐項比對後**沒有發現任何需要修正的數學落差**（見上
 > ```bash
 > python scripts/run_pipeline.py run --run_name clpl_original_benchmark \
 >     --algorithms CLPL --dataset clpl-lost --epochs 100
+> python scripts/run_pipeline.py run --run_name clpl_original_benchmark \
+>     --algorithms CLPL --dataset clpl-fiw --epochs 100
+> # 論文自己的 UCI benchmark（跟 PRODEN/MCL-LOG 用的 UCI 資料集不一樣，只有 dermatology 重疊，
+> # 見 00_paper_alignment_guide.md「資料集支援」一節的提醒）
+> for ds in dermatology ecoli abalone; do
+>     python scripts/run_pipeline.py run --run_name clpl_original_benchmark \
+>         --algorithms CLPL --dataset "$ds" --epochs 200
+> done
 > ```
 >
 > 下方原本的 CIFAR sweep 建議仍然有效，適合跟其他方法做架構層級的橫向比較。

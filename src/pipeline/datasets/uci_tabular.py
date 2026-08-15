@@ -1,12 +1,21 @@
-"""UCI tabular datasets used as real-world benchmarks by PRODEN (Lv et al.
-2020) and MCL-LOG (Feng et al. 2020): Dermatology, Ecoli, Abalone, Yeast,
-Synthetic Control Chart Time Series.
+"""UCI/tabular real-world benchmarks. Per-paper attribution (confirmed via
+direct paper-text re-verification, 2026-08-14 -- see each dataset's
+docs/*_explanation.md "原論文使用的 Benchmark" section, these are NOT the
+same set across papers even though they're all "UCI tabular"):
 
-Requires `ucimlrepo` (registered in src/pipeline/datasets/__init__.py behind
-a try/except ImportError, so a bare install without it just doesn't offer
+- CLPL (Cour, Sapp & Taskar, JMLR 2011): dermatology, ecoli, abalone.
+- PRODEN (Lv et al., ICML 2020) and MCL-LOG (Feng et al., ICML 2020):
+  yeast, texture, dermatology, synthetic-control (both papers use the same
+  4; dermatology is the one dataset shared with CLPL, coincidentally, not
+  because either paper cites the other's benchmark).
+
+Requires `ucimlrepo` for dermatology/ecoli/abalone/yeast, and `openml` for
+texture (registered in src/pipeline/datasets/__init__.py behind a
+try/except ImportError, so a bare install without them just doesn't offer
 these datasets rather than failing to import the whole registry).
+synthetic-control needs neither (direct .data file download, see below).
 
-All five feed into the MLP backbone (DatasetSpec.backbone='mlp') -- a CNN's
+All six feed into the MLP backbone (DatasetSpec.backbone='mlp') -- a CNN's
 spatial-convolution assumption doesn't apply to a flat feature vector.
 None support the PiCO/ComCo/SoLar family (no images to augment).
 """
@@ -98,6 +107,27 @@ def _load_synthetic_control(data_dir: str) -> dict:
     return _CACHE[name]
 
 
+def _load_texture(data_dir: str) -> dict:
+    """PRODEN/MCL-LOG's 'Texture' benchmark is the classic ELENA-project
+    texture dataset (11 Brodatz-album texture classes x 500 samples, 40
+    fourth-order-moment features) -- NOT in the modern UCI ML Repository /
+    ucimlrepo package (confirmed: fetch_ucirepo(name='Texture') raises
+    "not found"). Found instead on OpenML as dataset id 40499 (verified
+    2026-08-14 via a live openml.datasets.get_dataset(40499) call: 5500
+    samples, 40 float64 features, 11 classes labeled '1'..'11')."""
+    name = 'texture'
+    if name not in _CACHE:
+        import openml
+        print(f"Fetching 'texture' (OpenML id=40499) via openml...", flush=True)
+        ds = openml.datasets.get_dataset(40499)
+        X_df, y_df, _, _ = ds.get_data(target=ds.default_target_attribute)
+        X = X_df.to_numpy(dtype=np.float64)
+        y, n_classes = _encode_labels(y_df.to_numpy())
+        _CACHE[name] = {'X': _impute_and_standardize(X).astype(np.float32), 'y': y, 'n_classes': n_classes}
+        print(f"'{name}': {X.shape[0]} samples, {X.shape[1]} features, {n_classes} classes.", flush=True)
+    return _CACHE[name]
+
+
 _UCI_IDS = {
     'dermatology': 33,
     'ecoli': 39,
@@ -110,6 +140,8 @@ def _make_loader(name: str):
     def loader(C, k, data_dir, seed, log_dir, batch_size):
         if name == 'synthetic-control':
             data = _load_synthetic_control(data_dir)
+        elif name == 'texture':
+            data = _load_texture(data_dir)
         else:
             data = _load_ucirepo(name, _UCI_IDS[name])
         spec = DATASETS_BY_NAME[name]
@@ -131,13 +163,23 @@ def _build_specs() -> dict:
         'abalone': (10, 28),  # 7 numeric + one-hot 'Sex' (M/F/I); target = Rings, treated as classification
         'yeast': (8, 10),
         'synthetic-control': (60, 6),
+        'texture': (40, 11),
+    }
+    notes = {
+        'dermatology': 'UCI benchmark shared by CLPL and PRODEN/MCL-LOG. MLP backbone; PiCO/ComCo/SoLar unsupported.',
+        'ecoli': "CLPL (Cour et al. 2011)'s UCI benchmark. MLP backbone; PiCO/ComCo/SoLar unsupported.",
+        'abalone': "CLPL (Cour et al. 2011)'s UCI benchmark. MLP backbone; PiCO/ComCo/SoLar unsupported.",
+        'yeast': "PRODEN/MCL-LOG's UCI benchmark. MLP backbone; PiCO/ComCo/SoLar unsupported.",
+        'synthetic-control': "PRODEN/MCL-LOG's UCI benchmark. MLP backbone; PiCO/ComCo/SoLar unsupported.",
+        'texture': "PRODEN/MCL-LOG's UCI benchmark (ELENA project, via OpenML id=40499, not ucimlrepo). "
+                   "MLP backbone; PiCO/ComCo/SoLar unsupported.",
     }
     specs = {}
     for name, (input_dim, n_classes) in dims.items():
         specs[name] = DatasetSpec(
             name=name, modality='tabular', backbone='mlp', fixed_num_classes=n_classes,
             supports_pico_family=False, loader=_make_loader(name), input_dim=input_dim,
-            notes='Tabular UCI benchmark; MLP backbone; PiCO/ComCo/SoLar unsupported (no images).',
+            notes=notes[name],
         )
     return specs
 

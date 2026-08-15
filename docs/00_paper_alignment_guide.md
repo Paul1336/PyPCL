@@ -31,7 +31,8 @@
 |---|---|---|---|
 | `cifar100-subset`（預設） | — | 影像 | 原本就有，行為完全不變（已用回歸測試確認） |
 | `mnist` / `fashion-mnist` / `kmnist` | PRODEN, MCL-LOG, SCL-NL | 影像（灰階，28×28） | torchvision 內建；不支援 PiCO/ComCo/SoLar（灰階） |
-| `dermatology` / `ecoli` / `abalone` / `yeast` / `synthetic-control` | PRODEN, MCL-LOG | 表格（UCI） | MLP backbone；只支援 simple-shape 演算法 |
+| `dermatology` / `ecoli` / `abalone` | CLPL | 表格（UCI） | Cour et al. 2011 的 UCI benchmark；MLP backbone；只支援 simple-shape 演算法 |
+| `dermatology` / `yeast` / `synthetic-control` / `texture` | PRODEN, MCL-LOG | 表格（UCI/OpenML） | **注意**：跟 CLPL 只有 `dermatology` 重疊，不是同一組 4 個資料集；`texture` 不在 `ucimlrepo` 裡，改抓 OpenML id=40499；MLP backbone；只支援 simple-shape 演算法 |
 | `20newsgroups` | MCL-LOG | 文字（TF-IDF） | MLP backbone；只支援 simple-shape 演算法 |
 | `cub200` | PiCO, ComCo | 影像（RGB，實際下載自 HuggingFace mirror，官方 Caltech 連結已死） | 64×64 resize（原始解析度跟本專案 CNN 架構不搭，細節見 `cub200.py` docstring） |
 | `cifar100-h` | PiCO | 影像 | CIFAR-100 + 階層式（同 coarse superclass）候選集生成，q=0.5（**論文原文逐字確認過**，見下方） |

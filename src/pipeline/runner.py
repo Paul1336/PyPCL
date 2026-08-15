@@ -112,6 +112,16 @@ def run(cfg: PipelineConfig):
             gc.collect()
             torch.cuda.empty_cache()
 
-            results.merge_shards(cfg.results_dir)
+            try:
+                results.merge_shards(cfg.results_dir)
+            except Exception as e:
+                # merge_shards reads every sibling worker's shard file too --
+                # over NFS with several GPU processes writing concurrently, a
+                # transient torn read is possible. It must never take down
+                # this worker's training loop: the per-worker shard append
+                # above already safely recorded this cell's result, and the
+                # next successful merge (after the next cell) will catch up.
+                print(f'  [warn] merge_shards failed, continuing training '
+                      f'(will retry after next cell): {e}', flush=True)
 
     print(f'\nGPU {cfg.gpu_id} finished. Results -> {cfg.results_dir}', flush=True)

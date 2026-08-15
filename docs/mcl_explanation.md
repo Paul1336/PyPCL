@@ -135,17 +135,22 @@ pipeline 跑，需要額外新增 `AlgorithmSpec` 條目，這次先把 class �
 ## 實驗 Config（Step 5）
 
 > **2026-08-14 更新**：論文用的 MNIST/Fashion-MNIST/Kuzushiji-MNIST/20Newsgroups + UCI 表格資料
-> 現在都可以透過 `--dataset` 直接跑，且都在本機驗證過端到端訓練（真實 loss 下降、準確率上升）。
-> 詳見 [00_paper_alignment_guide.md](00_paper_alignment_guide.md) 的「資料集支援」一節。**這也是
-> 驗證 scaling factor bug 影響的好機會**——這些真實資料集裡每個樣本的互補標籤數不一定是固定值
-> （尤其 20Newsgroups/UCI 資料，取決於 `--dataset` 底層的候選集生成方式），原版跟 Fixed 版在
-> 這些資料上的差異可能比 CIFAR 衍生資料更明顯。
+> （**yeast/texture/dermatology/synthetic-control**，`texture` 不在 `ucimlrepo` 裡，改抓 OpenML
+> id=40499）現在都可以透過 `--dataset` 直接跑，且都在本機驗證過端到端訓練（真實 loss 下降、
+> 準確率上升）。詳見 [00_paper_alignment_guide.md](00_paper_alignment_guide.md) 的「資料集支援」
+> 一節。**這也是驗證 scaling factor bug 影響的好機會**——這些真實資料集裡每個樣本的互補標籤數
+> 不一定是固定值（尤其 20Newsgroups/UCI 資料，取決於 `--dataset` 底層的候選集生成方式），原版跟
+> Fixed 版在這些資料上的差異可能比 CIFAR 衍生資料更明顯。
 >
 > ```bash
 > python scripts/run_pipeline.py run --run_name mcl_log_original_benchmark \
 >     --algorithms MCL-LOG MCL-LOG-Fixed --dataset mnist --epochs 200
 > python scripts/run_pipeline.py run --run_name mcl_log_original_benchmark \
 >     --algorithms MCL-LOG MCL-LOG-Fixed --dataset 20newsgroups --epochs 100
+> for ds in yeast texture dermatology synthetic-control; do
+>     python scripts/run_pipeline.py run --run_name mcl_log_original_benchmark \
+>         --algorithms MCL-LOG MCL-LOG-Fixed --dataset "$ds" --epochs 200
+> done
 > ```
 
 ```bash
