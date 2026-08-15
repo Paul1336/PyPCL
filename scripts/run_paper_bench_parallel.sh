@@ -136,29 +136,39 @@ _reap_slot() {
     SLOT_PID[$s]=0
 }
 
+FREE_SLOT=-1
 _find_free_slot() {
-    # Prints a free slot index to stdout, blocking (polling) until one
-    # exists. Reaps any slot whose process has already finished.
+    # Sets the global FREE_SLOT once a slot is free. Deliberately NOT called
+    # via `$(...)` command substitution: that forks a subshell, and the
+    # background job PIDs in SLOT_PID were started in THIS (the main script)
+    # process -- a subshell is not their OS-level parent, so `wait "$pid"`
+    # inside one can't reliably reap them (observed in practice as garbage
+    # exit codes, e.g. -1, and possibly false-positive FAILs). Running this
+    # function inline in the main shell keeps every `wait` a real parent
+    # waiting on its own child.
     while true; do
         for ((s = 0; s < NUM_GPUS; s++)); do
-            local pid="${SLOT_PID[$s]}"
-            if [[ "$pid" -eq 0 ]]; then
-                echo "$s"
-                return
-            fi
-            if ! kill -0 "$pid" 2>/dev/null; then
-                _reap_slot "$s" >&2
-                echo "$s"
+            if [[ "${SLOT_PID[$s]}" -eq 0 ]]; then
+                FREE_SLOT=$s
                 return
             fi
         done
-        sleep 5
+        # All slots busy: block until any one of our background jobs exits,
+        # then reap every slot that's now dead (could be more than one).
+        wait -n
+        for ((s = 0; s < NUM_GPUS; s++)); do
+            pid="${SLOT_PID[$s]}"
+            if [[ "$pid" -ne 0 ]] && ! kill -0 "$pid" 2>/dev/null; then
+                _reap_slot "$s"
+            fi
+        done
     done
 }
 
 job_idx=0
 while [[ $job_idx -lt $TOTAL ]]; do
-    slot=$(_find_free_slot)
+    _find_free_slot
+    slot=$FREE_SLOT
     IFS='|' read -r group algos dataset extra <<< "${JOBS[$job_idx]}"
     gpu="${GPUS[$slot]}"
     run_name="${group}__${dataset}"
