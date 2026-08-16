@@ -57,7 +57,14 @@ from torchvision import transforms
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.mcl_losses import MCL_LOG  # noqa: E402  (paper-verified as-is, reused unmodified)
+from src.fixed_mcl_losses import FixedMCLLog as MCL_LOG  # noqa: E402
+# NOTE (corrected 2026-08-16): the ORIGINAL src.mcl_losses.MCL_LOG has a
+# confirmed unbiased-risk-estimator scaling bug -- paper Eq. 12 scales by
+# 2*(C-1)/m, the original code uses (C-1)/(C-m) instead (off by a factor of
+# ~18x at C=10, m=1). FixedMCLLog (src/fixed_mcl_losses.py) has the correct
+# paper scaling and the same (num_classes) / forward(outputs, labels)
+# signature, so it's aliased to the name MCL_LOG here as a drop-in swap
+# rather than renaming every call site below. See docs/mcl_explanation.md.
 from verify_scripts.mcl_log_model import create_model, generate_complementary_labels  # noqa: E402
 
 _CIFAR_MEAN = (0.4914, 0.4822, 0.4465)
