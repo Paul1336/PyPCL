@@ -57,7 +57,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from src.comco.model import ComCoModel
-from src.pico.model import PiCOModel
+from src.pico.model import PiCOModel, PiCOOracleModel
 
 # ─── config helpers ────────────────────────────────────────────────────────
 
@@ -103,7 +103,7 @@ def log_per_class_checkpoint(model, test_loader, device, C, epoch, out_dir, pred
     all_logits, all_labels = [], []
     for images, labels in test_loader:
         images = images.to(device)
-        if isinstance(model, (PiCOModel, ComCoModel)):
+        if isinstance(model, (PiCOModel, PiCOOracleModel, ComCoModel)):
             logits = model(images, eval_only=True)
         else:
             logits = model(images)
@@ -223,6 +223,73 @@ def train_pico_epoch_with_selection_stats(pico_args, model, loader, loss_fn, los
         loss_cls = loss_fn(cls_out, index)
         loss_cont = loss_cont_fn(features=features, mask=mask, batch_size=batch_size)
         loss = loss_cls + pico_args['loss_weight'] * loss_cont
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
+
+    log_pico_selection_stats_batch(raw_cfg, algorithm, C, epoch + 1, batch_rows)
+
+    return total_loss / len(loader)
+
+
+def train_pico_epoch_fixed_with_selection_stats(pico_args, model, loader, loss_fn, loss_cont_fn,
+                                                  optimizer, epoch, device, raw_cfg, algorithm, C):
+    """Fixed-warm-up counterpart to train_pico_epoch_with_selection_stats above
+    -- same per-batch pos/neg selection-precision measurement, but the loss
+    itself follows src.fixed_pico_engine.train_pico_epoch_fixed's paper-exact
+    warm-up (loss = loss_cls only, L_cont omitted entirely, not just switched
+    to unsupervised MoCo). `mask` is still built unconditionally (purely for
+    this diagnostic; NaN before prot_start, same convention as the original)
+    so PiCO vs PiCO-Fixed selection-precision curves stay directly comparable
+    even though Fixed doesn't use the mask for anything during warm-up.
+
+    Added 2026-08-16: run_pico_fixed previously always called plain
+    train_pico_epoch_fixed regardless of --detail, so pico_selection_stats.csv
+    was never written for PiCO-Fixed -- see docs/pico_explanation.md."""
+    model.train()
+    total_loss = 0.0
+    start_upd_prot = epoch >= pico_args['prot_start']
+    batch_rows = []
+
+    progress_bar = tqdm(loader, desc=f"PiCO-Fixed Epoch {epoch + 1}/{pico_args['epochs']} [detail]")
+    for batch_idx, (images_w, images_s, partial_Y, true_labels, index) in enumerate(progress_bar):
+        images_w, images_s, partial_Y, index = (images_w.to(device), images_s.to(device),
+                                                  partial_Y.to(device), index.to(device))
+
+        cls_out, features, pseudo_target_cont, score_prot = model(images_w, images_s, partial_Y, pico_args)
+        batch_size = cls_out.shape[0]
+
+        if start_upd_prot:
+            loss_fn.confidence_update(temp_un_conf=score_prot.detach(), batch_index=index, batchY=partial_Y)
+
+        mask = (torch.eq(pseudo_target_cont[:batch_size].unsqueeze(1), pseudo_target_cont.unsqueeze(0)).float()
+                if start_upd_prot else None)
+
+        if mask is not None:
+            true_dev = true_labels.to(device)
+            same_true = torch.eq(true_dev.unsqueeze(0), true_dev.unsqueeze(1)).float()
+            eye = torch.eye(batch_size, device=device)
+            within_batch_mask = mask[:, :batch_size]
+            m_pos = within_batch_mask * (1 - eye)
+            m_neg = (1 - within_batch_mask) * (1 - eye)
+            pos_total = m_pos.sum().item()
+            neg_total = m_neg.sum().item()
+            pos_prec = (m_pos * same_true).sum().item() / pos_total if pos_total > 0 else float('nan')
+            neg_prec = (m_neg * (1 - same_true)).sum().item() / neg_total if neg_total > 0 else float('nan')
+        else:
+            pos_prec = neg_prec = float('nan')
+        batch_rows.append((batch_idx, pos_prec, neg_prec))
+
+        loss_cls = loss_fn(cls_out, index)
+        if start_upd_prot:
+            loss_cont = loss_cont_fn(features=features, mask=mask, batch_size=batch_size)
+            loss = loss_cls + pico_args['loss_weight'] * loss_cont
+        else:
+            loss = loss_cls   # paper-exact warm-up: L_cont omitted entirely
 
         optimizer.zero_grad()
         loss.backward()

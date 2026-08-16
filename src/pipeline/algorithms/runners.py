@@ -404,10 +404,20 @@ def run_pico_fixed(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size
     cont_loss = SupConLoss()
     opt = make_optimizer(model, hparams)
 
+    detail_on = detail.is_enabled(raw_cfg)
+
     chunk_t0 = time.perf_counter()
     for ep in range(epochs):
         cls_loss.set_conf_ema_m(ep, pico_args)
-        train_pico_epoch_fixed(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
+        if detail_on:
+            # See detail.train_pico_epoch_fixed_with_selection_stats: previously
+            # this branch didn't exist, so PiCO-Fixed never wrote
+            # pico_selection_stats.csv regardless of --detail.
+            detail.train_pico_epoch_fixed_with_selection_stats(
+                pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device,
+                raw_cfg, 'PiCO-Fixed', C)
+        else:
+            train_pico_epoch_fixed(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
         detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-Fixed')
         detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-Fixed')
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
