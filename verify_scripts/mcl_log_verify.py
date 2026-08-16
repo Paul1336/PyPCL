@@ -161,9 +161,17 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed)
 
 
-def train_model(model, loader, optimizer, criterion, device, epochs):
+def train_model(model, loader, optimizer, criterion, device, epochs, tag="train"):
+    """`tag` is just a log-line prefix (e.g. "grid-search lr=... wd=..." vs
+    "final") so long runs (in particular the full --epochs final-training
+    call, unlike the short --val_epochs grid-search calls) are visible in
+    the log instead of going silent for the whole run -- see the launcher's
+    log files (logs/verify_scripts/mcl_log.log)."""
     model.train()
-    for _epoch in range(epochs):
+    report_every = max(1, epochs // 20)
+    t0 = time.perf_counter()
+    for epoch in range(epochs):
+        epoch_loss, n_batches = 0.0, 0
         for imgs, comp_labels in loader:
             imgs = imgs.to(device)
             comp_labels = comp_labels.to(device)
@@ -174,6 +182,14 @@ def train_model(model, loader, optimizer, criterion, device, epochs):
                 raise RuntimeError("MCL_LOG loss went NaN during training")
             loss.backward()
             optimizer.step()
+            epoch_loss += loss.item()
+            n_batches += 1
+        if (epoch + 1) % report_every == 0 or epoch == 0 or epoch + 1 == epochs:
+            elapsed = time.perf_counter() - t0
+            s_per_ep = elapsed / (epoch + 1)
+            print(f"  [MCL-LOG][{tag}] epoch {epoch + 1}/{epochs}  "
+                  f"loss={epoch_loss / max(n_batches, 1):.4f}  "
+                  f"{s_per_ep:.1f}s/ep  ETA {(epochs - epoch - 1) * s_per_ep / 60:.1f}min", flush=True)
     return model
 
 
@@ -210,7 +226,8 @@ def run_grid_search(lr_grid, wd_grid, num_classes, gs_train_ds, gs_val_ds,
             model = create_model(num_classes).to(device)
             optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
             criterion = MCL_LOG(num_classes=num_classes)
-            train_model(model, gs_train_loader, optimizer, criterion, device, val_epochs)
+            train_model(model, gs_train_loader, optimizer, criterion, device, val_epochs,
+                        tag=f"grid-search lr={lr:g} wd={wd:g}")
             acc = evaluate(model, gs_val_loader, device)
             results.append({'lr': lr, 'wd': wd, 'val_accuracy': acc})
             print(f"[MCL-LOG][grid-search] lr={lr:g} wd={wd:g} -> "
@@ -318,7 +335,7 @@ def main(argv=None):
     criterion = MCL_LOG(num_classes=num_classes)
 
     t_final_start = time.time()
-    train_model(final_model, full_train_loader, optimizer, criterion, device, args.epochs)
+    train_model(final_model, full_train_loader, optimizer, criterion, device, args.epochs, tag="final")
     final_train_time_s = time.time() - t_final_start
 
     final_accuracy = evaluate(final_model, test_loader, device)
