@@ -3,6 +3,7 @@ data/
 plots/
 plots_legacy/
 results/
+results_legacy/
 
 # Ignore Python bytecode
 __pycache__/
