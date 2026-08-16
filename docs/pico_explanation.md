@@ -15,6 +15,17 @@
 > 損失 $\sum_j -s_{i,j}\log f_j(x_i)$）、以及 warm-up 原文（"we disable contrastive learning in
 > the first 100 epoch for CIFAR-100 with q=0.1 and 1 epoch for the remaining experiments"）都
 > 逐字確認跟下方比對表、跟已知落差描述完全一致。沒有發現新的問題。
+>
+> **2026-08-16 三次覆核（發現第二個實質落差）**：透過 `pypdf` 查證論文 "Pseudo Target Updating"
+> 段落原文——"we first initialize the pseudo targets with a uniform distribution,
+> $s_j=\frac1{|Y|}\mathbb{I}(j\in Y)$"——確認 pseudo target 的**初始化**應該跟 PRODEN 同一個精神：
+> 只在候選集 $Y$ 內均勻分佈，候選集外一律是 0。但 `run_pico`/`run_pico_fixed` 兩個都用
+> `torch.ones(N, C) / C`，是**全部 C 類均勻**，候選集外的類別也拿到跟候選集內一樣的初始權重。
+> 因為 `PartialLoss.forward` 沒有用候選集 mask 這個 confidence（`Eq. 6` 的更新又要等 warm-up
+> 結束才開始跑），這代表整個 warm-up 期間（原版預設 80 epoch）分類損失都在把機率往「所有類別」
+> 均攤，而不是論文設計的「只在候選集內給均等權重」——warm-up 期間的分類訊號被嚴重稀釋。
+> **已修正 `PiCO-Fixed`**（見下方「Fixed 版本」第 3 項），原版 `PiCO` 維持不動（使用者要求
+> 「原版不動」）。這是獨立於 warm-up $L_{cont}$ 那個已知落差的**第二個**問題。
 
 **論文來源：** Wang, H., Xiao, R., Li, Y., Feng, L., Niu, G., Chen, G., & Zhao, J. (2022).
 *PiCO: Contrastive Label Disambiguation for Partial Label Learning.* ICLR 2022.
@@ -107,7 +118,24 @@ $L_{cls}$、$L_{cont}$ 都是每個 iteration 無條件執行），warm-up 只�
 - **`prot_start` 預設值 80**（`config.yaml`）跟論文報告的任何一個值都對不上（論文預設 1 epoch，
   只有 CIFAR-100 q=0.1 這個最難的設定用 100 epoch）——80 是本專案自創的折衷值，沒有論文依據
 
-### 3. 其餘逐項核對：全部一致
+### 3. Pseudo target 初始化（**發現第二個實質落差**，2026-08-16）
+
+論文（"Pseudo Target Updating" 段落）："we first initialize the pseudo targets with a uniform
+distribution, $s_j=\frac1{|Y|}\mathbb{I}(j\in Y)$"——只在候選集 $Y$ 內均勻分佈，候選集外是 0。
+
+`run_pico`/`run_pico_fixed`（修正前）都用 `torch.ones(len(pl_ds), C) / C`：**全部 C 類均勻**，
+不管是不是候選集內的類別。`PartialLoss.forward`（`src/pico/utils_loss.py:29-33`）沒有用候選集
+mask 這個 confidence（`final_outputs = logsm_outputs * self.confidence[index, :]`，沒有再乘
+`partial_Y`），而 confidence 只有 warm-up 結束後才會被 `confidence_update` 刷新（見上方第 2 項）——
+兩者疊加的結果：整個 warm-up 期間，分類損失都是拿「全 C 類均勻」當目標分佈，等同於單純把模型的
+輸出往均勻分佈推，而不是論文設計的「候選集內均勻、候選集外靠 softmax 正規化間接壓低、不直接給
+它們訊號」。原版預設 `prot_start=80`，代表 80 epoch 的分類訊號被嚴重稀釋。
+
+**已修正 `PiCO-Fixed`**（`_candidate_masked_init_conf`，`src/pipeline/algorithms/runners.py`），
+跟 `ProdenLoss.__init__` 用同一種建構方式（候選集內 `1/|s_i|`，候選集外 0）。**`PiCO` 原版維持
+不動**，只是本專案沿用至今的既有行為，不重現論文這個初始化細節。
+
+### 4. 其餘逐項核對：全部一致
 
 | 論文 | 程式碼 | 結果 |
 |---|---|---|
@@ -144,6 +172,12 @@ $L_{cls}$、$L_{cont}$ 都是每個 iteration 無條件執行），warm-up 只�
 - 沿用跟 `run_pico` 相同的模型/loss 建構，只是訓練迴圈換成 `train_pico_epoch_fixed`
 - `prot_start` 預設改成 **1**（跟隨論文的一般預設；若要重現 CIFAR-100 q=0.1 的設定，需要在
   `config.yaml` 的 `pico` 區塊加一個 `prot_start_fixed: 100` 覆寫，程式碼已支援這個可選 key）
+- **（2026-08-16 新增）pseudo target 初始化改用 `_candidate_masked_init_conf`**：候選集內
+  `1/|s_i|`、候選集外 0（論文 Eq. 6：$s_j=\frac1{|Y|}\mathbb{I}(j\in Y)$），取代原本的
+  `torch.ones(N,C)/C` 全類均勻。見上方 Step 2 第 3 項。單元測試（純 CPU，不需要資料集）驗證過
+  `[0,2,5]` 候選集在 C=6 下輸出 `[1/3,0,1/3,0,0,1/3]`，總和為 1，數值正確。
+- `PiCO`（原版）**維持不動**，這兩個落差（warm-up $L_{cont}$ 處理方式、pseudo target 初始化）
+  都只反映在 `PiCO-Fixed`。
 - 已註冊為 `AlgorithmSpec('PiCO-Fixed', 'PLL', r.run_pico_fixed)`
 
 ---

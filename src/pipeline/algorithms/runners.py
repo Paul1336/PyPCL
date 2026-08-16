@@ -43,6 +43,8 @@ from src.proden_loss import ProdenLoss
 from src.scl_loss import SCL_NL
 from src.wu_loss import WuPLLLoss
 
+from src.pipeline import detail
+
 from .hparams import make_optimizer
 
 _MEAN = [0.4914, 0.4822, 0.4465]
@@ -201,6 +203,8 @@ def run_cpe(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epoch
                 opt.step()
         elapsed = time.perf_counter() - t0
         final_acc = _evaluate_argmin(model, loaders['test'], device)
+        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep_start + chunk, 'CPE',
+                                     predict='argmin')
         _print_eta(tag, ep_start + chunk, epochs, elapsed, chunk)
 
     del model, opt
@@ -233,6 +237,8 @@ def run_proden(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, ep
             loss_fn(model(imgs), indices).backward()
             opt.step()
 
+        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PRODEN')
+
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             final_acc = evaluate_model(model, loaders['test'], device)
             elapsed = time.perf_counter() - chunk_t0
@@ -259,10 +265,25 @@ def run_pico(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epoc
     cont_loss = SupConLoss()
     opt = make_optimizer(model, hparams)
 
+    detail_on = detail.is_enabled(raw_cfg)
+
     chunk_t0 = time.perf_counter()
     for ep in range(epochs):
         cls_loss.set_conf_ema_m(ep, pico_args)
-        train_pico_epoch(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
+        if detail_on:
+            # Instrumented copy of train_pico_epoch that also measures, per
+            # BATCH, contrastive positive/negative pair-selection precision
+            # against ground truth -- see src/pipeline/detail.py. Logs to
+            # pico_selection_stats.csv internally (buffered, flushed once
+            # per epoch).
+            detail.train_pico_epoch_with_selection_stats(
+                pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device,
+                raw_cfg, 'PiCO', C)
+        else:
+            train_pico_epoch(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
+
+        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO')
+
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             elapsed = time.perf_counter() - chunk_t0
             _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
@@ -277,16 +298,35 @@ def run_pico(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epoc
     return acc
 
 
+def _candidate_masked_init_conf(pl_ds, C: int, device) -> torch.Tensor:
+    """Paper-faithful pseudo-target initialization (PiCO Eq. 6): s_j =
+    1/|Y| * I(j in Y) -- uniform WITHIN the candidate set only, zero outside
+    it. See docs/pico_explanation.md's newly-found discrepancy: run_pico's
+    `torch.ones(N, C) / C` is uniform over ALL C classes regardless of the
+    candidate set, which the paper's own text ("we first initialize the
+    pseudo targets with a uniform distribution, s_j = 1/|Y| * I(j in Y)")
+    does not support -- it gives equal initial weight even to classes
+    provably not the true label, diluting the classification loss's signal
+    for the whole warm-up period. Same construction as ProdenLoss.__init__
+    (src/proden_loss.py), which already does this correctly."""
+    conf = torch.zeros(len(pl_ds), C)
+    for i, cands in enumerate(pl_ds.targets):
+        conf[i, cands] = 1.0 / len(cands)
+    return conf.to(device)
+
+
 def run_pico_fixed(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
     # See docs/pico_explanation.md: paper-faithful warm-up (L_cont omitted
-    # entirely, not switched to plain MoCo) and prot_start default following
+    # entirely, not switched to plain MoCo), prot_start default following
     # the paper's Appendix B.1 (1 epoch; use 100 for CIFAR-100 @ q=0.1 runs
-    # by overriding config.yaml's pico.prot_start for that specific config).
+    # by overriding config.yaml's pico.prot_start for that specific config),
+    # and candidate-set-masked pseudo-target initialization (Eq. 6) instead
+    # of run_pico's uniform-over-all-C-classes init.
     pico_cfg = raw_cfg['pico']
     pico_args = _pico_args(C, epochs, pico_cfg)
     pico_args['prot_start'] = pico_cfg.get('prot_start_fixed', 1)
     model = PiCOModel(pico_args).to(device)
-    init_conf = torch.ones(len(pl_ds), C).to(device) / C
+    init_conf = _candidate_masked_init_conf(pl_ds, C, device)
     cls_loss = PartialLoss(init_conf)
     cont_loss = SupConLoss()
     opt = make_optimizer(model, hparams)
@@ -295,6 +335,7 @@ def run_pico_fixed(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size
     for ep in range(epochs):
         cls_loss.set_conf_ema_m(ep, pico_args)
         train_pico_epoch_fixed(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
+        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-Fixed')
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             elapsed = time.perf_counter() - chunk_t0
             _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
@@ -320,6 +361,7 @@ def run_pico_mcl(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, 
     chunk_t0 = time.perf_counter()
     for ep in range(epochs):
         train_pico_mclloss_epoch(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
+        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-MCL')
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             elapsed = time.perf_counter() - chunk_t0
             _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
@@ -347,6 +389,7 @@ def run_pico_sc(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, e
     for ep in range(epochs):
         cls_loss.set_conf_ema_m(ep)
         train_pico_sc_epoch(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
+        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-SC')
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             elapsed = time.perf_counter() - chunk_t0
             _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
@@ -389,6 +432,8 @@ def run_pico_cls(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, 
             opt.step()
             loss_fn.update_confidence(out.detach(), indices)
 
+        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-CLS')
+
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             final_acc = evaluate_model(model, loaders['test'], device)
             elapsed = time.perf_counter() - chunk_t0
@@ -428,6 +473,7 @@ def run_comco(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epo
     chunk_t0 = time.perf_counter()
     for ep in range(epochs):
         train_comco_epoch(comco_args, model, loaders['comco'], cls_loss, cont_loss, opt, ep, device)
+        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'ComCo')
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             elapsed = time.perf_counter() - chunk_t0
             _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
@@ -468,6 +514,7 @@ def run_comco_fixed(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_siz
     chunk_t0 = time.perf_counter()
     for ep in range(epochs):
         train_comco_epoch(comco_args, model, loaders['comco'], cls_loss, cont_loss, opt, ep, device)
+        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'ComCo-Fixed')
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             elapsed = time.perf_counter() - chunk_t0
             _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
