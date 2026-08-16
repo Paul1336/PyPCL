@@ -1,6 +1,7 @@
 # Ignore generated data and results
 data/
 plots/
+plots_legacy/
 results/
 
 # Ignore Python bytecode
