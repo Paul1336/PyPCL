@@ -241,6 +241,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
                     help='Binomial false-label inclusion probability (paper: 0.1 or 0.7; default 0.1).')
     p.add_argument('--data_dir', type=str, default='./data',
                     help='CIFAR-10 download/cache directory.')
+    p.add_argument('--report_every', type=int, default=0,
+                    help='Print progress every N epochs (0 = default cadence of epochs//20, '
+                         'i.e. ~20 prints total). Epoch 0 and the final epoch always print '
+                         'regardless of this value.')
     return p
 
 
@@ -291,7 +295,8 @@ def main(args=None) -> float:
         test_accuracies.append(acc)
 
         avg_loss = epoch_loss_sum / max(n_batches, 1)
-        if (epoch + 1) % max(1, args.epochs // 20 or 1) == 0 or epoch == 0 or epoch + 1 == args.epochs:
+        report_every = args.report_every if args.report_every > 0 else max(1, args.epochs // 20 or 1)
+        if (epoch + 1) % report_every == 0 or epoch == 0 or epoch + 1 == args.epochs:
             print(f'  epoch {epoch + 1:>4}/{args.epochs}  loss={avg_loss:.4f}  test_acc={acc:.2f}%', flush=True)
 
     training_time_s = time.perf_counter() - t0
