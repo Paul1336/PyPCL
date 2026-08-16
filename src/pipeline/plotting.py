@@ -19,6 +19,7 @@ STYLES = {
     'Wu2022':   dict(color='#17becf', marker='D', linestyle='--', linewidth=2, markersize=6),
     'PRODEN':   dict(color='#2ca02c', marker='^', linestyle='-',  linewidth=2, markersize=6),
     'PiCO':     dict(color='#9467bd', marker='s', linestyle='--', linewidth=2, markersize=6),
+    'PiCO-Oracle': dict(color='#4b0082', marker='*', linestyle='-', linewidth=2, markersize=8),
     'PiCO-MCL': dict(color='#bcbd22', marker='p', linestyle=':',  linewidth=2, markersize=6),
     'PiCO-SC':  dict(color='#98df8a', marker='h', linestyle='--', linewidth=2, markersize=6),
     'PiCO-CLS': dict(color='#e377c2', marker='*', linestyle='-',  linewidth=2.5, markersize=8),

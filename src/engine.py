@@ -94,6 +94,44 @@ def train_pico_epoch(pico_args, model, loader, loss_fn, loss_cont_fn, optimizer,
     return total_loss / len(loader)
 
 
+def train_pico_moco_epoch(pico_args, model, loader, loss_fn, loss_cont_fn, optimizer, epoch, device):
+    """PiCO-MOCO: identical to train_pico_epoch except the contrastive mask is
+    NEVER built from candidate-set/prototype-pseudo-label agreement, even
+    after warm-up ends. `mask` stays None for the whole run, so SupConLoss
+    always falls back to its unsupervised MoCo InfoNCE branch: the only
+    positive pair for a sample is its own weak/strong augmentation pair
+    (q · k), never other same-(pseudo)class samples from the batch/queue.
+    Confidence/pseudo-target updates (Eq. 6) still gate on `start_upd_prot`
+    exactly like train_pico_epoch -- that governs the classification target,
+    not contrastive positive-pair selection, so it is left unchanged.
+    """
+    model.train()
+    total_loss = 0
+    start_upd_prot = epoch >= pico_args['prot_start']
+
+    progress_bar = tqdm(loader, desc=f"PiCO-MOCO Epoch {epoch + 1}/{pico_args['epochs']}")
+    for (images_w, images_s, partial_Y, true_labels, index) in progress_bar:
+        images_w, images_s, partial_Y, index = images_w.to(device), images_s.to(device), partial_Y.to(device), index.to(device)
+
+        cls_out, features, pseudo_target_cont, score_prot = model(images_w, images_s, partial_Y, pico_args)
+        batch_size = cls_out.shape[0]
+
+        if start_upd_prot:
+            loss_fn.confidence_update(temp_un_conf=score_prot.detach(), batch_index=index, batchY=partial_Y)
+
+        loss_cls = loss_fn(cls_out, index)
+        loss_cont = loss_cont_fn(features=features, mask=None, batch_size=batch_size)
+        loss = loss_cls + pico_args['loss_weight'] * loss_cont
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
+    return total_loss / len(loader)
+
+
 def train_pico_mclloss_epoch(pico_args, model, loader, loss_fn, loss_cont_fn, optimizer, epoch, device):
     """Single training epoch for PiCO-MCL: uses MCL-LOG style cls loss instead of PartialLoss."""
     model.train()

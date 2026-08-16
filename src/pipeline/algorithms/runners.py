@@ -28,15 +28,16 @@ from src.cpe_loss import CPELoss
 from src.data_utils import SoLarDataset
 from src.engine import (evaluate_model, train_algorithm, train_comco_epoch,
                          train_pico_epoch, train_pico_mclloss_epoch,
-                         train_pico_sc_epoch, train_solar)
+                         train_pico_moco_epoch, train_pico_sc_epoch, train_solar)
 from src.fixed_pico_engine import train_pico_epoch_fixed
+from src.oracle_pico_engine import train_pico_oracle_epoch
 from src.mcl_losses import MCL_LOG
 from src.fixed_mcl_losses import FixedMCLLog
 from src.model_setup import setup_solar
 from src.models import create_model_for_spec
 from src.op_loss import OPLoss, OPWLoss
 from src.pico.mcl_cls_loss import PiCOMCLLoss
-from src.pico.model import PiCOModel
+from src.pico.model import PiCOModel, PiCOOracleModel
 from src.pico.utils_loss import PartialLoss, SupConLoss
 from src.pico_cls_loss import PiCOCLSLoss
 from src.proden_loss import ProdenLoss
@@ -284,6 +285,77 @@ def run_pico(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epoc
 
         detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO')
         detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO')
+
+        if (ep + 1) % report_every == 0 or ep + 1 == epochs:
+            elapsed = time.perf_counter() - chunk_t0
+            _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
+            chunk_t0 = time.perf_counter()
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    acc = evaluate_model(model, loaders['test'], device)
+    del model, cls_loss, cont_loss, opt, init_conf
+    gc.collect()
+    torch.cuda.empty_cache()
+    return acc
+
+
+def run_pico_oracle(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
+    """Ablation: identical to run_pico except the contrastive loss's
+    positive/negative pair selection is driven by the ground-truth label
+    (PiCOOracleModel's queue_true) instead of the prototype-derived
+    pseudo-label. Not for real use -- see src/oracle_pico_engine.py."""
+    pico_cfg = raw_cfg['pico']
+    pico_args = _pico_args(C, epochs, pico_cfg)
+    model = PiCOOracleModel(pico_args).to(device)
+    init_conf = torch.ones(len(pl_ds), C).to(device) / C
+    cls_loss = PartialLoss(init_conf)
+    cont_loss = SupConLoss()
+    opt = make_optimizer(model, hparams)
+
+    chunk_t0 = time.perf_counter()
+    for ep in range(epochs):
+        cls_loss.set_conf_ema_m(ep, pico_args)
+        train_pico_oracle_epoch(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
+
+        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-Oracle')
+        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-Oracle')
+
+        if (ep + 1) % report_every == 0 or ep + 1 == epochs:
+            elapsed = time.perf_counter() - chunk_t0
+            _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
+            chunk_t0 = time.perf_counter()
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    acc = evaluate_model(model, loaders['test'], device)
+    del model, cls_loss, cont_loss, opt, init_conf
+    gc.collect()
+    torch.cuda.empty_cache()
+    return acc
+
+
+def run_pico_moco(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
+    """PiCO-MOCO: identical to run_pico except the contrastive positive pair
+    is always the sample's own weak/strong augmentation pair, even after
+    warm-up ends -- the candidate-set/prototype-pseudo-label-driven SupCon
+    mask (mask = same predicted class in batch+queue) is never built. See
+    src/engine.py::train_pico_moco_epoch."""
+    pico_cfg = raw_cfg['pico']
+    pico_args = _pico_args(C, epochs, pico_cfg)
+    model = PiCOModel(pico_args).to(device)
+    init_conf = torch.ones(len(pl_ds), C).to(device) / C
+    cls_loss = PartialLoss(init_conf)
+    cont_loss = SupConLoss()
+    opt = make_optimizer(model, hparams)
+
+    chunk_t0 = time.perf_counter()
+    for ep in range(epochs):
+        cls_loss.set_conf_ema_m(ep, pico_args)
+        train_pico_moco_epoch(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
+
+        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-MOCO')
+        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-MOCO')
 
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             elapsed = time.perf_counter() - chunk_t0
