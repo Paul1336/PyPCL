@@ -37,6 +37,13 @@ set -uo pipefail   # NOT -e: a failed cell must not kill the dispatcher
 
 cd "$(dirname "$0")/.."
 
+# This server's nvidia-smi GPU numbering doesn't match CUDA's default
+# (FASTEST_FIRST) ordering -- without this, --gpus 0,1,2,3 here can point
+# CUDA_VISIBLE_DEVICES at different physical cards than what nvidia-smi
+# shows under the same numbers. PCI_BUS_ID makes CUDA's device indices
+# match nvidia-smi's.
+export CUDA_DEVICE_ORDER=PCI_BUS_ID
+
 GPUS_CSV="0,1,2,3"
 EPOCHS=200
 DRY_RUN=0
