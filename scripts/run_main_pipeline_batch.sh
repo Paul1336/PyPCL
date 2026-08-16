@@ -1,24 +1,35 @@
 #!/usr/bin/env bash
-# Runs the 6 algorithms (Fixed variant preferred where one exists) through
-# the MAIN comparison pipeline (scripts/run_pipeline.py) -- NOT
-# verify_scripts/ -- for C=20, k in {1,5,10,15,19}, spread across GPU slots.
-# A failed (algorithm, k) cell is logged as a warning and does NOT stop the
-# rest of the batch; once every cell in the queue has been attempted once,
-# any that failed are automatically retried a second time.
+# Runs 9 algorithms (Fixed variant preferred where one exists, plus the
+# PiCO-family ablations) through the MAIN comparison pipeline
+# (scripts/run_pipeline.py) -- NOT verify_scripts/ -- for C=20,
+# k in {19,15,10,5,1} (LARGEST k first), spread across GPU slots, with
+# --detail --tsne enabled. A failed (algorithm, k) cell is logged as a
+# warning and does NOT stop the rest of the batch; once every cell in the
+# queue has been attempted once, any that failed are automatically retried
+# a second time.
 #
 # Algorithms used: CLPL, PRODEN (no Fixed variant exists for either -- the
-# originals were already audited as paper-faithful), PiCO-Fixed,
-# MCL-LOG-Fixed, ComCo-Fixed (Fixed preferred per request), SCL-NL (no
-# Fixed variant).
+# originals were already audited as paper-faithful), PiCO, PiCO-Fixed,
+# PiCO-Oracle, PiCO-MOCO (all four PiCO variants -- Oracle/MOCO are
+# diagnostic ablations, not "real" algorithms, but --detail/--tsne are
+# already confirmed correctly wired for all four: every run_pico* function
+# calls detail.maybe_log_checkpoint + detail.maybe_plot_tsne, and
+# maybe_plot_tsne's hasattr(model, 'encoder_q') gate matches PiCOModel and
+# PiCOOracleModel alike), MCL-LOG-Fixed, ComCo-Fixed (Fixed preferred per
+# request), SCL-NL (no Fixed variant).
 #
-# Each (algorithm, k) cell gets its own run_name (main_c20_k<k>_<alg>), so
-# concurrent GPU workers never share a shard file -- same reasoning as
-# run_paper_bench_parallel.sh's per-job run_name scheme.
+# Job queue is k-major/algorithm-minor (interleaved across algorithms, not
+# grouped) specifically so every algorithm starts making progress early
+# instead of one algorithm exhausting all its k's before the next begins.
+#
+# Each (algorithm, k) cell gets its own run_name (new_main_c20_k<k>_<alg>,
+# "new_" prefix to keep this batch's results separate from any earlier
+# main_c20_* batch), so concurrent GPU workers never share a shard file --
+# same reasoning as run_paper_bench_parallel.sh's per-job run_name scheme.
 #
 # Usage:
-#   scripts/run_main_pipeline_batch.sh                                  # 8 GPUs (0-7), 200 epochs
-#   scripts/run_main_pipeline_batch.sh --gpus 0,1,2,3                     # fewer GPUs
-#   scripts/run_main_pipeline_batch.sh --gpus 0,1,2,3 --jobs_per_gpu 2      # 4 GPUs, 2 jobs sharing each
+#   scripts/run_main_pipeline_batch.sh                                  # GPUs 0-3, 2 jobs/GPU, 200 epochs
+#   scripts/run_main_pipeline_batch.sh --gpus 0,1,2,3,4,5,6,7 --jobs_per_gpu 1   # 8 GPUs, 1 job/GPU
 #   scripts/run_main_pipeline_batch.sh --epochs 300                       # override epoch count
 #   scripts/run_main_pipeline_batch.sh --dry_run                           # preview, run nothing
 
@@ -26,10 +37,10 @@ set -uo pipefail   # NOT -e: a failed cell must not kill the dispatcher
 
 cd "$(dirname "$0")/.."
 
-GPUS_CSV="0,1,2,3,4,5,6,7"
+GPUS_CSV="0,1,2,3"
 EPOCHS=200
 DRY_RUN=0
-JOBS_PER_GPU=1
+JOBS_PER_GPU=2
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -57,24 +68,27 @@ for g in "${PHYS_GPUS[@]}"; do
 done
 NUM_GPUS=${#GPUS[@]}
 
-ALGORITHMS=(CLPL PRODEN PiCO-Fixed MCL-LOG-Fixed ComCo-Fixed SCL-NL)
-K_VALUES=(1 5 10 15 19)
+ALGORITHMS=(CLPL PRODEN PiCO PiCO-Fixed PiCO-Oracle PiCO-MOCO MCL-LOG-Fixed ComCo-Fixed SCL-NL)
+K_VALUES=(19 15 10 5 1)   # largest first, per request
 
 LOG_DIR="logs/main_pipeline_batch"
 mkdir -p "$LOG_DIR"
 FAIL_LOG="$LOG_DIR/failures.log"
 : > "$FAIL_LOG"
 
+# k-major/algorithm-minor: every algorithm gets queued at k=19 before ANY
+# algorithm's k=15 job appears, etc. -- interleaved so all 9 algorithms
+# start making progress early instead of running algorithm-by-algorithm.
 JOBS=()
-for alg in "${ALGORITHMS[@]}"; do
-    for k in "${K_VALUES[@]}"; do
+for k in "${K_VALUES[@]}"; do
+    for alg in "${ALGORITHMS[@]}"; do
         JOBS+=("${alg}|${k}")
     done
 done
 
 _run_name_for() {
-    # "PiCO-Fixed" -> "pico_fixed"
-    echo "main_c20_k${2}_$(echo "$1" | tr '[:upper:]' '[:lower:]' | tr '-' '_')"
+    # "PiCO-Fixed" -> "new_main_c20_k<k>_pico_fixed"
+    echo "new_main_c20_k${2}_$(echo "$1" | tr '[:upper:]' '[:lower:]' | tr '-' '_')"
 }
 
 echo "Jobs: ${#JOBS[@]}  (${#ALGORITHMS[@]} algorithms x ${#K_VALUES[@]} k-values), C=20, epochs=$EPOCHS"
@@ -155,6 +169,7 @@ _run_queue() {
         echo "[START $((idx + 1))/$total][$pass_label] gpu=$gpu $desc"
         CUDA_VISIBLE_DEVICES="$gpu" python scripts/run_pipeline.py run \
             --run_name "$run_name" --algorithms "$alg" --c_values 20 --only_k "$k" --epochs "$EPOCHS" \
+            --detail --tsne \
             > "$log_file" 2>&1 &
 
         SLOT_PID[$slot]=$!
@@ -198,4 +213,5 @@ else
     echo "Done. All ${#JOBS[@]} job(s) completed successfully$( [[ ${#PASS1_FAILED[@]} -gt 0 ]] && echo " (after retry)" )."
 fi
 echo ""
-echo "Results: results/main_c20_k<k>_<alg>/results.csv"
+echo "Results: results/new_main_c20_k<k>_<alg>/results.csv"
+echo "Detail/tsne output: results/new_main_c20_k<k>_<alg>/detail/<algorithm>/C20_k<k>/"
