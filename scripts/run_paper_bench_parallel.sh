@@ -4,7 +4,7 @@
 # docs/*_explanation.md's "實驗 Config" section) across N GPUs in parallel,
 # one job per free GPU slot at a time.
 #
-# Unlike scripts/run_paper_original_benchmarks.sh (sequential, single GPU),
+# Unlike scripts/legacy/run_paper_original_benchmarks.sh (sequential, single GPU),
 # this dispatches jobs onto whichever GPU slot frees up next. A FAILED job
 # is logged to $FAIL_LOG and does NOT stop the rest of the queue -- the
 # dispatcher just moves on to the next job.
