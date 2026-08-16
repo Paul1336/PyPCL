@@ -16,10 +16,11 @@
 # run_paper_bench_parallel.sh's per-job run_name scheme.
 #
 # Usage:
-#   scripts/run_main_pipeline_batch.sh                       # 8 GPUs (0-7), 200 epochs
-#   scripts/run_main_pipeline_batch.sh --gpus 0,1,2,3          # fewer GPUs
-#   scripts/run_main_pipeline_batch.sh --epochs 300            # override epoch count
-#   scripts/run_main_pipeline_batch.sh --dry_run                # preview, run nothing
+#   scripts/run_main_pipeline_batch.sh                                  # 8 GPUs (0-7), 200 epochs
+#   scripts/run_main_pipeline_batch.sh --gpus 0,1,2,3                     # fewer GPUs
+#   scripts/run_main_pipeline_batch.sh --gpus 0,1,2,3 --jobs_per_gpu 2      # 4 GPUs, 2 jobs sharing each
+#   scripts/run_main_pipeline_batch.sh --epochs 300                       # override epoch count
+#   scripts/run_main_pipeline_batch.sh --dry_run                           # preview, run nothing
 
 set -uo pipefail   # NOT -e: a failed cell must not kill the dispatcher
 
@@ -28,17 +29,32 @@ cd "$(dirname "$0")/.."
 GPUS_CSV="0,1,2,3,4,5,6,7"
 EPOCHS=200
 DRY_RUN=0
+JOBS_PER_GPU=1
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --gpus)    GPUS_CSV="$2"; shift 2 ;;
-        --epochs)  EPOCHS="$2"; shift 2 ;;
-        --dry_run) DRY_RUN=1; shift ;;
+        --gpus)          GPUS_CSV="$2"; shift 2 ;;
+        --epochs)        EPOCHS="$2"; shift 2 ;;
+        --jobs_per_gpu)  JOBS_PER_GPU="$2"; shift 2 ;;
+        --dry_run)       DRY_RUN=1; shift ;;
         *) echo "error: unknown argument '$1'" >&2; exit 1 ;;
     esac
 done
 
-IFS=',' read -r -a GPUS <<< "$GPUS_CSV"
+IFS=',' read -r -a PHYS_GPUS <<< "$GPUS_CSV"
+# Each physical GPU gets JOBS_PER_GPU concurrent slots (same CUDA_VISIBLE_DEVICES
+# value repeated N times) -- e.g. --gpus 0,1,2,3 --jobs_per_gpu 2 gives 8 slots
+# across 4 physical GPUs, 2 jobs sharing each one at a time. CUDA/PyTorch
+# already time-slices multiple processes on one GPU fine; this only helps if
+# a single job doesn't saturate the GPU's compute/memory on its own (true for
+# most of these algorithms at moderate batch sizes -- if you hit OOM, drop
+# back to --jobs_per_gpu 1).
+GPUS=()
+for g in "${PHYS_GPUS[@]}"; do
+    for ((i = 0; i < JOBS_PER_GPU; i++)); do
+        GPUS+=("$g")
+    done
+done
 NUM_GPUS=${#GPUS[@]}
 
 ALGORITHMS=(CLPL PRODEN PiCO-Fixed MCL-LOG-Fixed ComCo-Fixed SCL-NL)
@@ -64,7 +80,7 @@ _run_name_for() {
 echo "Jobs: ${#JOBS[@]}  (${#ALGORITHMS[@]} algorithms x ${#K_VALUES[@]} k-values), C=20, epochs=$EPOCHS"
 echo "Algorithms: ${ALGORITHMS[*]}"
 echo "k values: ${K_VALUES[*]}"
-echo "GPU slots: ${GPUS[*]}"
+echo "Physical GPUs: ${PHYS_GPUS[*]}  (x${JOBS_PER_GPU} jobs/GPU -> ${NUM_GPUS} concurrent slot(s): ${GPUS[*]})"
 echo ""
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
