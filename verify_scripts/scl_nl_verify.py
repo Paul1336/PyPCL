@@ -164,7 +164,12 @@ def set_seed(seed):
 
 
 def train_model(model, loader, optimizer, criterion, device, epochs, lr_tag='', report_every=50):
+    # report_every kept as a parameter (still accepted, e.g. by callers) but
+    # no longer gates whether a line prints -- every epoch reports now. A
+    # silent multi-epoch gap was easy to mistake for a hang, per user
+    # feedback after a real interruption incident.
     model.train()
+    run_t0 = time.time()
     for epoch in range(epochs):
         t0 = time.time()
         epoch_loss = 0.0
@@ -181,9 +186,11 @@ def train_model(model, loader, optimizer, criterion, device, epochs, lr_tag='', 
             optimizer.step()
             epoch_loss += loss.item()
             n_batches += 1
-        if report_every and ((epoch + 1) % report_every == 0 or epoch == epochs - 1):
-            print(f"  [SCL-NL][lr={lr_tag}] epoch {epoch + 1}/{epochs} "
-                  f"avg_loss={epoch_loss / max(n_batches, 1):.4f} ({time.time() - t0:.1f}s/ep)", flush=True)
+        epoch_s = time.time() - t0
+        avg_s_per_ep = (time.time() - run_t0) / (epoch + 1)
+        eta_min = avg_s_per_ep * (epochs - epoch - 1) / 60
+        print(f"  [SCL-NL][lr={lr_tag}] epoch {epoch + 1}/{epochs} "
+              f"avg_loss={epoch_loss / max(n_batches, 1):.4f}  {epoch_s:.1f}s/ep  ETA {eta_min:.1f}min", flush=True)
     return model
 
 

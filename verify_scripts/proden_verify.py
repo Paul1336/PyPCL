@@ -278,6 +278,7 @@ def main(args=None) -> float:
     test_accuracies = []
     t0 = time.perf_counter()
     for epoch in range(args.epochs):
+        epoch_t0 = time.perf_counter()
         model.train()
         epoch_loss_sum = 0.0
         n_batches = 0
@@ -295,9 +296,14 @@ def main(args=None) -> float:
         test_accuracies.append(acc)
 
         avg_loss = epoch_loss_sum / max(n_batches, 1)
-        report_every = args.report_every if args.report_every > 0 else max(1, args.epochs // 20 or 1)
-        if (epoch + 1) % report_every == 0 or epoch == 0 or epoch + 1 == args.epochs:
-            print(f'  epoch {epoch + 1:>4}/{args.epochs}  loss={avg_loss:.4f}  test_acc={acc:.2f}%', flush=True)
+        epoch_s = time.perf_counter() - epoch_t0
+        avg_s_per_ep = (time.perf_counter() - t0) / (epoch + 1)
+        eta_min = avg_s_per_ep * (args.epochs - epoch - 1) / 60
+        # Reports every epoch (was gated by --report_every / epochs//20) --
+        # a silent-until-the-next-checkpoint gap was easy to mistake for a
+        # hang, per user feedback after a real interruption incident.
+        print(f'  epoch {epoch + 1:>4}/{args.epochs}  loss={avg_loss:.4f}  test_acc={acc:.2f}%  '
+              f'{epoch_s:.1f}s/ep  ETA {eta_min:.1f}min', flush=True)
 
     training_time_s = time.perf_counter() - t0
 
