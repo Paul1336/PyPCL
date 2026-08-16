@@ -15,10 +15,11 @@ from src.pipeline.datasets.specs import DatasetSpec, DatasetUnavailableError
 
 
 def _build_registry() -> dict:
-    from src.pipeline.datasets import image_builtin
+    from src.pipeline.datasets import image_builtin, cifar10
 
     registry = {}
     registry.update(image_builtin.DATASETS_BY_NAME)
+    registry.update(cifar10.DATASETS_BY_NAME)
 
     # Phase 2 (tabular/text) -- added only if their optional dependencies
     # (ucimlrepo, scikit-learn) are importable, so a bare pipeline install
