@@ -18,7 +18,7 @@ from src.pipeline.gpu import assign_algorithms, get_device
 # (loaders['pico'] / loaders['comco']) -- unsupported on any DatasetSpec with
 # supports_pico_family=False (grayscale, tabular, preambiguous-feature, or
 # lazy-path datasets). See docs/00_paper_alignment_guide.md.
-IMAGE_ONLY_ALGORITHMS = {'PiCO', 'PiCO-Fixed', 'PiCO-MCL', 'PiCO-SC', 'ComCo', 'ComCo-Fixed', 'SoLar'}
+IMAGE_ONLY_ALGORITHMS = {'PiCO', 'PiCO-Oracle', 'PiCO-MOCO', 'PiCO-Fixed', 'PiCO-MCL', 'PiCO-SC', 'ComCo', 'ComCo-Fixed', 'SoLar'}
 
 
 def _dataset_spec(dataset_name: str):
