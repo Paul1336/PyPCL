@@ -44,14 +44,14 @@ def _get_raw(dataset_name: str, data_dir: str) -> dict:
 
 
 def _make_loader(dataset_name: str):
-    def loader(C, k, data_dir, seed, log_dir, batch_size):
+    def loader(C, k, data_dir, seed, log_dir, batch_size, q=None):
         raw = _get_raw(dataset_name, data_dir)
         spec = DATASETS_BY_NAME[dataset_name]
         if C != spec.fixed_num_classes:
             raise ValueError(f"'{dataset_name}' has a fixed {spec.fixed_num_classes} classes, got C={C}")
         return build_image_loaders_full(
             raw['train_data'], raw['train_targets'], raw['test_data'], raw['test_targets'],
-            spec, k, batch_size, seed=seed, log_dir=log_dir)
+            spec, k, batch_size, seed=seed, log_dir=log_dir, q=q)
     return loader
 
 
@@ -60,7 +60,7 @@ def _build_specs() -> dict:
     for name in ('mnist', 'fashion-mnist', 'kmnist'):
         specs[name] = DatasetSpec(
             name=name, modality='image', backbone='cnn', fixed_num_classes=10,
-            supports_pico_family=False, loader=_make_loader(name),
+            supports_pico_family=False, loader=_make_loader(name), supports_q=True,
             in_channels=1, image_size=28, mean=_MNIST_MEAN, std=_MNIST_STD,
             notes='Grayscale; PiCO/ComCo/SoLar unsupported (RGB-only augmentation ops).',
         )

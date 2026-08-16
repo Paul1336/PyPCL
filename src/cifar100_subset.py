@@ -130,6 +130,7 @@ def prepare_cifar100_subset(
     log_dir: str = "logs/cifar100_subset",
     hierarchical: bool = False,
     hierarchical_q: float = None,
+    q: float = None,
 ):
     """
     Loads CIFAR-100, selects `total_classes` classes, generates PL labels
@@ -139,8 +140,8 @@ def prepare_cifar100_subset(
     Args:
         total_classes:    Number of classes to use (2–100).
         n_partial_labels: k, number of candidate labels per sample (1 ≤ k ≤ C-1).
-                           Ignored when hierarchical_q is set (q-based generation
-                           has no fixed candidate-set size).
+                           Ignored when hierarchical_q or q is set (both are
+                           probabilistic, with no fixed candidate-set size).
         data_dir:         Directory where CIFAR-100 is / will be downloaded.
         seed:             RNG seed for class selection (fixed per total_classes).
         log_dir:          Directory for JSON selection logs.
@@ -156,6 +157,13 @@ def prepare_cifar100_subset(
                            (see ComparisonDataGenerator.generate_pl_dataset_hierarchical_variable).
                            Takes priority over `hierarchical` and `n_partial_labels`
                            if both are given.
+        q:                If set (0-1), each false label (no superclass
+                           restriction -- unlike hierarchical_q) is independently
+                           included w.p. q (see generate_variable_pl_cl_datasets).
+                           This is --only_q's general (non-CIFAR-100-H-specific)
+                           path. Takes priority over `hierarchical`/`n_partial_labels`
+                           if given; mutually exclusive with hierarchical_q (caller's
+                           responsibility -- runner.py never sets both).
 
     Returns:
         pl_dataset_raw:   WeaklySupervisedDataset with PL targets.
@@ -164,7 +172,7 @@ def prepare_cifar100_subset(
         test_info:        (test_data: np.ndarray, test_targets: list[int]).
         log_info:         dict with selection metadata.
     """
-    if hierarchical_q is None and not (1 <= n_partial_labels <= total_classes - 1):
+    if hierarchical_q is None and q is None and not (1 <= n_partial_labels <= total_classes - 1):
         raise ValueError(
             f"n_partial_labels must be in [1, {total_classes - 1}], got {n_partial_labels}"
         )
@@ -199,6 +207,11 @@ def prepare_cifar100_subset(
         remapped_coarse = [_CIFAR100_FINE_TO_COARSE[orig] for orig in selected_indices]
         pl_dataset_raw = generator.generate_pl_dataset_hierarchical_variable(
             q=hierarchical_q, class_coarse=remapped_coarse)
+    elif q is not None:
+        # CL from this call is recomputed via the shared complement loop below
+        # for consistency with every other branch -- identical result either
+        # way (generate_variable_pl_cl_datasets derives it the same way).
+        pl_dataset_raw, _ = generator.generate_variable_pl_cl_datasets(q=q, num_classes=total_classes)
     elif n_partial_labels == 1:
         # Special case: candidate set = {true_label} only.
         pl_targets = [torch.tensor([t], dtype=torch.long) for t in train_targets]
@@ -223,33 +236,46 @@ def prepare_cifar100_subset(
     original_targets = generator.original_targets  # torch.Tensor, remapped
 
     # --- Log selection ---
+    is_probabilistic = hierarchical_q is not None or q is not None
     log_info = {
         "selected_class_indices":  selected_indices,
         "selected_class_names":    selected_class_names,
         "total_classes":           total_classes,
-        "n_partial_labels":        n_partial_labels if hierarchical_q is None else None,
+        "n_partial_labels":        n_partial_labels if not is_probabilistic else None,
         "hierarchical_q":          hierarchical_q,
-        "n_complementary_labels":  total_classes - n_partial_labels if hierarchical_q is None else None,
+        "q":                       q,
+        "n_complementary_labels":  (total_classes - n_partial_labels) if not is_probabilistic else None,
         "seed":                    seed,
         "n_train":                 len(train_targets),
         "n_test":                  len(test_targets),
         "timestamp":               datetime.now().isoformat(),
     }
     os.makedirs(log_dir, exist_ok=True)
-    log_suffix = f"{n_partial_labels}k" if hierarchical_q is None else f"q{hierarchical_q}"
+    if hierarchical_q is not None:
+        log_suffix = f"hq{hierarchical_q}"
+    elif q is not None:
+        log_suffix = f"q{q}"
+    else:
+        log_suffix = f"{n_partial_labels}k"
     log_fname = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{total_classes}classes_{log_suffix}.json"
     with open(os.path.join(log_dir, log_fname), "w") as f:
         json.dump(log_info, f, indent=2)
-    if hierarchical_q is None:
+    if hierarchical_q is not None:
         print(
             f"  [log] {total_classes} classes ({selected_class_names[:3]}...), "
-            f"k={n_partial_labels}, m={total_classes - n_partial_labels}, "
+            f"hierarchical q={hierarchical_q}, "
+            f"train={len(train_targets)}, test={len(test_targets)}"
+        )
+    elif q is not None:
+        print(
+            f"  [log] {total_classes} classes ({selected_class_names[:3]}...), "
+            f"q={q}, "
             f"train={len(train_targets)}, test={len(test_targets)}"
         )
     else:
         print(
             f"  [log] {total_classes} classes ({selected_class_names[:3]}...), "
-            f"hierarchical q={hierarchical_q}, "
+            f"k={n_partial_labels}, m={total_classes - n_partial_labels}, "
             f"train={len(train_targets)}, test={len(test_targets)}"
         )
 

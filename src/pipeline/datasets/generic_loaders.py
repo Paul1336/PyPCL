@@ -114,13 +114,24 @@ class _LazyArrayTestDataset(Dataset):
         return img, self.targets[idx]
 
 
-def _make_pl_cl(train_data, train_targets, C, k, wrap_cls):
+def _make_pl_cl(train_data, train_targets, C, k, wrap_cls, q=None):
     """Shared PL/CL generation, identical logic to cifar100_subset.py's
     prepare_cifar100_subset, factored out so both build_image_loaders_full
-    and (lazy-path) callers can reuse it."""
+    and (lazy-path) callers can reuse it.
+
+    q, if given, overrides k entirely: each false label is independently
+    included w.p. q (generate_variable_pl_cl_datasets) instead of a fixed-size
+    k-candidate set. Mutually exclusive with k in practice (callers only ever
+    set one), enforced by the caller (--only_q vs --only_k in runner.py)."""
     classes = [str(c) for c in range(C)]
     subset_ds = _ArrayDataset(train_data, train_targets, classes)
     generator = ComparisonDataGenerator(subset_ds, noise_type='clean', eta=0.0)
+
+    if q is not None:
+        pl_raw, cl_raw = generator.generate_variable_pl_cl_datasets(q=q, num_classes=C)
+        pl_dataset_raw = wrap_cls(train_data, pl_raw.targets)
+        cl_dataset_raw = wrap_cls(train_data, cl_raw.targets)
+        return pl_dataset_raw, cl_dataset_raw, generator.original_targets
 
     if k == 1:
         pl_targets = [torch.tensor([t], dtype=torch.long) for t in train_targets]
@@ -140,32 +151,43 @@ def _make_pl_cl(train_data, train_targets, C, k, wrap_cls):
 
 
 def build_image_loaders_full(train_data, train_targets, test_data, test_targets, spec, k,
-                              batch_size, seed=42, log_dir='logs/dataset_subset'):
+                              batch_size, seed=42, log_dir='logs/dataset_subset', q=None):
     """Generic version of cifar100_subset.py's prepare_cifar100_subset +
     get_subset_dataloaders_full, parameterized by DatasetSpec (image_size,
     in_channels, mean, std, supports_pico_family). train_data/test_data are
     numpy arrays (already the dataset's full native class set --
     fixed_num_classes classes, no subset selection).
+
+    q, if given, switches to variable (--only_q) candidate-set generation and
+    k is ignored entirely (no [1, C-1] validation either, since q doesn't
+    have that constraint).
     """
     C = spec.fixed_num_classes
-    if not (1 <= k <= C - 1):
+    if q is None and not (1 <= k <= C - 1):
         raise ValueError(f"k must be in [1, {C - 1}] for dataset '{spec.name}', got {k}")
 
     pl_dataset_raw, cl_dataset_raw, original_targets = _make_pl_cl(
-        train_data, list(train_targets), C, k, WeaklySupervisedDataset)
+        train_data, list(train_targets), C, k, WeaklySupervisedDataset, q=q)
 
     os.makedirs(log_dir, exist_ok=True)
     log_info = {
-        'dataset': spec.name, 'total_classes': C, 'n_partial_labels': k,
-        'n_complementary_labels': C - k, 'seed': seed,
+        'dataset': spec.name, 'total_classes': C,
+        'n_partial_labels': k if q is None else None,
+        'n_complementary_labels': (C - k) if q is None else None,
+        'q': q, 'seed': seed,
         'n_train': len(train_targets), 'n_test': len(test_targets),
         'timestamp': datetime.now().isoformat(),
     }
-    log_fname = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{spec.name}_{C}classes_{k}k.json"
+    log_suffix = f"{k}k" if q is None else f"q{q}"
+    log_fname = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{spec.name}_{C}classes_{log_suffix}.json"
     with open(os.path.join(log_dir, log_fname), 'w') as f:
         json.dump(log_info, f, indent=2)
-    print(f"  [log] dataset={spec.name} C={C} k={k} m={C - k} "
-          f"train={len(train_targets)} test={len(test_targets)}", flush=True)
+    if q is None:
+        print(f"  [log] dataset={spec.name} C={C} k={k} m={C - k} "
+              f"train={len(train_targets)} test={len(test_targets)}", flush=True)
+    else:
+        print(f"  [log] dataset={spec.name} C={C} q={q} "
+              f"train={len(train_targets)} test={len(test_targets)}", flush=True)
 
     mean, std, size = spec.mean, spec.std, spec.image_size
     train_transform = transforms.Compose([

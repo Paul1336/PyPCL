@@ -35,6 +35,9 @@ def run(cfg: PipelineConfig):
     my_algorithms = assign_algorithms(cfg.algorithms, cfg.gpu_id, cfg.num_gpus, cfg.algo_override)
 
     spec = _dataset_spec(cfg.dataset)
+    if cfg.only_q is not None and spec is not None and not spec.supports_q:
+        raise ValueError(f"--only_q is not supported for dataset '{cfg.dataset}' "
+                          f"(no q-based generation wired up for it yet); use --only_k instead.")
     if spec is not None and not spec.supports_pico_family:
         skipped = [a for a in my_algorithms if a in IMAGE_ONLY_ALGORITHMS]
         if skipped:
@@ -71,11 +74,19 @@ def run(cfg: PipelineConfig):
         # dataset whose generation isn't k-sized at all (sweeps_k=False, e.g.
         # cifar100-h's paper-faithful q-based generation). Both use a single
         # placeholder k=1 "cell" instead of the normal k-schedule.
-        if spec is not None and (spec.is_preambiguous or not spec.sweeps_k):
+        if cfg.only_q is not None:
+            # --only_q replaces the whole k-schedule with one placeholder
+            # cell. Real k is always a positive int in [1, C-1]; the negative
+            # sentinel can never collide with a genuine k-based cell's dedup
+            # key (see data.q_sentinel_k's docstring).
+            k_values = [data.q_sentinel_k(cfg.only_q)]
+        elif spec is not None and (spec.is_preambiguous or not spec.sweeps_k):
             k_values = [cfg.only_k] if cfg.only_k is not None else [1]
         else:
             k_values = [cfg.only_k] if cfg.only_k is not None else data.get_k_values(C)
-        print(f'\n{"=" * 60}\ndataset={cfg.dataset}  C = {C}   k = {k_values}\n{"=" * 60}', flush=True)
+        print(f'\n{"=" * 60}\ndataset={cfg.dataset}  C = {C}   '
+              f'{"q = " + str(cfg.only_q) if cfg.only_q is not None else "k = " + str(k_values)}'
+              f'\n{"=" * 60}', flush=True)
 
         for k in k_values:
             pending = [a for a in my_algorithms if (cfg.dataset, C, k, a) not in done]
@@ -85,7 +96,8 @@ def run(cfg: PipelineConfig):
 
             print(f'\n--- C={C}  k={k}  pending: {pending} ---', flush=True)
             loaders, pl_ds, orig_targets = data.load_experiment_data(
-                C, k, cfg.data_dir, cfg.seed, cfg.log_dir, cfg.batch_size, dataset=cfg.dataset)
+                C, k, cfg.data_dir, cfg.seed, cfg.log_dir, cfg.batch_size, dataset=cfg.dataset,
+                q=cfg.only_q)
 
             # Stash the DatasetSpec in the raw config dict every runner
             # already receives, so create_model_for_spec / _IndexedDataset

@@ -26,6 +26,7 @@ class PipelineConfig:
     report_every: int
     only_c: int
     only_k: int
+    only_q: float
     raw: dict = field(default_factory=dict)   # full config.yaml (pico/comco/solar blocks)
 
 
@@ -51,5 +52,6 @@ def load_config(args) -> PipelineConfig:
         report_every=args.report_every,
         only_c=args.only_c,
         only_k=args.only_k,
+        only_q=getattr(args, 'only_q', None),
         raw=raw,
     )

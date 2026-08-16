@@ -37,20 +37,20 @@ def _get_raw(data_dir: str) -> dict:
     return _CACHE[data_dir]
 
 
-def _loader(C, k, data_dir, seed, log_dir, batch_size):
+def _loader(C, k, data_dir, seed, log_dir, batch_size, q=None):
     raw = _get_raw(data_dir)
     spec = DATASETS_BY_NAME['cifar10']
     if C != spec.fixed_num_classes:
         raise ValueError(f"'cifar10' has a fixed {spec.fixed_num_classes} classes, got C={C}")
     return build_image_loaders_full(
         raw['train_data'], raw['train_targets'], raw['test_data'], raw['test_targets'],
-        spec, k, batch_size, seed=seed, log_dir=log_dir)
+        spec, k, batch_size, seed=seed, log_dir=log_dir, q=q)
 
 
 DATASETS_BY_NAME = {
     'cifar10': DatasetSpec(
         name='cifar10', modality='image', backbone='cnn', fixed_num_classes=10,
-        supports_pico_family=True, loader=_loader,
+        supports_pico_family=True, loader=_loader, supports_q=True,
         in_channels=3, image_size=32, mean=_CIFAR_MEAN, std=_CIFAR_STD,
         notes='Real CIFAR-10 (not a CIFAR-100 subset). RGB, supports PiCO/ComCo/SoLar.',
     ),

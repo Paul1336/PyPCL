@@ -18,6 +18,14 @@ class DatasetSpec:
     supports_pico_family: bool           # gates PiCO*/ComCo*/SoLar (need real RGB image augmentation)
     loader: Callable                     # (C, k, data_dir, seed, log_dir, batch_size) -> (loaders, pl_ds, orig_targets)
 
+    # If True, `loader` also accepts a trailing `q=<float>` keyword arg (used
+    # by --only_q to switch from fixed-size-k candidate sets to each false
+    # label independently included w.p. q -- see generate_variable_pl_cl_datasets).
+    # False (default) for datasets whose loader signature hasn't been updated
+    # to accept it, and for is_preambiguous datasets (real candidate sets --
+    # there's no "generation" step for q to control).
+    supports_q: bool = False
+
     # image-modality fields (ignored for tabular/preambiguous)
     in_channels: int = 3
     image_size: int = 32

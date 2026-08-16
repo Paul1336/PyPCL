@@ -64,6 +64,12 @@ def _add_run_parser(sub):
     p.add_argument('--report_every', type=int, default=10, help='Print ETA every N epochs')
     p.add_argument('--only_c', type=int, default=None, help='Run only this C value')
     p.add_argument('--only_k', type=int, default=None, help='Run only this k value')
+    p.add_argument('--only_q', type=float, default=None,
+                    help='Use variable (q-based) candidate-label generation instead of a fixed k: '
+                         'each false label is independently included w.p. q (0-1). Replaces the '
+                         'whole k-schedule with a single cell. Mutually exclusive with --only_k. '
+                         'Only supported for --dataset cifar100-subset, mnist, fashion-mnist, '
+                         'kmnist, and cifar10 so far (DatasetSpec.supports_q).')
 
 
 def _add_merge_parser(sub):
@@ -89,6 +95,10 @@ def main():
     args = parser.parse_args()
 
     if args.command == 'run':
+        if getattr(args, 'only_q', None) is not None and args.only_k is not None:
+            parser.error('--only_q and --only_k are mutually exclusive')
+        if getattr(args, 'only_q', None) is not None and not (0 <= args.only_q <= 1):
+            parser.error('--only_q must be in [0, 1]')
         from src.pipeline.runner import run
         run(load_config(args))
     elif args.command == 'merge':
