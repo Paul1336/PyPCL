@@ -4,6 +4,7 @@ plots/
 plots_legacy/
 results/
 results_legacy/
+verify_results/
 
 # Ignore Python bytecode
 __pycache__/
