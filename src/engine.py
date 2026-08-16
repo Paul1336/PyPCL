@@ -1,6 +1,6 @@
 import torch
 from tqdm import tqdm
-from src.pico.model import PiCOModel
+from src.pico.model import PiCOModel, PiCOOracleModel
 from src.comco.model import ComCoModel
 import torch.nn.functional as F
 import numpy as np
@@ -15,7 +15,7 @@ def evaluate_model(model, test_loader, device):
     with torch.no_grad():
         for images, labels in test_loader:
             images, labels = images.to(device), labels.to(device)
-            if isinstance(model, (PiCOModel, ComCoModel)):
+            if isinstance(model, (PiCOModel, PiCOOracleModel, ComCoModel)):
                 outputs = model(images, eval_only=True)
             else:
                 outputs = model(images)
