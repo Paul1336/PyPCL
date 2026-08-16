@@ -1,0 +1,497 @@
+"""Optional diagnostic logging/plotting, off by default (`run --detail`):
+
+1. Per-class accuracy/loss on the test set, logged every --detail_log_every
+   epochs -- reproduces what scripts/legacy/run_extended_analysis.py's
+   per_class_loss.csv used to do (a separate one-off script), now built into
+   the main pipeline. Written to:
+       results/<run_name>/detail/<algorithm>/C{C}_k{k}/per_class_loss.csv
+   Wired into every runner that has a genuine per-epoch loop (PRODEN, the
+   PiCO family, ComCo family, CPE). Not wired into the '_train_simple_shape'
+   family (CLPL/Wu2022/MCL-LOG/SCL-NL/OP/OP-W): those delegate whole chunks
+   of `report_every` epochs to src.engine.train_algorithm at once, so there's
+   no mid-chunk model checkpoint to evaluate at a finer cadence than
+   report_every -- add support there if per-class detail on those algorithms
+   is ever needed.
+
+2. PiCO-specific: per-BATCH precision of the contrastive loss's positive/
+   negative pair selection against ground truth (the model updates every
+   batch, so this is logged at batch granularity, not averaged per epoch) --
+   of the pairs SupConLoss's `mask` treats as "same class" (positive), what
+   fraction actually share a true label; of the pairs it treats as
+   "different class" (negative), what fraction actually differ. Only
+   measurable for the within-batch block of `mask` (the MoCo queue's
+   historical entries don't carry true labels). Rows are buffered and
+   written once per epoch (one row per batch) rather than once per batch, to
+   avoid a file-open per batch over a shared NFS results dir. Written to:
+       results/<run_name>/detail/<algorithm>/C{C}_k{k}/pico_selection_stats.csv
+
+3. t-SNE snapshots of the contrastive projection-head representation
+   (the L2-normalized embedding SupConLoss/ComCoContrastiveLoss actually
+   operate on -- see SupConResNet.forward in src/pico/resnet.py), every
+   --tsne_every epochs. Independent of --detail (its own `run --tsne` flag):
+   only meaningful for dual-encoder models with an `.encoder_q` (PiCO family,
+   ComCo family) -- no-ops for anything else (PRODEN, PiCO-CLS, the
+   '_train_simple_shape' baselines have no separate contrastive
+   representation to visualize). Saves both the raw embeddings (for
+   re-plotting with different t-SNE parameters later) and a rendered PNG to:
+       results/<run_name>/detail/<algorithm>/C{C}_k{k}/tsne/ep{epoch:04d}.{npz,png}
+
+Both (1)/(2) and (3) add real cost -- (1) an extra full test-set forward pass
+every detail_log_every epochs, (2) a few extra tensor reductions per batch,
+(3) a t-SNE fit (CPU-bound, seconds) every tsne_every epochs -- which is why
+they're all opt-in rather than always-on.
+
+Also provides plot_heatmap()/plot_pico_selection_stats(), reproducing
+scripts/legacy/plot_combined_heatmap_pair.py's figure and a new line chart
+for (2), exposed via `scripts/run_pipeline.py detail-plot` /
+`detail-plot-pico`. (3)'s PNGs are rendered inline during training (see
+maybe_plot_tsne), not via a separate plotting subcommand.
+"""
+
+import csv
+import os
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from tqdm import tqdm
+
+from src.comco.model import ComCoModel
+from src.pico.model import PiCOModel
+
+# ─── config helpers ────────────────────────────────────────────────────────
+
+
+def is_enabled(raw_cfg: dict) -> bool:
+    return bool((raw_cfg or {}).get('_detail', {}).get('enabled'))
+
+
+def _detail_cfg(raw_cfg: dict) -> dict:
+    return (raw_cfg or {}).get('_detail') or {}
+
+
+def cell_dir(raw_cfg: dict, algorithm: str, C: int) -> str:
+    """results/<run_name>/detail/<algorithm>/C{C}_k{k}/ -- k comes from
+    runner.py stashing '_current_k' in raw_cfg once per (C, k) cell, the same
+    pattern already used for '_dataset_spec'."""
+    base = _detail_cfg(raw_cfg)['out_dir']
+    k = raw_cfg.get('_current_k', 0)
+    return os.path.join(base, algorithm, f'C{C}_k{k}')
+
+
+# ─── (1) per-class accuracy/loss checkpoint logging ────────────────────────
+
+
+def _per_class_fields(C):
+    return ['epoch'] + [f'loss_class_{c}' for c in range(C)] + [f'acc_class_{c}' for c in range(C)] + ['overall_acc']
+
+
+@torch.no_grad()
+def log_per_class_checkpoint(model, test_loader, device, C, epoch, out_dir, predict='argmax') -> float:
+    """Full test-set forward pass; appends one row to out_dir/per_class_loss.csv
+    with per-class CE loss + accuracy for this epoch checkpoint. Returns
+    overall accuracy (%).
+
+    predict='argmin' for CPE, which trains f to predict P(ybar|x) so the
+    lowest-scoring class is the true-class prediction (see
+    runners.py::_evaluate_argmin) -- everything else uses the standard
+    argmax. Getting this wrong would silently produce a per-class accuracy
+    breakdown inconsistent with the algorithm's actual (already-logged)
+    overall accuracy.
+    """
+    model.eval()
+    all_logits, all_labels = [], []
+    for images, labels in test_loader:
+        images = images.to(device)
+        if isinstance(model, (PiCOModel, ComCoModel)):
+            logits = model(images, eval_only=True)
+        else:
+            logits = model(images)
+        all_logits.append(logits.cpu())
+        all_labels.append(labels)
+    all_logits = torch.cat(all_logits, dim=0)
+    all_labels = torch.cat(all_labels, dim=0)
+    pred_labels = all_logits.argmin(dim=1) if predict == 'argmin' else all_logits.argmax(dim=1)
+
+    log_probs = F.log_softmax(all_logits, dim=1)
+    ce_per_sample = -log_probs[torch.arange(len(all_labels)), all_labels]
+
+    per_class_loss, per_class_acc = [], []
+    for c in range(C):
+        cmask = (all_labels == c)
+        if cmask.sum() == 0:
+            per_class_loss.append(float('nan'))
+            per_class_acc.append(float('nan'))
+        else:
+            per_class_loss.append(ce_per_sample[cmask].mean().item())
+            per_class_acc.append((pred_labels[cmask] == c).float().mean().item() * 100)
+
+    overall_acc = (pred_labels == all_labels).float().mean().item() * 100
+
+    fields = _per_class_fields(C)
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, 'per_class_loss.csv')
+    new_file = not os.path.isfile(path)
+    with open(path, 'a', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        if new_file:
+            w.writeheader()
+        row = {'epoch': epoch, 'overall_acc': round(overall_acc, 4)}
+        for c in range(C):
+            row[f'loss_class_{c}'] = round(per_class_loss[c], 6)
+            row[f'acc_class_{c}'] = round(per_class_acc[c], 4)
+        w.writerow(row)
+
+    return overall_acc
+
+
+def maybe_log_checkpoint(raw_cfg, model, test_loader, device, C, epoch, algorithm, predict='argmax'):
+    """No-op unless --detail is enabled and `epoch` lands on a
+    --detail_log_every boundary. Call once per epoch (1-indexed) from a
+    runner's training loop -- decoupled from that runner's own
+    `report_every` ETA-printing cadence on purpose, so detail resolution
+    doesn't silently degrade if report_every is set coarser."""
+    cfg = _detail_cfg(raw_cfg)
+    if not cfg.get('enabled'):
+        return
+    log_every = cfg.get('log_every', 10)
+    if epoch % log_every != 0:
+        return
+    log_per_class_checkpoint(model, test_loader, device, C, epoch, cell_dir(raw_cfg, algorithm, C), predict=predict)
+
+
+# ─── (2) PiCO contrastive pair-selection precision ─────────────────────────
+
+
+def train_pico_epoch_with_selection_stats(pico_args, model, loader, loss_fn, loss_cont_fn,
+                                           optimizer, epoch, device, raw_cfg, algorithm, C):
+    """Identical to src.engine.train_pico_epoch, plus: measures, for every
+    single BATCH (the model updates every batch, so an epoch-level average
+    would hide how selection quality moves within an epoch), how often the
+    contrastive loss's pseudo-label-based positive/negative pair selection
+    (the `mask` built from pseudo_target_cont) agrees with ground truth, for
+    anchor/candidate pairs that are both in the current batch (the MoCo
+    queue's historical entries don't carry true labels, so only the
+    within-batch block of `mask` is checkable).
+
+    Per-batch rows are buffered in memory and written once at the end of the
+    epoch (a single file open/append for the whole epoch) rather than once
+    per batch -- results/ is often a shared NFS mount when training across
+    multiple GPUs, and a file-open per batch over thousands of batches would
+    add real, avoidable latency. If the process crashes mid-epoch, only that
+    epoch's not-yet-flushed batches are lost; training itself (and its
+    resume logic) is unaffected since this is a diagnostic-only log.
+
+    Returns avg_total_loss for this epoch. pos/neg precision are NaN for any
+    batch before pico_args['prot_start'] (mask is None until then, same as
+    the original function's own behavior).
+    """
+    model.train()
+    total_loss = 0.0
+    start_upd_prot = epoch >= pico_args['prot_start']
+    batch_rows = []   # (batch_idx, pos_precision, neg_precision)
+
+    progress_bar = tqdm(loader, desc=f"PiCO Epoch {epoch + 1}/{pico_args['epochs']} [detail]")
+    for batch_idx, (images_w, images_s, partial_Y, true_labels, index) in enumerate(progress_bar):
+        images_w, images_s, partial_Y, index = (images_w.to(device), images_s.to(device),
+                                                  partial_Y.to(device), index.to(device))
+
+        cls_out, features, pseudo_target_cont, score_prot = model(images_w, images_s, partial_Y, pico_args)
+        batch_size = cls_out.shape[0]
+
+        if start_upd_prot:
+            loss_fn.confidence_update(temp_un_conf=score_prot.detach(), batch_index=index, batchY=partial_Y)
+
+        mask = (torch.eq(pseudo_target_cont[:batch_size].unsqueeze(1), pseudo_target_cont.unsqueeze(0)).float()
+                if start_upd_prot else None)
+
+        if mask is not None:
+            true_dev = true_labels.to(device)
+            same_true = torch.eq(true_dev.unsqueeze(0), true_dev.unsqueeze(1)).float()
+            eye = torch.eye(batch_size, device=device)
+            within_batch_mask = mask[:, :batch_size]
+            m_pos = within_batch_mask * (1 - eye)          # selected-positive, excluding self-pairs
+            m_neg = (1 - within_batch_mask) * (1 - eye)    # selected-negative, excluding self-pairs
+            pos_total = m_pos.sum().item()
+            neg_total = m_neg.sum().item()
+            pos_prec = (m_pos * same_true).sum().item() / pos_total if pos_total > 0 else float('nan')
+            neg_prec = (m_neg * (1 - same_true)).sum().item() / neg_total if neg_total > 0 else float('nan')
+        else:
+            pos_prec = neg_prec = float('nan')
+        batch_rows.append((batch_idx, pos_prec, neg_prec))
+
+        loss_cls = loss_fn(cls_out, index)
+        loss_cont = loss_cont_fn(features=features, mask=mask, batch_size=batch_size)
+        loss = loss_cls + pico_args['loss_weight'] * loss_cont
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
+
+    log_pico_selection_stats_batch(raw_cfg, algorithm, C, epoch + 1, batch_rows)
+
+    return total_loss / len(loader)
+
+
+def log_pico_selection_stats_batch(raw_cfg, algorithm, C, epoch, batch_rows):
+    """batch_rows: list of (batch_idx, pos_precision, neg_precision) for
+    every batch in this epoch, written in one file open/append (see
+    train_pico_epoch_with_selection_stats's docstring for why)."""
+    cfg = _detail_cfg(raw_cfg)
+    if not cfg.get('enabled') or not batch_rows:
+        return
+    out_dir = cell_dir(raw_cfg, algorithm, C)
+    fields = ['epoch', 'batch', 'pos_precision', 'neg_precision']
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, 'pico_selection_stats.csv')
+    new_file = not os.path.isfile(path)
+    with open(path, 'a', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        if new_file:
+            w.writeheader()
+        for batch_idx, pos_precision, neg_precision in batch_rows:
+            w.writerow({
+                'epoch': epoch,
+                'batch': batch_idx,
+                'pos_precision': '' if pos_precision != pos_precision else round(pos_precision, 6),
+                'neg_precision': '' if neg_precision != neg_precision else round(neg_precision, 6),
+            })
+
+
+# ─── (3) t-SNE snapshots of the contrastive representation ────────────────
+
+
+@torch.no_grad()
+def maybe_plot_tsne(raw_cfg, model, test_loader, device, C, epoch, algorithm):
+    """No-op unless --tsne is enabled and `epoch` lands on a --tsne_every
+    boundary, or `model` has no `.encoder_q` (i.e. it isn't a PiCO/ComCo
+    -family dual-encoder model -- PRODEN/PiCO-CLS/the '_train_simple_shape'
+    baselines have no separate contrastive representation to visualize).
+
+    Extracts the L2-normalized projection-head embedding
+    (model.encoder_q(images) -> (_, feat_c), see SupConResNet.forward) for
+    up to tsne_max_points test-set samples, reduces to 2D with t-SNE, and
+    saves both the raw embeddings (.npz, for re-plotting with different t-SNE
+    parameters later without retraining) and a rendered scatter plot (.png)
+    colored by ground-truth class.
+    """
+    cfg = _detail_cfg(raw_cfg)
+    tsne_cfg = cfg.get('tsne') or {}
+    if not tsne_cfg.get('enabled'):
+        return
+    every = tsne_cfg.get('every', 50)
+    if epoch % every != 0:
+        return
+    if not hasattr(model, 'encoder_q'):
+        return
+
+    max_points = tsne_cfg.get('max_points', 2000)
+    model.eval()
+    feats, labels = [], []
+    n = 0
+    for images, lab in test_loader:
+        images = images.to(device)
+        _, feat_c = model.encoder_q(images)
+        feats.append(feat_c.cpu())
+        labels.append(lab)
+        n += images.shape[0]
+        if n >= max_points:
+            break
+    feats = torch.cat(feats, dim=0)[:max_points].numpy()
+    labels = torch.cat(labels, dim=0)[:max_points].numpy()
+
+    from sklearn.manifold import TSNE
+    perplexity = min(30, max(5, len(feats) // 100))
+    emb_2d = TSNE(n_components=2, perplexity=perplexity, init='pca', random_state=42).fit_transform(feats)
+
+    tsne_dir = os.path.join(cell_dir(raw_cfg, algorithm, C), 'tsne')
+    os.makedirs(tsne_dir, exist_ok=True)
+    np.savez(os.path.join(tsne_dir, f'ep{epoch:04d}.npz'), feats=feats, labels=labels, emb_2d=emb_2d)
+
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    scatter = ax.scatter(emb_2d[:, 0], emb_2d[:, 1], c=labels, cmap='tab20', s=8, alpha=0.8)
+    ax.set_title(f'{algorithm}  C={C}  epoch={epoch}\nt-SNE of contrastive representation ({len(feats)} pts)',
+                 fontsize=10)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.legend(*scatter.legend_elements(num=min(C, 20)), title='class', fontsize=6,
+              loc='center left', bbox_to_anchor=(1.02, 0.5))
+    fig.savefig(os.path.join(tsne_dir, f'ep{epoch:04d}.png'), dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+
+# ─── plotting ───────────────────────────────────────────────────────────────
+
+
+def _load_per_class_csv(path, C):
+    if not os.path.isfile(path):
+        return None
+    with open(path, newline='') as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        return None
+    import numpy as np
+    epochs = [int(r['epoch']) for r in rows]
+    acc_mat = np.array([[float(r.get(f'acc_class_{c}', 'nan')) for c in range(C)] for r in rows])
+    loss_mat = np.array([[float(r.get(f'loss_class_{c}', 'nan')) for c in range(C)] for r in rows])
+    overall = np.array([float(r['overall_acc']) for r in rows])
+    return {'epochs': epochs, 'acc_mat': acc_mat, 'loss_mat': loss_mat, 'overall': overall}
+
+
+def plot_heatmap(results_dir: str, alg_l: str, C: int, k: int, out_path: str,
+                  alg_r: str = None, acc_only: bool = True, class_names=None) -> str:
+    """Per-class accuracy (and optionally loss) heatmap over epoch
+    checkpoints, for one algorithm or two side-by-side. Reproduces
+    scripts/legacy/plot_combined_heatmap_pair.py, reading this module's own
+    per_class_loss.csv files instead of that script's separate results dir."""
+    import numpy as np
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    base = os.path.join(results_dir, 'detail')
+    dL = _load_per_class_csv(os.path.join(base, alg_l, f'C{C}_k{k}', 'per_class_loss.csv'), C)
+    dR = _load_per_class_csv(os.path.join(base, alg_r, f'C{C}_k{k}', 'per_class_loss.csv'), C) if alg_r else None
+
+    if dL is None and dR is None:
+        algs = alg_l if not alg_r else f'{alg_l} or {alg_r}'
+        raise ValueError(f'No detail logs found for C={C} k={k}, algorithm(s) {algs} under {base}/ '
+                          f'(did you run with --detail?)')
+
+    epochs = (dL or dR)['epochs']
+    T = len(epochs)
+    n_cols = 2 if alg_r else 1
+    n_rows = 1 if acc_only else 2
+
+    def _draw(ax, mat, cmap, vmin, vmax, show_xlabel, show_ylabel, ylabel=''):
+        im = ax.imshow(mat.T, aspect='auto', origin='lower', cmap=cmap, vmin=vmin, vmax=vmax,
+                        interpolation='nearest')
+        ax.set_yticks(range(C))
+        if show_ylabel:
+            ax.set_yticklabels(class_names if class_names else range(C), fontsize=6)
+            ax.set_ylabel(ylabel, fontsize=9)
+        else:
+            ax.set_yticklabels([])
+        if show_xlabel:
+            ax.set_xticks(range(T))
+            ax.set_xticklabels(epochs, rotation=45, fontsize=6)
+            ax.set_xlabel('Epoch checkpoint', fontsize=9)
+        else:
+            ax.set_xticks([])
+        return im
+
+    fig_w = max(8 * n_cols, T * 0.32 * n_cols + 2)
+    fig_h = max(5 * n_rows, C * 0.32 * n_rows + 1.5)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_w, fig_h),
+                              gridspec_kw={'hspace': 0.06, 'wspace': 0.04}, squeeze=False)
+
+    acc_l = dL['acc_mat'] if dL else np.full((T, C), np.nan)
+    fa_l = f'{dL["overall"][-1]:.1f}%' if dL else 'N/A'
+    im_acc_l = _draw(axes[0, 0], acc_l, 'RdYlGn', 0, 100, show_xlabel=acc_only, show_ylabel=True,
+                      ylabel='Accuracy (%)')
+    axes[0, 0].set_title(f'{alg_l}  (final {fa_l})', fontsize=11, fontweight='bold')
+
+    if alg_r:
+        acc_r = dR['acc_mat'] if dR else np.full((T, C), np.nan)
+        fa_r = f'{dR["overall"][-1]:.1f}%' if dR else 'N/A'
+        _draw(axes[0, 1], acc_r, 'RdYlGn', 0, 100, show_xlabel=acc_only, show_ylabel=False)
+        axes[0, 1].set_title(f'{alg_r}  (final {fa_r})', fontsize=11, fontweight='bold')
+    fig.colorbar(im_acc_l, ax=axes[0, :], label='Accuracy (%)', shrink=0.85, pad=0.01)
+
+    if not acc_only:
+        loss_l = dL['loss_mat'] if dL else np.full((T, C), np.nan)
+        mats = [m for m in ([loss_l] + ([dR['loss_mat']] if dR else [])) if not np.all(np.isnan(m))]
+        loss_vmax = np.nanpercentile(np.concatenate(mats), 97) if mats else 1.0
+
+        im_loss_l = _draw(axes[1, 0], loss_l, 'RdYlGn_r', 0, loss_vmax, show_xlabel=True, show_ylabel=True,
+                           ylabel='CE Loss')
+        if alg_r:
+            loss_r = dR['loss_mat'] if dR else np.full((T, C), np.nan)
+            _draw(axes[1, 1], loss_r, 'RdYlGn_r', 0, loss_vmax, show_xlabel=True, show_ylabel=False)
+        fig.colorbar(im_loss_l, ax=axes[1, :], label='CE loss', shrink=0.85, pad=0.01)
+
+    title = f'{alg_l} vs {alg_r}' if alg_r else alg_l
+    fig.suptitle(f'{title}  —  C={C}  k={k}', fontsize=13, fontweight='bold')
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)) or '.', exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    return out_path
+
+
+def _rolling_mean(values, window):
+    """NaN-aware centered rolling mean (window counted in valid/non-NaN
+    points within the window, not raw index count)."""
+    import numpy as np
+    arr = np.asarray(values, dtype=float)
+    if window <= 1 or len(arr) < 2:
+        return arr
+    half = window // 2
+    out = np.full_like(arr, np.nan)
+    for i in range(len(arr)):
+        seg = arr[max(0, i - half):min(len(arr), i + half + 1)]
+        seg = seg[~np.isnan(seg)]
+        if len(seg) > 0:
+            out[i] = seg.mean()
+    return out
+
+
+def plot_pico_selection_stats(results_dir: str, algorithm: str, C: int, k: int, out_path: str) -> str:
+    """Line chart of positive/negative contrastive pair-selection precision
+    vs. ground truth, one point per BATCH in chronological (file) order --
+    the log has one row per batch (see log_pico_selection_stats_batch). Raw
+    per-batch values are plotted thin/faded; a rolling mean (window = one
+    epoch's worth of batches) is overlaid bold since per-batch precision is
+    typically too noisy to read trends from directly."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    path = os.path.join(results_dir, 'detail', algorithm, f'C{C}_k{k}', 'pico_selection_stats.csv')
+    if not os.path.isfile(path):
+        raise ValueError(f'No selection-stats log found at {path} (did you run with --detail?)')
+    with open(path, newline='') as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        raise ValueError(f'{path} has no rows')
+
+    def _f(v):
+        return float('nan') if v in ('', 'nan') else float(v)
+
+    steps = list(range(len(rows)))   # chronological training step (rows are written in batch order)
+    pos = [_f(r['pos_precision']) for r in rows]
+    neg = [_f(r['neg_precision']) for r in rows]
+
+    # batches-per-epoch, for the rolling-mean window and epoch-boundary gridlines
+    epochs = [int(r['epoch']) for r in rows]
+    batches_per_epoch = sum(1 for e in epochs if e == epochs[0]) or 1
+
+    pos_smooth = _rolling_mean(pos, batches_per_epoch)
+    neg_smooth = _rolling_mean(neg, batches_per_epoch)
+
+    fig, ax = plt.subplots(figsize=(11, 5))
+    ax.plot(steps, pos, color='#2ca02c', linewidth=0.6, alpha=0.35)
+    ax.plot(steps, neg, color='#d62728', linewidth=0.6, alpha=0.35)
+    ax.plot(steps, pos_smooth, label='positive-pair precision  P(same true class | selected positive)',
+            color='#2ca02c', linewidth=2)
+    ax.plot(steps, neg_smooth, label='negative-pair precision  P(different true class | selected negative)',
+            color='#d62728', linewidth=2)
+    ax.set_xlabel(f'Training step (batch, chronological — ~{batches_per_epoch} batches/epoch)')
+    ax.set_ylabel('Precision vs. ground truth')
+    ax.set_ylim(0, 1.05)
+    ax.set_title(f'{algorithm} contrastive pair-selection precision  —  C={C}  k={k}  '
+                 f'(faint = per-batch, bold = 1-epoch rolling mean)')
+    ax.legend(fontsize=8, loc='lower right')
+    ax.grid(True, alpha=0.3)
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)) or '.', exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    return out_path

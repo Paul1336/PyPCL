@@ -1,0 +1,25 @@
+{
+  "selected_class_indices": [
+    44,
+    45,
+    53,
+    70,
+    83
+  ],
+  "selected_class_names": [
+    "class44",
+    "class45",
+    "class53",
+    "class70",
+    "class83"
+  ],
+  "total_classes": 5,
+  "n_partial_labels": 1,
+  "hierarchical_q": null,
+  "q": null,
+  "n_complementary_labels": 4,
+  "seed": 42,
+  "n_train": 100,
+  "n_test": 50,
+  "timestamp": "2026-08-16T16:34:53.994980"
+}

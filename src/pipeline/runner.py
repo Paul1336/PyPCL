@@ -3,6 +3,7 @@ data, train, and append the result. Ties together gpu / data / algorithms /
 results — this is the only module that orchestrates all of them."""
 
 import gc
+import os
 import time
 
 import torch
@@ -57,7 +58,22 @@ def run(cfg: PipelineConfig):
         'run_name': cfg.run_name, 'algorithms': cfg.algorithms, 'dataset': cfg.dataset,
         'c_values': cfg.c_values, 'epochs': cfg.epochs, 'batch_size': cfg.batch_size,
         'seed': cfg.seed, 'gpu_id': cfg.gpu_id, 'num_gpus': cfg.num_gpus,
+        'detail': cfg.detail, 'detail_log_every': cfg.detail_log_every,
+        'tsne': cfg.tsne, 'tsne_every': cfg.tsne_every, 'tsne_max_points': cfg.tsne_max_points,
     })
+
+    # Stashed in raw_cfg (like '_dataset_spec' below) rather than added to
+    # every runner's uniform signature -- see src/pipeline/detail.py.
+    cfg.raw['_detail'] = {
+        'enabled': cfg.detail,
+        'log_every': cfg.detail_log_every,
+        'out_dir': os.path.join(cfg.results_dir, 'detail'),
+        'tsne': {
+            'enabled': cfg.tsne,
+            'every': cfg.tsne_every,
+            'max_points': cfg.tsne_max_points,
+        },
+    }
 
     # Fixed-class-count datasets (MNIST=10, CUB-200=200, ...) don't sweep C --
     # there's nothing to select a subset of, so c_values is forced to a
@@ -99,11 +115,13 @@ def run(cfg: PipelineConfig):
                 C, k, cfg.data_dir, cfg.seed, cfg.log_dir, cfg.batch_size, dataset=cfg.dataset,
                 q=cfg.only_q)
 
-            # Stash the DatasetSpec in the raw config dict every runner
-            # already receives, so create_model_for_spec / _IndexedDataset
-            # can pick the right backbone/transform without changing every
-            # runner's function signature.
+            # Stash the DatasetSpec (and, for --detail, the current k) in the
+            # raw config dict every runner already receives, so
+            # create_model_for_spec / _IndexedDataset / detail.cell_dir can
+            # pick the right backbone/transform/output path without changing
+            # every runner's function signature.
             cfg.raw['_dataset_spec'] = spec
+            cfg.raw['_current_k'] = k
 
             for alg in pending:
                 algo_spec = ALGORITHMS[alg]

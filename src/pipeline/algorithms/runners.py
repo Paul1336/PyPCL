@@ -283,6 +283,7 @@ def run_pico(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epoc
             train_pico_epoch(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
 
         detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO')
+        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO')
 
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             elapsed = time.perf_counter() - chunk_t0
@@ -336,6 +337,7 @@ def run_pico_fixed(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size
         cls_loss.set_conf_ema_m(ep, pico_args)
         train_pico_epoch_fixed(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
         detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-Fixed')
+        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-Fixed')
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             elapsed = time.perf_counter() - chunk_t0
             _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
@@ -362,6 +364,7 @@ def run_pico_mcl(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, 
     for ep in range(epochs):
         train_pico_mclloss_epoch(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
         detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-MCL')
+        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-MCL')
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             elapsed = time.perf_counter() - chunk_t0
             _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
@@ -390,6 +393,7 @@ def run_pico_sc(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, e
         cls_loss.set_conf_ema_m(ep)
         train_pico_sc_epoch(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
         detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-SC')
+        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-SC')
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             elapsed = time.perf_counter() - chunk_t0
             _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
@@ -474,6 +478,7 @@ def run_comco(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epo
     for ep in range(epochs):
         train_comco_epoch(comco_args, model, loaders['comco'], cls_loss, cont_loss, opt, ep, device)
         detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'ComCo')
+        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'ComCo')
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             elapsed = time.perf_counter() - chunk_t0
             _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
@@ -515,6 +520,7 @@ def run_comco_fixed(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_siz
     for ep in range(epochs):
         train_comco_epoch(comco_args, model, loaders['comco'], cls_loss, cont_loss, opt, ep, device)
         detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'ComCo-Fixed')
+        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'ComCo-Fixed')
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             elapsed = time.perf_counter() - chunk_t0
             _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))

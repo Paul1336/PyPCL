@@ -6,10 +6,16 @@ plot_*, launch_*.sh — now kept for reference under scripts/legacy/) into
 one CLI with three subcommands: run / merge / plot.
 
 Subcommands:
-    run    Train algorithms on the CIFAR-100 class-subset sweep and record
-           results (supports multi-GPU sharding and resume).
-    merge  Merge per-worker result shards into results/<run_name>/results.csv.
-    plot   Draw accuracy-vs-k figures from one or more runs' merged results.
+    run              Train algorithms on the CIFAR-100 class-subset sweep and
+                     record results (supports multi-GPU sharding and resume).
+    merge            Merge per-worker result shards into
+                     results/<run_name>/results.csv.
+    plot             Draw accuracy-vs-k figures from one or more runs' merged
+                     results.
+    detail-plot      Per-class accuracy/loss heatmap over epoch checkpoints
+                     (needs `run --detail`); one or two algorithms side by side.
+    detail-plot-pico PiCO's contrastive pair-selection precision vs. ground
+                     truth, over epochs (needs `run --detail`).
 
 Examples:
     # Single GPU, a handful of algorithms
@@ -70,6 +76,28 @@ def _add_run_parser(sub):
                          'whole k-schedule with a single cell. Mutually exclusive with --only_k. '
                          'Only supported for --dataset cifar100-subset, mnist, fashion-mnist, '
                          'kmnist, and cifar10 so far (DatasetSpec.supports_q).')
+    p.add_argument('--detail', action='store_true',
+                    help='Enable per-class-per-epoch-checkpoint diagnostic logging (replaces '
+                         'scripts/legacy/run_extended_analysis.py): adds an extra full test-set '
+                         'eval every --detail_log_every epochs, written to '
+                         'results/<run_name>/detail/<algorithm>/C{C}_k{k}/per_class_loss.csv. For '
+                         'PiCO specifically, also logs per-batch contrastive positive/negative '
+                         'pair-selection precision against ground truth to pico_selection_stats.csv '
+                         '(every batch, not gated by --detail_log_every). '
+                         'Adds real overhead; off by default.')
+    p.add_argument('--detail_log_every', type=int, default=10,
+                    help='Epoch cadence for --detail per-class checkpoint logging.')
+    p.add_argument('--tsne', action='store_true',
+                    help='Every --tsne_every epochs, save a t-SNE snapshot of the contrastive '
+                         'projection-head representation (raw embeddings + rendered PNG) to '
+                         'results/<run_name>/detail/<algorithm>/C{C}_k{k}/tsne/. Independent of '
+                         '--detail. Only meaningful for dual-encoder models (PiCO family, ComCo '
+                         'family) -- silently does nothing for other algorithms. Adds a CPU-bound '
+                         't-SNE fit (seconds) each time; off by default.')
+    p.add_argument('--tsne_every', type=int, default=50, help='Epoch cadence for --tsne snapshots.')
+    p.add_argument('--tsne_max_points', type=int, default=2000,
+                    help='Max test-set samples to embed per --tsne snapshot (t-SNE cost grows '
+                         'roughly with n log n).')
 
 
 def _add_merge_parser(sub):
@@ -86,12 +114,39 @@ def _add_plot_parser(sub):
     p.add_argument('--group_by', default='paradigm', choices=['paradigm', 'all-in-one', 'per-algorithm'])
 
 
+def _add_detail_plot_parser(sub):
+    p = sub.add_parser('detail-plot', help='Per-class accuracy/loss heatmap over epoch checkpoints '
+                                            '(requires --detail during run); one or two algorithms side by side')
+    p.add_argument('--run', required=True, dest='run_name')
+    p.add_argument('--alg_l', required=True, help='Left (or only) algorithm')
+    p.add_argument('--alg_r', default=None, help='Right algorithm, for a side-by-side comparison')
+    p.add_argument('--C', type=int, required=True)
+    p.add_argument('--k', type=int, required=True)
+    p.add_argument('--out', required=True)
+    p.add_argument('--acc_only', action='store_true', help='Omit the CE-loss row (accuracy heatmap only)')
+    p.add_argument('--show_class_names', action='store_true')
+    p.add_argument('--seed', type=int, default=42, help='Only used with --show_class_names')
+    p.add_argument('--data_dir', default='./data', help='Only used with --show_class_names')
+
+
+def _add_detail_plot_pico_parser(sub):
+    p = sub.add_parser('detail-plot-pico', help="PiCO's contrastive positive/negative pair-selection "
+                                                 "precision vs. ground truth, over epochs (requires --detail)")
+    p.add_argument('--run', required=True, dest='run_name')
+    p.add_argument('--alg', default='PiCO', help="Which PiCO-family algorithm's log to read (default: PiCO)")
+    p.add_argument('--C', type=int, required=True)
+    p.add_argument('--k', type=int, required=True)
+    p.add_argument('--out', required=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
     _add_run_parser(sub)
     _add_merge_parser(sub)
     _add_plot_parser(sub)
+    _add_detail_plot_parser(sub)
+    _add_detail_plot_pico_parser(sub)
     args = parser.parse_args()
 
     if args.command == 'run':
@@ -108,6 +163,20 @@ def main():
         run_dirs = [os.path.join('results', r) for r in args.runs]
         plot_accuracy_vs_k(run_dirs, algorithms=args.algorithms, c_values=args.c_values,
                             out_path=args.out, group_by=args.group_by)
+    elif args.command == 'detail-plot':
+        from src.pipeline.detail import plot_heatmap
+        class_names = None
+        if args.show_class_names:
+            from src.cifar100_subset import select_cifar100_classes
+            from torchvision.datasets import CIFAR100
+            indices = select_cifar100_classes(args.C, seed=args.seed)
+            ds = CIFAR100(root=args.data_dir, train=True, download=False)
+            class_names = [ds.classes[i] for i in indices]
+        plot_heatmap(os.path.join('results', args.run_name), args.alg_l, args.C, args.k, args.out,
+                     alg_r=args.alg_r, acc_only=args.acc_only, class_names=class_names)
+    elif args.command == 'detail-plot-pico':
+        from src.pipeline.detail import plot_pico_selection_stats
+        plot_pico_selection_stats(os.path.join('results', args.run_name), args.alg, args.C, args.k, args.out)
 
 
 if __name__ == '__main__':

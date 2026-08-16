@@ -1,0 +1,11 @@
+{
+  "dataset": "mnist",
+  "total_classes": 10,
+  "n_partial_labels": null,
+  "n_complementary_labels": null,
+  "q": 0.3,
+  "seed": 42,
+  "n_train": 60000,
+  "n_test": 10000,
+  "timestamp": "2026-08-16T13:17:20.281971"
+}

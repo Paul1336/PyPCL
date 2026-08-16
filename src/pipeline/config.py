@@ -27,6 +27,11 @@ class PipelineConfig:
     only_c: int
     only_k: int
     only_q: float
+    detail: bool
+    detail_log_every: int
+    tsne: bool
+    tsne_every: int
+    tsne_max_points: int
     raw: dict = field(default_factory=dict)   # full config.yaml (pico/comco/solar blocks)
 
 
@@ -53,5 +58,10 @@ def load_config(args) -> PipelineConfig:
         only_c=args.only_c,
         only_k=args.only_k,
         only_q=getattr(args, 'only_q', None),
+        detail=getattr(args, 'detail', False),
+        detail_log_every=getattr(args, 'detail_log_every', 10),
+        tsne=getattr(args, 'tsne', False),
+        tsne_every=getattr(args, 'tsne_every', 50),
+        tsne_max_points=getattr(args, 'tsne_max_points', 2000),
         raw=raw,
     )

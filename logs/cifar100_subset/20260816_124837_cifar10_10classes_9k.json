@@ -1,0 +1,10 @@
+{
+  "dataset": "cifar10",
+  "total_classes": 10,
+  "n_partial_labels": 9,
+  "n_complementary_labels": 1,
+  "seed": 42,
+  "n_train": 50000,
+  "n_test": 10000,
+  "timestamp": "2026-08-16T12:48:37.298641"
+}
