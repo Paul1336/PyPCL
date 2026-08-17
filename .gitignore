@@ -5,6 +5,7 @@ plots_legacy/
 results/
 results_legacy/
 verify_results/
+configs/thresholdoracle/
 
 # Ignore Python bytecode
 __pycache__/
