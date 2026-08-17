@@ -761,11 +761,13 @@ def plot_pico_selection_stats_multi_k(run_dirs: dict, algorithm: str, C: int, ou
     import matplotlib.pyplot as plt
 
     display_name = display_name or algorithm
-    fig, ax = plt.subplots(figsize=(11, 5))
-    cmap = plt.get_cmap('viridis')
-    ks = sorted(run_dirs, reverse=True)
 
-    for i, k in enumerate(ks):
+    def _f(v):
+        return float('nan') if v in ('', 'nan') else float(v)
+
+    ks = sorted(run_dirs, reverse=True)
+    series = {}   # k -> pos_smooth array
+    for k in ks:
         path = os.path.join(run_dirs[k], 'detail', algorithm, f'C{C}_k{k}', 'pico_selection_stats.csv')
         if not os.path.isfile(path):
             print(f'  [plot_pico_selection_stats_multi_k] skip k={k}: no data at {path}', flush=True)
@@ -774,17 +776,30 @@ def plot_pico_selection_stats_multi_k(run_dirs: dict, algorithm: str, C: int, ou
             rows = list(csv.DictReader(f))
         if not rows:
             continue
-
-        def _f(v):
-            return float('nan') if v in ('', 'nan') else float(v)
-
         pos = [_f(r['pos_precision']) for r in rows]
         epochs = [int(r['epoch']) for r in rows]
         batches_per_epoch = sum(1 for e in epochs if e == epochs[0]) or 1
-        pos_smooth = _rolling_mean(pos, batches_per_epoch)
-        steps = list(range(len(rows)))
+        series[k] = _rolling_mean(pos, batches_per_epoch)
+
+    # Different k's can end up with different row counts (most often because
+    # a crashed-and-retried run appended a second pass's rows on top of an
+    # earlier partial attempt's, since these CSVs are opened in append mode
+    # and never truncated between process launches) -- clip every series to
+    # the shortest one so lines are visually comparable over the same
+    # x-range rather than some trailing off early.
+    if series:
+        min_len = min(len(v) for v in series.values())
+        for k in series:
+            series[k] = series[k][:min_len]
+
+    fig, ax = plt.subplots(figsize=(11, 5))
+    cmap = plt.get_cmap('viridis')
+    for i, k in enumerate(ks):
+        if k not in series:
+            continue
+        steps = list(range(len(series[k])))
         color = cmap(i / max(1, len(ks) - 1))
-        ax.plot(steps, pos_smooth, label=f'k={k}', color=color, linewidth=2)
+        ax.plot(steps, series[k], label=f'k={k}', color=color, linewidth=2)
 
     ax.set_xlabel('Training step (batch, chronological)')
     ax.set_ylabel('Positive-pair precision  P(same true class | selected positive)')
