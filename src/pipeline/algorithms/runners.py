@@ -327,11 +327,18 @@ def run_pico_oracle(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_siz
     cont_loss = SupConLoss()
     opt = make_optimizer(model, hparams)
 
+    detail_on = detail.is_enabled(raw_cfg)
+
     chunk_t0 = time.perf_counter()
     for ep in range(epochs):
         cls_loss.set_conf_ema_m(ep, pico_args)
-        train_pico_oracle_graded_epoch(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device,
-                                        precision_threshold)
+        if detail_on:
+            detail.train_pico_oracle_graded_epoch_with_stats(
+                pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device,
+                raw_cfg, 'PiCO-Oracle', C, precision_threshold)
+        else:
+            train_pico_oracle_graded_epoch(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device,
+                                            precision_threshold)
 
         detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-Oracle')
         detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-Oracle')

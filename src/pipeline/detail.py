@@ -49,6 +49,7 @@ maybe_plot_tsne), not via a separate plotting subcommand.
 """
 
 import csv
+import math
 import os
 
 import numpy as np
@@ -328,6 +329,115 @@ def log_pico_selection_stats_batch(raw_cfg, algorithm, C, epoch, batch_rows):
             })
 
 
+def train_pico_oracle_graded_epoch_with_stats(pico_args, model, loader, loss_fn, loss_cont_fn,
+                                                optimizer, epoch, device, raw_cfg, algorithm, C,
+                                                precision_threshold):
+    """--detail-logging counterpart to
+    src.oracle_pico_engine.train_pico_oracle_graded_epoch -- identical
+    graduated-correction logic (see that function's docstring), plus:
+    measures and buffers, per batch, both the NATURAL (pre-correction)
+    selected-positive-pair precision the model's own pseudo-label mask
+    would have had (what plain PiCO-Fixed would have used unmodified) and
+    the precision actually used for this batch's contrastive loss after
+    correction, plus the (untouched-target, but composition-shifted by any
+    flips) negative-pair precision and how many pairs were flipped. Written
+    to pico_oracle_correction_stats.csv via
+    log_pico_oracle_correction_stats_batch."""
+    model.train()
+    total_loss = 0.0
+    start_upd_prot = epoch >= pico_args['prot_start']
+    batch_rows = []   # (batch_idx, precision_before, precision_after, neg_precision, pos_total, n_flipped)
+
+    progress_bar = tqdm(loader, desc=f"PiCO-Oracle Epoch {epoch + 1}/{pico_args['epochs']} [detail]")
+    for batch_idx, (images_w, images_s, partial_Y, true_labels, index) in enumerate(progress_bar):
+        images_w, images_s, partial_Y, true_labels, index = (
+            images_w.to(device), images_s.to(device), partial_Y.to(device),
+            true_labels.to(device), index.to(device))
+
+        cls_out, features, true_targets, pseudo_targets, score_prot = model(
+            images_w, images_s, partial_Y, true_labels, pico_args)
+        batch_size = cls_out.shape[0]
+
+        if start_upd_prot:
+            loss_fn.confidence_update(temp_un_conf=score_prot.detach(), batch_index=index, batchY=partial_Y)
+
+        loss_cls = loss_fn(cls_out, index)
+
+        prec_before = prec_after = neg_prec = float('nan')
+        pos_total = n_flipped = 0
+
+        if start_upd_prot:
+            mask = torch.eq(pseudo_targets[:batch_size].unsqueeze(1), pseudo_targets.unsqueeze(0)).float()
+            same_true = torch.eq(true_targets[:batch_size].unsqueeze(1), true_targets.unsqueeze(0)).float()
+
+            pos_total = int(mask.sum().item())
+            true_pos = int((mask * same_true).sum().item()) if pos_total > 0 else 0
+            if pos_total > 0:
+                prec_before = true_pos / pos_total
+                if prec_before < precision_threshold:
+                    false_pos = pos_total - true_pos
+                    n_flipped = max(0, min(false_pos, math.ceil(pos_total - true_pos / precision_threshold)))
+                    if n_flipped > 0:
+                        wrong_idx = ((mask == 1) & (same_true == 0)).nonzero(as_tuple=False)
+                        perm = torch.randperm(wrong_idx.shape[0], device=device)[:n_flipped]
+                        sel = wrong_idx[perm]
+                        mask[sel[:, 0], sel[:, 1]] = 0.0
+                new_pos_total = pos_total - n_flipped
+                prec_after = (true_pos / new_pos_total) if new_pos_total > 0 else float('nan')
+
+            neg_mask = (mask == 0).float()
+            neg_total = neg_mask.sum().item()
+            neg_prec = ((neg_mask * (1 - same_true)).sum() / neg_total).item() if neg_total > 0 else float('nan')
+
+            loss_cont = loss_cont_fn(features=features, mask=mask, batch_size=batch_size)
+            loss = loss_cls + pico_args['loss_weight'] * loss_cont
+        else:
+            loss = loss_cls
+
+        batch_rows.append((batch_idx, prec_before, prec_after, neg_prec, pos_total, n_flipped))
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
+
+    log_pico_oracle_correction_stats_batch(raw_cfg, algorithm, C, epoch + 1, batch_rows)
+
+    return total_loss / len(loader)
+
+
+def log_pico_oracle_correction_stats_batch(raw_cfg, algorithm, C, epoch, batch_rows):
+    """batch_rows: list of (batch_idx, precision_before, precision_after,
+    neg_precision, pos_total, n_flipped) for every batch in this epoch (see
+    train_pico_oracle_graded_epoch_with_stats). precision_before is NaN
+    before pico_args['prot_start'] (mask is None until then, same
+    convention as the PiCO/PiCO-Fixed selection-stats logs)."""
+    cfg = _detail_cfg(raw_cfg)
+    if not cfg.get('enabled') or not batch_rows:
+        return
+    out_dir = cell_dir(raw_cfg, algorithm, C)
+    fields = ['epoch', 'batch', 'precision_before', 'precision_after', 'neg_precision', 'pos_total', 'n_flipped']
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, 'pico_oracle_correction_stats.csv')
+    new_file = not os.path.isfile(path)
+
+    def _r(v):
+        return '' if v != v else round(v, 6)
+
+    with open(path, 'a', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        if new_file:
+            w.writeheader()
+        for batch_idx, prec_before, prec_after, neg_prec, pos_total, n_flipped in batch_rows:
+            w.writerow({
+                'epoch': epoch, 'batch': batch_idx,
+                'precision_before': _r(prec_before), 'precision_after': _r(prec_after),
+                'neg_precision': _r(neg_prec), 'pos_total': pos_total, 'n_flipped': n_flipped,
+            })
+
+
 # ─── (3) t-SNE snapshots of the contrastive representation ────────────────
 
 
@@ -554,6 +664,67 @@ def plot_pico_selection_stats(results_dir: str, algorithm: str, C: int, k: int, 
     ax.set_ylabel('Precision vs. ground truth')
     ax.set_ylim(0, 1.05)
     ax.set_title(f'{algorithm} contrastive pair-selection precision  —  C={C}  k={k}  '
+                 f'(faint = per-batch, bold = 1-epoch rolling mean)')
+    ax.legend(fontsize=8, loc='lower right')
+    ax.grid(True, alpha=0.3)
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)) or '.', exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    return out_path
+
+
+def plot_pico_oracle_correction_stats(results_dir: str, C: int, k: int, out_path: str) -> str:
+    """PiCO-Oracle's graduated correction: natural (pre-correction)
+    selected-positive-pair precision vs. the precision actually used for
+    training after correction, one point per BATCH in chronological order.
+    Reads pico_oracle_correction_stats.csv (see
+    log_pico_oracle_correction_stats_batch / train_pico_oracle_graded_epoch_with_stats).
+    The gap between the two lines is exactly what the correction mechanism
+    is doing each batch; 'after' should track at or above whatever
+    pico.oracle_precision_threshold the run used once training reaches
+    prot_start (flat 'before'≈'after' before that point means warm-up)."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    path = os.path.join(results_dir, 'detail', 'PiCO-Oracle', f'C{C}_k{k}', 'pico_oracle_correction_stats.csv')
+    if not os.path.isfile(path):
+        raise ValueError(f'No oracle correction-stats log found at {path} '
+                          f'(did you run PiCO-Oracle with --detail?)')
+    with open(path, newline='') as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        raise ValueError(f'{path} has no rows')
+
+    def _f(v):
+        return float('nan') if v in ('', 'nan') else float(v)
+
+    steps = list(range(len(rows)))
+    before = [_f(r['precision_before']) for r in rows]
+    after = [_f(r['precision_after']) for r in rows]
+    neg = [_f(r['neg_precision']) for r in rows]
+
+    epochs = [int(r['epoch']) for r in rows]
+    batches_per_epoch = sum(1 for e in epochs if e == epochs[0]) or 1
+
+    before_smooth = _rolling_mean(before, batches_per_epoch)
+    after_smooth = _rolling_mean(after, batches_per_epoch)
+    neg_smooth = _rolling_mean(neg, batches_per_epoch)
+
+    fig, ax = plt.subplots(figsize=(11, 5))
+    ax.plot(steps, before, color='#d62728', linewidth=0.6, alpha=0.25)
+    ax.plot(steps, after, color='#2ca02c', linewidth=0.6, alpha=0.25)
+    ax.plot(steps, before_smooth, label='positive-pair precision BEFORE correction (natural, = PiCO-Fixed)',
+            color='#d62728', linewidth=2)
+    ax.plot(steps, after_smooth, label='positive-pair precision AFTER correction (used for training)',
+            color='#2ca02c', linewidth=2)
+    ax.plot(steps, neg_smooth, label='negative-pair precision (as used for training)',
+            color='#1f77b4', linewidth=1.5, linestyle='--')
+    ax.set_xlabel(f'Training step (batch, chronological — ~{batches_per_epoch} batches/epoch)')
+    ax.set_ylabel('Precision vs. ground truth')
+    ax.set_ylim(0, 1.05)
+    ax.set_title(f'PiCO-Oracle graduated correction  —  C={C}  k={k}  '
                  f'(faint = per-batch, bold = 1-epoch rolling mean)')
     ax.legend(fontsize=8, loc='lower right')
     ax.grid(True, alpha=0.3)

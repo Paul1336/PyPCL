@@ -139,6 +139,16 @@ def _add_detail_plot_pico_parser(sub):
     p.add_argument('--out', required=True)
 
 
+def _add_detail_plot_pico_oracle_parser(sub):
+    p = sub.add_parser('detail-plot-pico-oracle',
+                        help="PiCO-Oracle's graduated correction: natural (pre-correction) vs. "
+                             "post-correction positive-pair precision, over epochs (requires --detail)")
+    p.add_argument('--run', required=True, dest='run_name')
+    p.add_argument('--C', type=int, required=True)
+    p.add_argument('--k', type=int, required=True)
+    p.add_argument('--out', required=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
@@ -147,6 +157,7 @@ def main():
     _add_plot_parser(sub)
     _add_detail_plot_parser(sub)
     _add_detail_plot_pico_parser(sub)
+    _add_detail_plot_pico_oracle_parser(sub)
     args = parser.parse_args()
 
     if args.command == 'run':
@@ -177,6 +188,9 @@ def main():
     elif args.command == 'detail-plot-pico':
         from src.pipeline.detail import plot_pico_selection_stats
         plot_pico_selection_stats(os.path.join('results', args.run_name), args.alg, args.C, args.k, args.out)
+    elif args.command == 'detail-plot-pico-oracle':
+        from src.pipeline.detail import plot_pico_oracle_correction_stats
+        plot_pico_oracle_correction_stats(os.path.join('results', args.run_name), args.C, args.k, args.out)
 
 
 if __name__ == '__main__':
