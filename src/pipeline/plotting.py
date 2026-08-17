@@ -41,11 +41,11 @@ def _global_ymax(res: dict) -> int:
     return 80 if not vals else int(np.ceil(max(vals) / 10) * 10)
 
 
-def _draw(ax, alg: str, k_acc: dict):
+def _draw(ax, alg: str, k_acc: dict, label: str = None):
     if not k_acc:
         return
     ks, accs = zip(*sorted(k_acc.items()))
-    ax.plot(ks, accs, label=alg, **STYLES.get(alg, {}))
+    ax.plot(ks, accs, label=(label or alg), **STYLES.get(alg, {}))
 
 
 def _setup_ax(ax, title: str, y_max: int, ylabel: bool = False):
@@ -58,7 +58,8 @@ def _setup_ax(ax, title: str, y_max: int, ylabel: bool = False):
 
 
 def plot_accuracy_vs_k(run_dirs: list, algorithms: list = None, c_values: list = None,
-                        out_path: str = 'plots/comparison.png', group_by: str = 'paradigm'):
+                        out_path: str = 'plots/comparison.png', group_by: str = 'paradigm',
+                        rename: dict = None):
     """
     run_dirs:   list of results/<run_name> directories to merge.
     algorithms: algorithm names to plot; None = every algorithm found in the data.
@@ -66,7 +67,11 @@ def plot_accuracy_vs_k(run_dirs: list, algorithms: list = None, c_values: list =
     group_by:   'paradigm'      -> two rows (PLL / CLL), one column per C
                 'all-in-one'    -> one row, all algorithms together, one column per C
                 'per-algorithm' -> one row per algorithm, one column per C
+    rename:     optional {algorithm: display_label} overriding only the legend/title text
+                (e.g. {'PiCO-Fixed': 'PiCO'} for a slide) -- data selection/lookup/line
+                styling still use the real algorithm name, only the shown label changes.
     """
+    rename = rename or {}
     res = load_results(run_dirs)
     if not res:
         raise ValueError(f'No results found in {run_dirs}')
@@ -88,7 +93,7 @@ def plot_accuracy_vs_k(run_dirs: list, algorithms: list = None, c_values: list =
                 ax = axes[r][c_idx]
                 _setup_ax(ax, f'{label}  —  C = {C}', ym, ylabel=(c_idx == 0))
                 for alg in algos:
-                    _draw(ax, alg, res.get(C, {}).get(alg, {}))
+                    _draw(ax, alg, res.get(C, {}).get(alg, {}), label=rename.get(alg))
                 ax.legend(fontsize=8, loc='best')
 
     elif group_by == 'per-algorithm':
@@ -99,8 +104,8 @@ def plot_accuracy_vs_k(run_dirs: list, algorithms: list = None, c_values: list =
         for r, alg in enumerate(algos):
             for c_idx, C in enumerate(c_values):
                 ax = axes[r][c_idx]
-                _setup_ax(ax, f'{alg}  —  C = {C}', ym, ylabel=(c_idx == 0))
-                _draw(ax, alg, res.get(C, {}).get(alg, {}))
+                _setup_ax(ax, f'{rename.get(alg, alg)}  —  C = {C}', ym, ylabel=(c_idx == 0))
+                _draw(ax, alg, res.get(C, {}).get(alg, {}), label=rename.get(alg))
 
     else:  # 'all-in-one'
         algos = algorithms or (PLL_ALGOS + CLL_ALGOS)
@@ -110,7 +115,7 @@ def plot_accuracy_vs_k(run_dirs: list, algorithms: list = None, c_values: list =
             ax = axes[0][c_idx]
             _setup_ax(ax, f'C = {C}', ym, ylabel=(c_idx == 0))
             for alg in algos:
-                _draw(ax, alg, res.get(C, {}).get(alg, {}))
+                _draw(ax, alg, res.get(C, {}).get(alg, {}), label=rename.get(alg))
             ax.legend(fontsize=8, loc='best', ncol=2)
 
     fig.tight_layout()

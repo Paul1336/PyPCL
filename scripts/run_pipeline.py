@@ -112,6 +112,9 @@ def _add_plot_parser(sub):
     p.add_argument('--c_values', nargs='+', type=int, default=None)
     p.add_argument('--out', required=True)
     p.add_argument('--group_by', default='paradigm', choices=['paradigm', 'all-in-one', 'per-algorithm'])
+    p.add_argument('--rename', nargs='+', default=None,
+                    help="Override legend/title labels, e.g. --rename PiCO-Fixed=PiCO ComCo-Fixed=ComCo "
+                         "(data selection still uses the real algorithm name; only the shown text changes)")
 
 
 def _add_detail_plot_parser(sub):
@@ -120,10 +123,15 @@ def _add_detail_plot_parser(sub):
     p.add_argument('--run', required=True, dest='run_name')
     p.add_argument('--alg_l', required=True, help='Left (or only) algorithm')
     p.add_argument('--alg_r', default=None, help='Right algorithm, for a side-by-side comparison')
+    p.add_argument('--alg_l_display', default=None, help='Override --alg_l\'s title text only')
+    p.add_argument('--alg_r_display', default=None, help='Override --alg_r\'s title text only')
     p.add_argument('--C', type=int, required=True)
     p.add_argument('--k', type=int, required=True)
     p.add_argument('--out', required=True)
     p.add_argument('--acc_only', action='store_true', help='Omit the CE-loss row (accuracy heatmap only)')
+    p.add_argument('--side_by_side', action='store_true',
+                    help='Single algorithm only: accuracy (left) / CE loss (right) side by side, '
+                         'instead of the default stacked (accuracy on top, loss below) layout')
     p.add_argument('--show_class_names', action='store_true')
     p.add_argument('--seed', type=int, default=42, help='Only used with --show_class_names')
     p.add_argument('--data_dir', default='./data', help='Only used with --show_class_names')
@@ -134,8 +142,21 @@ def _add_detail_plot_pico_parser(sub):
                                                  "precision vs. ground truth, over epochs (requires --detail)")
     p.add_argument('--run', required=True, dest='run_name')
     p.add_argument('--alg', default='PiCO', help="Which PiCO-family algorithm's log to read (default: PiCO)")
+    p.add_argument('--display_name', default=None, help="Override --alg's title text only")
     p.add_argument('--C', type=int, required=True)
     p.add_argument('--k', type=int, required=True)
+    p.add_argument('--out', required=True)
+
+
+def _add_detail_plot_pico_multik_parser(sub):
+    p = sub.add_parser('detail-plot-pico-multik',
+                        help="Overlay one algorithm's positive-pair selection precision across several "
+                             "k values on one chart (requires --detail on all of them)")
+    p.add_argument('--runs', nargs='+', required=True,
+                    help='k=run_name pairs, e.g. --runs 19=new_main_c20_k19_pico_fixed 15=new_main_c20_k15_pico_fixed')
+    p.add_argument('--alg', default='PiCO-Fixed', help="Which algorithm's log to read (default: PiCO-Fixed)")
+    p.add_argument('--display_name', default=None, help="Override --alg's title text only")
+    p.add_argument('--C', type=int, required=True)
     p.add_argument('--out', required=True)
 
 
@@ -144,6 +165,7 @@ def _add_detail_plot_pico_oracle_parser(sub):
                         help="PiCO-Oracle's graduated correction: natural (pre-correction) vs. "
                              "post-correction positive-pair precision, over epochs (requires --detail)")
     p.add_argument('--run', required=True, dest='run_name')
+    p.add_argument('--hide_neg', action='store_true', help='Omit the negative-pair precision line')
     p.add_argument('--C', type=int, required=True)
     p.add_argument('--k', type=int, required=True)
     p.add_argument('--out', required=True)
@@ -157,6 +179,7 @@ def main():
     _add_plot_parser(sub)
     _add_detail_plot_parser(sub)
     _add_detail_plot_pico_parser(sub)
+    _add_detail_plot_pico_multik_parser(sub)
     _add_detail_plot_pico_oracle_parser(sub)
     args = parser.parse_args()
 
@@ -172,10 +195,10 @@ def main():
         print(f'Merged -> {out}')
     elif args.command == 'plot':
         run_dirs = [os.path.join('results', r) for r in args.runs]
+        rename = dict(pair.split('=', 1) for pair in args.rename) if args.rename else None
         plot_accuracy_vs_k(run_dirs, algorithms=args.algorithms, c_values=args.c_values,
-                            out_path=args.out, group_by=args.group_by)
+                            out_path=args.out, group_by=args.group_by, rename=rename)
     elif args.command == 'detail-plot':
-        from src.pipeline.detail import plot_heatmap
         class_names = None
         if args.show_class_names:
             from src.cifar100_subset import select_cifar100_classes
@@ -183,14 +206,32 @@ def main():
             indices = select_cifar100_classes(args.C, seed=args.seed)
             ds = CIFAR100(root=args.data_dir, train=True, download=False)
             class_names = [ds.classes[i] for i in indices]
-        plot_heatmap(os.path.join('results', args.run_name), args.alg_l, args.C, args.k, args.out,
-                     alg_r=args.alg_r, acc_only=args.acc_only, class_names=class_names)
+        if args.side_by_side:
+            if args.alg_r:
+                parser.error('--side_by_side is single-algorithm only; drop --alg_r')
+            from src.pipeline.detail import plot_heatmap_side_by_side
+            plot_heatmap_side_by_side(os.path.join('results', args.run_name), args.alg_l, args.C, args.k, args.out,
+                                       display_name=args.alg_l_display, class_names=class_names)
+        else:
+            from src.pipeline.detail import plot_heatmap
+            plot_heatmap(os.path.join('results', args.run_name), args.alg_l, args.C, args.k, args.out,
+                         alg_r=args.alg_r, acc_only=args.acc_only, class_names=class_names,
+                         alg_l_display=args.alg_l_display, alg_r_display=args.alg_r_display)
     elif args.command == 'detail-plot-pico':
         from src.pipeline.detail import plot_pico_selection_stats
-        plot_pico_selection_stats(os.path.join('results', args.run_name), args.alg, args.C, args.k, args.out)
+        plot_pico_selection_stats(os.path.join('results', args.run_name), args.alg, args.C, args.k, args.out,
+                                   display_name=args.display_name)
+    elif args.command == 'detail-plot-pico-multik':
+        from src.pipeline.detail import plot_pico_selection_stats_multi_k
+        run_dirs = {}
+        for pair in args.runs:
+            k_str, run_name = pair.split('=', 1)
+            run_dirs[int(k_str)] = os.path.join('results', run_name)
+        plot_pico_selection_stats_multi_k(run_dirs, args.alg, args.C, args.out, display_name=args.display_name)
     elif args.command == 'detail-plot-pico-oracle':
         from src.pipeline.detail import plot_pico_oracle_correction_stats
-        plot_pico_oracle_correction_stats(os.path.join('results', args.run_name), args.C, args.k, args.out)
+        plot_pico_oracle_correction_stats(os.path.join('results', args.run_name), args.C, args.k, args.out,
+                                           show_neg=not args.hide_neg)
 
 
 if __name__ == '__main__':

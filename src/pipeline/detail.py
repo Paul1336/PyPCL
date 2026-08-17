@@ -523,11 +523,20 @@ def _load_per_class_csv(path, C):
 
 
 def plot_heatmap(results_dir: str, alg_l: str, C: int, k: int, out_path: str,
-                  alg_r: str = None, acc_only: bool = True, class_names=None) -> str:
+                  alg_r: str = None, acc_only: bool = True, class_names=None,
+                  alg_l_display: str = None, alg_r_display: str = None) -> str:
     """Per-class accuracy (and optionally loss) heatmap over epoch
     checkpoints, for one algorithm or two side-by-side. Reproduces
     scripts/legacy/plot_combined_heatmap_pair.py, reading this module's own
-    per_class_loss.csv files instead of that script's separate results dir."""
+    per_class_loss.csv files instead of that script's separate results dir.
+
+    alg_l/alg_r select which algorithm's data to read (must match the
+    on-disk detail/<algorithm>/ folder name); alg_l_display/alg_r_display
+    optionally override only the text shown in the title (e.g. presenting
+    an internal name like 'PiCO-Fixed' or 'PiCO-Oracle' as plain 'PiCO' for
+    a slide, without renaming anything on disk)."""
+    alg_l_display = alg_l_display or alg_l
+    alg_r_display = alg_r_display or alg_r
     import numpy as np
     import matplotlib
     matplotlib.use('Agg')
@@ -573,13 +582,13 @@ def plot_heatmap(results_dir: str, alg_l: str, C: int, k: int, out_path: str,
     fa_l = f'{dL["overall"][-1]:.1f}%' if dL else 'N/A'
     im_acc_l = _draw(axes[0, 0], acc_l, 'RdYlGn', 0, 100, show_xlabel=acc_only, show_ylabel=True,
                       ylabel='Accuracy (%)')
-    axes[0, 0].set_title(f'{alg_l}  (final {fa_l})', fontsize=11, fontweight='bold')
+    axes[0, 0].set_title(f'{alg_l_display}  (final {fa_l})', fontsize=11, fontweight='bold')
 
     if alg_r:
         acc_r = dR['acc_mat'] if dR else np.full((T, C), np.nan)
         fa_r = f'{dR["overall"][-1]:.1f}%' if dR else 'N/A'
         _draw(axes[0, 1], acc_r, 'RdYlGn', 0, 100, show_xlabel=acc_only, show_ylabel=False)
-        axes[0, 1].set_title(f'{alg_r}  (final {fa_r})', fontsize=11, fontweight='bold')
+        axes[0, 1].set_title(f'{alg_r_display}  (final {fa_r})', fontsize=11, fontweight='bold')
     fig.colorbar(im_acc_l, ax=axes[0, :], label='Accuracy (%)', shrink=0.85, pad=0.01)
 
     if not acc_only:
@@ -594,8 +603,62 @@ def plot_heatmap(results_dir: str, alg_l: str, C: int, k: int, out_path: str,
             _draw(axes[1, 1], loss_r, 'RdYlGn_r', 0, loss_vmax, show_xlabel=True, show_ylabel=False)
         fig.colorbar(im_loss_l, ax=axes[1, :], label='CE loss', shrink=0.85, pad=0.01)
 
-    title = f'{alg_l} vs {alg_r}' if alg_r else alg_l
+    title = f'{alg_l_display} vs {alg_r_display}' if alg_r else alg_l_display
     fig.suptitle(f'{title}  —  C={C}  k={k}', fontsize=13, fontweight='bold')
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)) or '.', exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    return out_path
+
+
+def plot_heatmap_side_by_side(results_dir: str, alg: str, C: int, k: int, out_path: str,
+                               display_name: str = None, class_names=None) -> str:
+    """Single-algorithm per-class accuracy (left) and CE loss (right) heatmaps,
+    side by side in one row -- a horizontal counterpart to plot_heatmap's
+    default vertical (accuracy-on-top, loss-below) stacking for the
+    single-algorithm case. Reads the same per_class_loss.csv as plot_heatmap."""
+    import numpy as np
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    display_name = display_name or alg
+    d = _load_per_class_csv(os.path.join(results_dir, 'detail', alg, f'C{C}_k{k}', 'per_class_loss.csv'), C)
+    if d is None:
+        raise ValueError(f'No detail logs found for C={C} k={k}, algorithm {alg} under '
+                          f'{results_dir}/detail/ (did you run with --detail?)')
+
+    epochs = d['epochs']
+    T = len(epochs)
+
+    def _draw(ax, mat, cmap, vmin, vmax, ylabel):
+        im = ax.imshow(mat.T, aspect='auto', origin='lower', cmap=cmap, vmin=vmin, vmax=vmax,
+                        interpolation='nearest')
+        ax.set_yticks(range(C))
+        ax.set_yticklabels(class_names if class_names else range(C), fontsize=6)
+        ax.set_ylabel(ylabel, fontsize=9)
+        ax.set_xticks(range(T))
+        ax.set_xticklabels(epochs, rotation=45, fontsize=6)
+        ax.set_xlabel('Epoch checkpoint', fontsize=9)
+        return im
+
+    fig_w = max(16, T * 0.32 * 2 + 3)
+    fig_h = max(5, C * 0.32 + 1.5)
+    fig, axes = plt.subplots(1, 2, figsize=(fig_w, fig_h), gridspec_kw={'wspace': 0.28})
+
+    fa = f'{d["overall"][-1]:.1f}%'
+    im_acc = _draw(axes[0], d['acc_mat'], 'RdYlGn', 0, 100, ylabel='Accuracy (%)')
+    axes[0].set_title('Accuracy', fontsize=11, fontweight='bold')
+    fig.colorbar(im_acc, ax=axes[0], label='Accuracy (%)', shrink=0.85, pad=0.02)
+
+    loss_mat = d['loss_mat']
+    loss_vmax = np.nanpercentile(loss_mat, 97) if not np.all(np.isnan(loss_mat)) else 1.0
+    im_loss = _draw(axes[1], loss_mat, 'RdYlGn_r', 0, loss_vmax, ylabel='CE Loss')
+    axes[1].set_title('CE loss', fontsize=11, fontweight='bold')
+    fig.colorbar(im_loss, ax=axes[1], label='CE loss', shrink=0.85, pad=0.02)
+
+    fig.suptitle(f'{display_name}  (final {fa})  —  C={C}  k={k}', fontsize=13, fontweight='bold')
 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)) or '.', exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches='tight')
@@ -620,17 +683,22 @@ def _rolling_mean(values, window):
     return out
 
 
-def plot_pico_selection_stats(results_dir: str, algorithm: str, C: int, k: int, out_path: str) -> str:
+def plot_pico_selection_stats(results_dir: str, algorithm: str, C: int, k: int, out_path: str,
+                               display_name: str = None) -> str:
     """Line chart of positive/negative contrastive pair-selection precision
     vs. ground truth, one point per BATCH in chronological (file) order --
     the log has one row per batch (see log_pico_selection_stats_batch). Raw
     per-batch values are plotted thin/faded; a rolling mean (window = one
     epoch's worth of batches) is overlaid bold since per-batch precision is
-    typically too noisy to read trends from directly."""
+    typically too noisy to read trends from directly.
+
+    display_name optionally overrides only the title text (algorithm still
+    selects which detail/<algorithm>/ folder to read from)."""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
 
+    display_name = display_name or algorithm
     path = os.path.join(results_dir, 'detail', algorithm, f'C{C}_k{k}', 'pico_selection_stats.csv')
     if not os.path.isfile(path):
         raise ValueError(f'No selection-stats log found at {path} (did you run with --detail?)')
@@ -663,7 +731,7 @@ def plot_pico_selection_stats(results_dir: str, algorithm: str, C: int, k: int, 
     ax.set_xlabel(f'Training step (batch, chronological — ~{batches_per_epoch} batches/epoch)')
     ax.set_ylabel('Precision vs. ground truth')
     ax.set_ylim(0, 1.05)
-    ax.set_title(f'{algorithm} contrastive pair-selection precision  —  C={C}  k={k}  '
+    ax.set_title(f'{display_name} contrastive pair-selection precision  —  C={C}  k={k}  '
                  f'(faint = per-batch, bold = 1-epoch rolling mean)')
     ax.legend(fontsize=8, loc='lower right')
     ax.grid(True, alpha=0.3)
@@ -674,7 +742,65 @@ def plot_pico_selection_stats(results_dir: str, algorithm: str, C: int, k: int, 
     return out_path
 
 
-def plot_pico_oracle_correction_stats(results_dir: str, C: int, k: int, out_path: str) -> str:
+def plot_pico_selection_stats_multi_k(run_dirs: dict, algorithm: str, C: int, out_path: str,
+                                       display_name: str = None) -> str:
+    """Overlay positive-pair selection precision (rolling-mean only, no raw
+    per-batch faint lines -- multiple k's on one axis gets too busy with
+    those) for several k values on one chart, one line per k. Shows only
+    the natural/uncorrected 'positive-pair precision' -- no negative-pair
+    line -- since the point of this view is comparing how precision
+    degrades as k grows, not the full pos/neg breakdown a single-k plot
+    (plot_pico_selection_stats) already covers.
+
+    run_dirs: {k: results_dir} -- each k's data may live in its own
+    run_name/results dir (as with run_main_pipeline_batch.sh's one-run_name-
+    per-algorithm-per-k scheme), so this takes a dict instead of a single
+    results_dir + list of k's."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    display_name = display_name or algorithm
+    fig, ax = plt.subplots(figsize=(11, 5))
+    cmap = plt.get_cmap('viridis')
+    ks = sorted(run_dirs, reverse=True)
+
+    for i, k in enumerate(ks):
+        path = os.path.join(run_dirs[k], 'detail', algorithm, f'C{C}_k{k}', 'pico_selection_stats.csv')
+        if not os.path.isfile(path):
+            print(f'  [plot_pico_selection_stats_multi_k] skip k={k}: no data at {path}', flush=True)
+            continue
+        with open(path, newline='') as f:
+            rows = list(csv.DictReader(f))
+        if not rows:
+            continue
+
+        def _f(v):
+            return float('nan') if v in ('', 'nan') else float(v)
+
+        pos = [_f(r['pos_precision']) for r in rows]
+        epochs = [int(r['epoch']) for r in rows]
+        batches_per_epoch = sum(1 for e in epochs if e == epochs[0]) or 1
+        pos_smooth = _rolling_mean(pos, batches_per_epoch)
+        steps = list(range(len(rows)))
+        color = cmap(i / max(1, len(ks) - 1))
+        ax.plot(steps, pos_smooth, label=f'k={k}', color=color, linewidth=2)
+
+    ax.set_xlabel('Training step (batch, chronological)')
+    ax.set_ylabel('Positive-pair precision  P(same true class | selected positive)')
+    ax.set_ylim(0, 1.05)
+    ax.set_title(f'{display_name}  —  C={C}  —  positive-pair precision vs. k  (1-epoch rolling mean)')
+    ax.legend(fontsize=9, loc='lower right')
+    ax.grid(True, alpha=0.3)
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)) or '.', exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    return out_path
+
+
+def plot_pico_oracle_correction_stats(results_dir: str, C: int, k: int, out_path: str,
+                                       show_neg: bool = True) -> str:
     """PiCO-Oracle's graduated correction: natural (pre-correction)
     selected-positive-pair precision vs. the precision actually used for
     training after correction, one point per BATCH in chronological order.
@@ -719,8 +845,9 @@ def plot_pico_oracle_correction_stats(results_dir: str, C: int, k: int, out_path
             color='#d62728', linewidth=2)
     ax.plot(steps, after_smooth, label='positive-pair precision AFTER correction (used for training)',
             color='#2ca02c', linewidth=2)
-    ax.plot(steps, neg_smooth, label='negative-pair precision (as used for training)',
-            color='#1f77b4', linewidth=1.5, linestyle='--')
+    if show_neg:
+        ax.plot(steps, neg_smooth, label='negative-pair precision (as used for training)',
+                color='#1f77b4', linewidth=1.5, linestyle='--')
     ax.set_xlabel(f'Training step (batch, chronological — ~{batches_per_epoch} batches/epoch)')
     ax.set_ylabel('Precision vs. ground truth')
     ax.set_ylim(0, 1.05)
