@@ -30,7 +30,7 @@ from src.engine import (evaluate_model, train_algorithm, train_comco_epoch,
                          train_pico_epoch, train_pico_mclloss_epoch,
                          train_pico_moco_epoch, train_pico_sc_epoch, train_solar)
 from src.fixed_pico_engine import train_pico_epoch_fixed
-from src.oracle_pico_engine import train_pico_oracle_epoch
+from src.oracle_pico_engine import train_pico_oracle_graded_epoch
 from src.mcl_losses import MCL_LOG
 from src.fixed_mcl_losses import FixedMCLLog
 from src.model_setup import setup_solar
@@ -301,14 +301,28 @@ def run_pico(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epoc
 
 
 def run_pico_oracle(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
-    """Ablation: identical to run_pico except the contrastive loss's
-    positive/negative pair selection is driven by the ground-truth label
-    (PiCOOracleModel's queue_true) instead of the prototype-derived
-    pseudo-label. Not for real use -- see src/oracle_pico_engine.py."""
+    """Graduated precision-controlled contrastive-pair-selection oracle,
+    aligned with PiCO-Fixed (not plain PiCO): candidate-set-masked
+    pseudo-target init (Eq. 6, same as run_pico_fixed), prot_start_fixed
+    warm-up length, and L_cont omitted entirely (not switched to
+    unsupervised MoCo) during warm-up.
+
+    Post-warmup, the contrastive mask is PiCO-Fixed's own natural
+    pseudo-label-driven mask, corrected up to config.yaml's
+    pico.oracle_precision_threshold (default 1.0) if it falls short -- see
+    src/oracle_pico_engine.py::train_pico_oracle_graded_epoch for exactly
+    how the correction works. threshold=0 reproduces PiCO-Fixed exactly;
+    threshold=1 removes every false positive from the model's own selected
+    set (not identical to the old ground-truth-mask oracle -- see that
+    function's docstring). Not for real use: even at low thresholds this
+    still requires true labels at train time, unavailable in a genuine
+    partial-label setting."""
     pico_cfg = raw_cfg['pico']
     pico_args = _pico_args(C, epochs, pico_cfg)
+    pico_args['prot_start'] = pico_cfg.get('prot_start_fixed', 1)
+    precision_threshold = pico_cfg.get('oracle_precision_threshold', 1.0)
     model = PiCOOracleModel(pico_args).to(device)
-    init_conf = torch.ones(len(pl_ds), C).to(device) / C
+    init_conf = _candidate_masked_init_conf(pl_ds, C, device)
     cls_loss = PartialLoss(init_conf)
     cont_loss = SupConLoss()
     opt = make_optimizer(model, hparams)
@@ -316,7 +330,8 @@ def run_pico_oracle(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_siz
     chunk_t0 = time.perf_counter()
     for ep in range(epochs):
         cls_loss.set_conf_ema_m(ep, pico_args)
-        train_pico_oracle_epoch(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
+        train_pico_oracle_graded_epoch(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device,
+                                        precision_threshold)
 
         detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-Oracle')
         detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-Oracle')

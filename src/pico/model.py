@@ -81,12 +81,16 @@ class PiCOOracleModel(nn.Module):
 
     Identical to PiCOModel except: (a) the MoCo queue also tracks each
     entry's ground-truth label (`queue_true`, mirroring `queue_pseudo`),
-    and (b) forward() returns a true-label pool (`true_targets`) instead of
-    the pseudo-label pool, for the caller to build the contrastive `mask`
-    from. Classification loss / confidence tracking / prototype EMA update
-    are all unchanged -- still driven by PartialLoss and prototype scores
-    exactly as in plain PiCO, since those govern candidate-label
-    disambiguation, a separate concern from contrastive pair selection.
+    and (b) forward() returns BOTH the true-label pool (`true_targets`) and
+    the ordinary prototype-derived pseudo-label pool (`pseudo_targets`, same
+    construction as PiCOModel.forward's `pseudo_labels`), so the caller can
+    compare the model's own pseudo-label-driven pair selection against
+    ground truth and graduate between them (see
+    src.oracle_pico_engine.train_pico_oracle_graded_epoch). Classification
+    loss / confidence tracking / prototype EMA update are all unchanged --
+    still driven by PartialLoss and prototype scores exactly as in plain
+    PiCO, since those govern candidate-label disambiguation, a separate
+    concern from contrastive pair selection.
 
     queue_true is initialized with distinct negative sentinels
     (-moco_queue..-1, one per slot) rather than a single fill value, so
@@ -154,9 +158,12 @@ class PiCOOracleModel(nn.Module):
             _, k = self.encoder_k(im_k)
 
         features = torch.cat((q, k, self.queue.clone().detach()), dim=0)
-        # Oracle target pool: ground-truth labels, not pseudo-labels -- this
-        # is what the caller builds the contrastive `mask` from.
+        # Ground-truth target pool (for measuring/correcting precision) and
+        # the model's own ordinary pseudo-label target pool (the natural,
+        # uncorrected mask PiCO-Fixed would use) -- the caller graduates
+        # between the two.
         true_targets = torch.cat((true_labels, true_labels, self.queue_true.clone().detach()), dim=0)
+        pseudo_targets = torch.cat((pseudo_labels_b, pseudo_labels_b, self.queue_pseudo.clone().detach()), dim=0)
 
         self._dequeue_and_enqueue(k, pseudo_labels_b, true_labels, args)
-        return output, features, true_targets, score_prot
+        return output, features, true_targets, pseudo_targets, score_prot

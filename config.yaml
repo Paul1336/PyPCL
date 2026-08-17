@@ -29,9 +29,11 @@ pico:
   moco_queue: 8192
   moco_m: 0.999
   proto_m: 0.99
-  prot_start: 80 # Epoch to start prototype learning
+  prot_start: 80 # Epoch to start prototype learning (plain PiCO)
   loss_weight: 0.5
   conf_ema_range: [0.95, 0.8]
+  # prot_start_fixed: 1        # PiCO-Fixed / PiCO-Oracle warm-up length (paper Appendix B.1 default; uncomment to override, e.g. 100 for CIFAR-100 @ q=0.1)
+  # oracle_precision_threshold: 1.0  # PiCO-Oracle: 0 = plain PiCO-Fixed, 1 = correct every selected-positive-pair false positive
 
 # SoLar Algorithm Parameters
 solar:
