@@ -137,6 +137,22 @@ def _add_detail_plot_parser(sub):
     p.add_argument('--data_dir', default='./data', help='Only used with --show_class_names')
 
 
+def _add_detail_plot_multi_parser(sub):
+    p = sub.add_parser('detail-plot-multi',
+                        help='Per-class accuracy/loss heatmap for N algorithms side by side '
+                             '(requires --detail during run); generalizes detail-plot beyond two algorithms')
+    p.add_argument('--entries', nargs='+', required=True,
+                    help='RUN:ALG:LABEL triples, one per column, in order, e.g. '
+                         '--entries new_main_c20_k19_pico:PiCO:PiCO thresholdoracle_c20_k19_t1:PiCO-Oracle:PiCO-oracle')
+    p.add_argument('--C', type=int, required=True)
+    p.add_argument('--k', type=int, required=True)
+    p.add_argument('--out', required=True)
+    p.add_argument('--acc_only', action='store_true', help='Omit the CE-loss row (accuracy heatmaps only)')
+    p.add_argument('--show_class_names', action='store_true')
+    p.add_argument('--seed', type=int, default=42, help='Only used with --show_class_names')
+    p.add_argument('--data_dir', default='./data', help='Only used with --show_class_names')
+
+
 def _add_detail_plot_pico_parser(sub):
     p = sub.add_parser('detail-plot-pico', help="PiCO's contrastive positive/negative pair-selection "
                                                  "precision vs. ground truth, over epochs (requires --detail)")
@@ -178,6 +194,7 @@ def main():
     _add_merge_parser(sub)
     _add_plot_parser(sub)
     _add_detail_plot_parser(sub)
+    _add_detail_plot_multi_parser(sub)
     _add_detail_plot_pico_parser(sub)
     _add_detail_plot_pico_multik_parser(sub)
     _add_detail_plot_pico_oracle_parser(sub)
@@ -217,6 +234,20 @@ def main():
             plot_heatmap(os.path.join('results', args.run_name), args.alg_l, args.C, args.k, args.out,
                          alg_r=args.alg_r, acc_only=args.acc_only, class_names=class_names,
                          alg_l_display=args.alg_l_display, alg_r_display=args.alg_r_display)
+    elif args.command == 'detail-plot-multi':
+        class_names = None
+        if args.show_class_names:
+            from src.cifar100_subset import select_cifar100_classes
+            from torchvision.datasets import CIFAR100
+            indices = select_cifar100_classes(args.C, seed=args.seed)
+            ds = CIFAR100(root=args.data_dir, train=True, download=False)
+            class_names = [ds.classes[i] for i in indices]
+        from src.pipeline.detail import plot_heatmap_multi
+        entries = []
+        for triple in args.entries:
+            run_name, alg, label = triple.split(':', 2)
+            entries.append((os.path.join('results', run_name), alg, label))
+        plot_heatmap_multi(entries, args.C, args.k, args.out, acc_only=args.acc_only, class_names=class_names)
     elif args.command == 'detail-plot-pico':
         from src.pipeline.detail import plot_pico_selection_stats
         plot_pico_selection_stats(os.path.join('results', args.run_name), args.alg, args.C, args.k, args.out,

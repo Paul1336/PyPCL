@@ -612,6 +612,91 @@ def plot_heatmap(results_dir: str, alg_l: str, C: int, k: int, out_path: str,
     return out_path
 
 
+def plot_heatmap_multi(entries: list, C: int, k: int, out_path: str,
+                        acc_only: bool = True, class_names=None) -> str:
+    """Per-class accuracy (and optionally loss) heatmap for N algorithms
+    side by side in one row per metric -- generalizes plot_heatmap's
+    two-algorithm (alg_l/alg_r) case to an arbitrary number of columns.
+
+    entries: list of (results_dir, algorithm, display_name) tuples, one
+    column per entry, in the given order. Each algorithm can live in a
+    different results_dir/run_name (e.g. one run per algorithm, as with
+    run_main_pipeline_batch.sh's naming scheme) -- unlike plot_heatmap,
+    which assumes both algorithms share one results_dir."""
+    import numpy as np
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    data = []
+    for results_dir, alg, display in entries:
+        d = _load_per_class_csv(os.path.join(results_dir, 'detail', alg, f'C{C}_k{k}', 'per_class_loss.csv'), C)
+        data.append((alg, display, d))
+
+    loaded = [d for _, _, d in data if d is not None]
+    if not loaded:
+        algs = ', '.join(alg for alg, _, _ in data)
+        raise ValueError(f'No detail logs found for C={C} k={k}, algorithm(s) {algs} '
+                          f'(did you run with --detail?)')
+
+    epochs = loaded[0]['epochs']
+    T = len(epochs)
+    n_cols = len(entries)
+    n_rows = 1 if acc_only else 2
+
+    def _draw(ax, mat, cmap, vmin, vmax, show_xlabel, show_ylabel, ylabel=''):
+        im = ax.imshow(mat.T, aspect='auto', origin='lower', cmap=cmap, vmin=vmin, vmax=vmax,
+                        interpolation='nearest')
+        ax.set_yticks(range(C))
+        if show_ylabel:
+            ax.set_yticklabels(class_names if class_names else range(C), fontsize=6)
+            ax.set_ylabel(ylabel, fontsize=9)
+        else:
+            ax.set_yticklabels([])
+        if show_xlabel:
+            ax.set_xticks(range(T))
+            ax.set_xticklabels(epochs, rotation=45, fontsize=6)
+            ax.set_xlabel('Epoch checkpoint', fontsize=9)
+        else:
+            ax.set_xticks([])
+        return im
+
+    fig_w = max(6 * n_cols, T * 0.28 * n_cols + 2)
+    fig_h = max(5 * n_rows, C * 0.32 * n_rows + 1.5)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_w, fig_h),
+                              gridspec_kw={'hspace': 0.06, 'wspace': 0.06}, squeeze=False)
+
+    im_acc = None
+    for i, (alg, display, d) in enumerate(data):
+        acc = d['acc_mat'] if d else np.full((T, C), np.nan)
+        fa = f'{d["overall"][-1]:.1f}%' if d else 'N/A'
+        im = _draw(axes[0, i], acc, 'RdYlGn', 0, 100, show_xlabel=acc_only, show_ylabel=(i == 0),
+                   ylabel='Accuracy (%)')
+        axes[0, i].set_title(f'{display}  (final {fa})', fontsize=11, fontweight='bold')
+        im_acc = im_acc or im
+    fig.colorbar(im_acc, ax=axes[0, :], label='Accuracy (%)', shrink=0.85, pad=0.01)
+
+    if not acc_only:
+        loss_mats = [d['loss_mat'] if d else np.full((T, C), np.nan) for _, _, d in data]
+        valid_mats = [m for m in loss_mats if not np.all(np.isnan(m))]
+        loss_vmax = np.nanpercentile(np.concatenate(valid_mats), 97) if valid_mats else 1.0
+
+        im_loss = None
+        for i, loss_mat in enumerate(loss_mats):
+            im = _draw(axes[1, i], loss_mat, 'RdYlGn_r', 0, loss_vmax, show_xlabel=True, show_ylabel=(i == 0),
+                       ylabel='CE Loss')
+            im_loss = im_loss or im
+        fig.colorbar(im_loss, ax=axes[1, :], label='CE loss', shrink=0.85, pad=0.01)
+
+    title = ' vs '.join(display for _, display, _ in data)
+    fig.suptitle(f'{title}  —  C={C}  k={k}', fontsize=13, fontweight='bold')
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)) or '.', exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    return out_path
+
+
 def plot_heatmap_side_by_side(results_dir: str, alg: str, C: int, k: int, out_path: str,
                                display_name: str = None, class_names=None) -> str:
     """Single-algorithm per-class accuracy (left) and CE loss (right) heatmaps,
