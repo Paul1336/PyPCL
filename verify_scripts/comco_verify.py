@@ -93,16 +93,26 @@ def main():
     train_loader, test_loader = build_dataloaders(args.data_dir, args.batch_size, args.seed)
     model, cls_loss, cont_loss, optimizer, comco_args = build_model_and_losses(args.epochs, device)
 
-    report_every = max(1, args.epochs // 20)
     t0 = time.perf_counter()
+    final_accuracy = 0.0
     for epoch in range(args.epochs):
+        epoch_t0 = time.perf_counter()
         avg_loss = train_one_epoch(comco_args, model, train_loader, cls_loss, cont_loss,
                                     optimizer, epoch, device)
-        if (epoch + 1) % report_every == 0 or epoch + 1 == args.epochs:
-            print(f'  [ComCo] epoch {epoch + 1}/{args.epochs}  avg_loss={avg_loss:.4f}', flush=True)
+        # Evaluated every epoch (not just at report_every boundaries) so
+        # progress is visible in real time -- evaluate_model() puts the
+        # model in eval() mode, but the next epoch's train_one_epoch call
+        # switches it back to train() first thing, so this is safe between
+        # epochs. Also doubles as the final_accuracy computation (last
+        # epoch's test_acc), so there's no redundant eval pass after the loop.
+        test_acc = evaluate(model, test_loader, device)
+        epoch_s = time.perf_counter() - epoch_t0
+        avg_s_per_ep = (time.perf_counter() - t0) / (epoch + 1)
+        eta_min = avg_s_per_ep * (args.epochs - epoch - 1) / 60
+        print(f'  [ComCo] epoch {epoch + 1}/{args.epochs}  avg_loss={avg_loss:.4f}  '
+              f'test_acc={test_acc:.2f}%  {epoch_s:.1f}s/ep  ETA {eta_min:.1f}min', flush=True)
+        final_accuracy = test_acc
     training_time_s = time.perf_counter() - t0
-
-    final_accuracy = evaluate(model, test_loader, device)
 
     csv_path = os.path.join(_REPO_ROOT, 'verify_results', 'comco.csv')
     write_result_row(csv_path, args.seed, args.epochs, final_accuracy, training_time_s,
