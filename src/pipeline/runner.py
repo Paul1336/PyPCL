@@ -18,7 +18,9 @@ from src.pipeline.gpu import assign_algorithms, get_device
 # (loaders['pico'] / loaders['comco']) -- unsupported on any DatasetSpec with
 # supports_pico_family=False (grayscale, tabular, preambiguous-feature, or
 # lazy-path datasets). See docs/00_paper_alignment_guide.md.
-IMAGE_ONLY_ALGORITHMS = {'PiCO', 'PiCO-Oracle', 'PiCO-MOCO', 'PiCO-Fixed', 'PiCO-MCL', 'PiCO-SC', 'ComCo', 'ComCo-Fixed', 'SoLar'}
+IMAGE_ONLY_ALGORITHMS = {'PiCO', 'PiCO-Oracle', 'PiCO-MOCO', 'PiCO-Fixed',
+                          'PiCO-Fixed-UniformInit', 'PiCO-Fixed-BiasedInit',
+                          'PiCO-MCL', 'PiCO-SC', 'ComCo', 'ComCo-Fixed', 'SoLar'}
 
 
 def _dataset_spec(dataset_name: str):
@@ -60,6 +62,8 @@ def run(cfg: PipelineConfig):
         'seed': cfg.seed, 'gpu_id': cfg.gpu_id, 'num_gpus': cfg.num_gpus,
         'detail': cfg.detail, 'detail_log_every': cfg.detail_log_every,
         'tsne': cfg.tsne, 'tsne_every': cfg.tsne_every, 'tsne_max_points': cfg.tsne_max_points,
+        'concentration': cfg.concentration, 'concentration_log_every': cfg.concentration_log_every,
+        'knn_eval': cfg.knn_eval, 'knn_eval_k': cfg.knn_eval_k, 'knn_temperature': cfg.knn_temperature,
     })
 
     # Stashed in raw_cfg (like '_dataset_spec' below) rather than added to
@@ -72,6 +76,15 @@ def run(cfg: PipelineConfig):
             'enabled': cfg.tsne,
             'every': cfg.tsne_every,
             'max_points': cfg.tsne_max_points,
+        },
+        'concentration': {
+            'enabled': cfg.concentration,
+            'log_every': cfg.concentration_log_every,
+        },
+        'knn': {
+            'enabled': cfg.knn_eval,
+            'k': cfg.knn_eval_k,
+            'temperature': cfg.knn_temperature,
         },
     }
 

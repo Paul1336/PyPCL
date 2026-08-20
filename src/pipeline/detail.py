@@ -46,6 +46,31 @@ scripts/legacy/plot_combined_heatmap_pair.py's figure and a new line chart
 for (2), exposed via `scripts/run_pipeline.py detail-plot` /
 `detail-plot-pico`. (3)'s PNGs are rendered inline during training (see
 maybe_plot_tsne), not via a separate plotting subcommand.
+
+4. Prediction-concentration logging (`run --concentration`): per-sample and
+   averaged entropy + max-softmax-prob of the model's own predicted
+   distribution, from a full non-augmented forward pass over the TRAINING
+   set, every --concentration_log_every epochs. Ports the metrics from
+   scripts/legacy/plot_logit_concentration.py (previously only computable
+   offline from a disconnected legacy script) into the live pipeline.
+   Generic across algorithm families (PiCO/PRODEN/ComCo) since it only
+   depends on the model's own softmax output. Written to:
+       results/<run_name>/detail/<algorithm>/C{C}_k{k}/concentration_summary.csv  (averaged)
+       results/<run_name>/detail/<algorithm>/C{C}_k{k}/concentration/ep{epoch:04d}.npz  (per-sample)
+
+5. ComCo-specific: per-BATCH precision of the contrastive loss's SELECTED
+   positive pairs against ground truth (ComCo counterpart of (2) above) --
+   see train_comco_epoch_with_selection_stats. Written to:
+       results/<run_name>/detail/<algorithm>/C{C}_k{k}/comco_selection_stats.csv
+
+6. kNN accuracy evaluation (`run --knn_eval`): standard MoCo/SimCLR protocol
+   -- train set (full, non-augmented) as a labeled reference bank, test set
+   as queries, cosine-similarity-weighted top-k vote, top-1 accuracy. Only
+   meaningful for dual-encoder models with an `.encoder_q` (PiCO/ComCo
+   family); no-ops otherwise. Runs once at the end of training (the full
+   O(N_test x N_train) similarity matrix is comparatively expensive, so this
+   isn't repeated every checkpoint by default). Written to:
+       results/<run_name>/detail/<algorithm>/C{C}_k{k}/knn_eval.csv
 """
 
 import csv
@@ -55,10 +80,16 @@ import os
 import numpy as np
 import torch
 import torch.nn.functional as F
+from PIL import Image
+from torch.utils.data import DataLoader, Dataset
+from torchvision import transforms
 from tqdm import tqdm
 
 from src.comco.model import ComCoModel
 from src.pico.model import PiCOModel, PiCOOracleModel
+
+_MEAN = [0.4914, 0.4822, 0.4465]
+_STD = [0.247, 0.2435, 0.2616]
 
 # ─── config helpers ────────────────────────────────────────────────────────
 
@@ -159,6 +190,109 @@ def maybe_log_checkpoint(raw_cfg, model, test_loader, device, C, epoch, algorith
     if epoch % log_every != 0:
         return
     log_per_class_checkpoint(model, test_loader, device, C, epoch, cell_dir(raw_cfg, algorithm, C), predict=predict)
+
+
+# ─── shared: deterministic full-train-set forward pass ─────────────────────
+# Used by both (4) concentration logging and (6) kNN eval below. Unlike
+# algorithms.runners._IndexedDataset (RandomCrop+Flip train_transform), this
+# is deterministic (ToTensor+Normalize only) so successive checkpoints
+# measure genuine model change, not transform-induced noise.
+
+
+class _DeterministicEvalDataset(Dataset):
+    def __init__(self, data, labels, image_size=32, mean=_MEAN, std=_STD, modality='image'):
+        self.data = data
+        self.labels = labels
+        self.modality = modality
+        if modality == 'image':
+            self._tf = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean, std)])
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        if self.modality == 'tabular':
+            return torch.as_tensor(self.data[idx], dtype=torch.float32), self.labels[idx]
+        img = Image.fromarray(self.data[idx])
+        return self._tf(img), self.labels[idx]
+
+
+def _build_train_eval_loader(pl_ds, spec, labels, batch_size=512):
+    if spec is not None:
+        ds = _DeterministicEvalDataset(pl_ds.data, labels, image_size=spec.image_size,
+                                        mean=spec.mean, std=spec.std, modality=spec.modality)
+    else:
+        ds = _DeterministicEvalDataset(pl_ds.data, labels)
+    return DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=2)
+
+
+@torch.no_grad()
+def _predict_probs_over_trainset(model, loader, device):
+    """Returns softmax probs [N, C] in dataset order. Dual-encoder models
+    (PiCO/ComCo family) use eval_only=True; everything else calls model(imgs)
+    directly -- same convention as log_per_class_checkpoint above."""
+    model.eval()
+    all_probs = []
+    for imgs, _ in loader:
+        imgs = imgs.to(device)
+        if isinstance(model, (PiCOModel, PiCOOracleModel, ComCoModel)):
+            logits = model(imgs, eval_only=True)
+        else:
+            logits = model(imgs)
+        all_probs.append(F.softmax(logits, dim=1).cpu())
+    return torch.cat(all_probs, dim=0)
+
+
+# ─── (4) prediction-concentration logging ──────────────────────────────────
+
+
+def log_prediction_concentration_checkpoint(model, pl_ds, spec, device, C, epoch, out_dir, batch_size=512):
+    """Full non-augmented train-set forward pass; computes per-sample entropy
+    and max-softmax-prob of the model's own predicted distribution, appends
+    averaged summary stats to concentration_summary.csv and saves the full
+    per-sample arrays to concentration/ep{epoch:04d}.npz."""
+    idx = np.arange(len(pl_ds))
+    loader = _build_train_eval_loader(pl_ds, spec, idx, batch_size)
+    probs = _predict_probs_over_trainset(model, loader, device)          # [N, C]
+    eps = 1e-12
+    entropy = -(probs * (probs + eps).log()).sum(dim=1)                  # [N]
+    max_prob = probs.max(dim=1).values                                   # [N]
+
+    os.makedirs(out_dir, exist_ok=True)
+    fields = ['epoch', 'mean_entropy', 'std_entropy', 'median_entropy',
+              'mean_max_prob', 'std_max_prob', 'median_max_prob']
+    path = os.path.join(out_dir, 'concentration_summary.csv')
+    new_file = not os.path.isfile(path)
+    with open(path, 'a', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        if new_file:
+            w.writeheader()
+        w.writerow({
+            'epoch': epoch,
+            'mean_entropy': round(entropy.mean().item(), 6), 'std_entropy': round(entropy.std().item(), 6),
+            'median_entropy': round(entropy.median().item(), 6),
+            'mean_max_prob': round(max_prob.mean().item(), 6), 'std_max_prob': round(max_prob.std().item(), 6),
+            'median_max_prob': round(max_prob.median().item(), 6),
+        })
+
+    conc_dir = os.path.join(out_dir, 'concentration')
+    os.makedirs(conc_dir, exist_ok=True)
+    np.savez(os.path.join(conc_dir, f'ep{epoch:04d}.npz'), entropy=entropy.numpy(), max_prob=max_prob.numpy())
+
+
+def maybe_log_concentration(raw_cfg, model, pl_ds, device, C, epoch, algorithm, batch_size=512):
+    """No-op unless --concentration is enabled and `epoch` lands on a
+    --concentration_log_every boundary. Independent of --detail (same
+    convention as --tsne)."""
+    cfg = _detail_cfg(raw_cfg)
+    conc_cfg = cfg.get('concentration') or {}
+    if not conc_cfg.get('enabled'):
+        return
+    log_every = conc_cfg.get('log_every', 10)
+    if epoch % log_every != 0:
+        return
+    log_prediction_concentration_checkpoint(model, pl_ds, (raw_cfg or {}).get('_dataset_spec'),
+                                             device, C, epoch, cell_dir(raw_cfg, algorithm, C), batch_size)
 
 
 # ─── (2) PiCO contrastive pair-selection precision ─────────────────────────
@@ -438,6 +572,89 @@ def log_pico_oracle_correction_stats_batch(raw_cfg, algorithm, C, epoch, batch_r
             })
 
 
+# ─── (5) ComCo contrastive positive-pair selection precision ──────────────
+
+
+def train_comco_epoch_with_selection_stats(comco_args, model, loader, cls_loss_fn, cont_loss_fn,
+                                            optimizer, epoch, device, raw_cfg, algorithm, C):
+    """ComCo counterpart to train_pico_epoch_with_selection_stats above:
+    measures, per BATCH, what fraction of ComCoContrastiveLoss's SELECTED
+    positive pairs (the always-included key-view pair, plus, after
+    warmup_pos, the top-K pseudo-label-matched pool entries) genuinely share
+    the anchor's TRUE label -- true labels used only for this diagnostic,
+    never for training. Only pool indices < 2B (this batch's own q/k views,
+    see ComCoModel.forward: all_feats = cat([q, k, queue])) carry a
+    checkable true label; MoCo-queue entries (indices >= 2B) don't.
+
+    No negative-pair precision (unlike PiCO): ComCo's negative set is a
+    whole per-class pool subset chosen by complementary-label distance, not
+    a pairwise same/different-class judgement, so "precision against true
+    label" isn't the natural metric there.
+
+    Written to results/<run_name>/detail/<algorithm>/C{C}_k{k}/comco_selection_stats.csv."""
+    model.train()
+    total_loss = 0.0
+    warmup_pos = epoch >= comco_args['warmup_pos']
+    warmup_neg = epoch >= comco_args['warmup_neg']
+    batch_rows = []   # (batch_idx, pos_precision, pos_total)
+
+    progress_bar = tqdm(loader, desc=f"ComCo Epoch {epoch + 1}/{comco_args['epochs']} [detail]")
+    for batch_idx, (images_w, images_s, comp_mask, true_labels, index) in enumerate(progress_bar):
+        images_w = images_w.to(device)
+        images_s = images_s.to(device)
+        comp_mask = comp_mask.to(device)
+        B = images_w.shape[0]
+
+        cls_out, q, all_feats, all_pseudo, all_comp = model(images_w, images_s, comp_mask, comco_args)
+        pseudo_q = cls_out.argmax(dim=1)
+
+        loss_cls = cls_loss_fn(cls_out, comp_mask)
+        loss_cont, pos_mask, denom_mask = cont_loss_fn(
+            q, all_feats, all_pseudo, all_comp, pseudo_q, warmup_pos, warmup_neg, return_masks=True)
+        loss = loss_cls + comco_args['loss_weight'] * loss_cont
+
+        true_dev = true_labels.to(device)
+        pool_true_2B = torch.cat([true_dev, true_dev], dim=0)   # pool[0:B]=q-view, pool[B:2B]=k-view, same order
+        pos_mask_2B = pos_mask[:, :2 * B]
+        same_true = torch.eq(true_dev.unsqueeze(1), pool_true_2B.unsqueeze(0)).float()
+        pos_total = pos_mask_2B.sum().item()
+        pos_prec = (pos_mask_2B * same_true).sum().item() / pos_total if pos_total > 0 else float('nan')
+        batch_rows.append((batch_idx, pos_prec, int(pos_total)))
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
+
+    log_comco_selection_stats_batch(raw_cfg, algorithm, C, epoch + 1, batch_rows)
+
+    return total_loss / len(loader)
+
+
+def log_comco_selection_stats_batch(raw_cfg, algorithm, C, epoch, batch_rows):
+    """batch_rows: list of (batch_idx, pos_precision, pos_total) for every
+    batch in this epoch, written in one file open/append (see
+    log_pico_selection_stats_batch's docstring for why)."""
+    cfg = _detail_cfg(raw_cfg)
+    if not cfg.get('enabled') or not batch_rows:
+        return
+    out_dir = cell_dir(raw_cfg, algorithm, C)
+    fields = ['epoch', 'batch', 'pos_precision', 'pos_total']
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, 'comco_selection_stats.csv')
+    new_file = not os.path.isfile(path)
+    with open(path, 'a', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        if new_file:
+            w.writeheader()
+        for batch_idx, pos_precision, pos_total in batch_rows:
+            w.writerow({'epoch': epoch, 'batch': batch_idx,
+                        'pos_precision': '' if pos_precision != pos_precision else round(pos_precision, 6),
+                        'pos_total': pos_total})
+
+
 # ─── (3) t-SNE snapshots of the contrastive representation ────────────────
 
 
@@ -502,6 +719,76 @@ def maybe_plot_tsne(raw_cfg, model, test_loader, device, C, epoch, algorithm):
               loc='center left', bbox_to_anchor=(1.02, 0.5))
     fig.savefig(os.path.join(tsne_dir, f'ep{epoch:04d}.png'), dpi=150, bbox_inches='tight')
     plt.close(fig)
+
+
+# ─── (6) kNN accuracy evaluation ───────────────────────────────────────────
+
+
+@torch.no_grad()
+def knn_eval(model, pl_ds, orig_targets, test_loader, device, C, spec=None,
+             k_neighbors=20, batch_size=512, temperature=0.07):
+    """Standard MoCo/SimCLR kNN protocol: L2-normalized encoder_q
+    projection-head features over the FULL non-augmented training set as a
+    labeled reference bank, test set as queries, cosine-similarity-weighted
+    top-k_neighbors vote (weight = exp(sim/temperature)), top-1 accuracy.
+    Returns None (no-op) if `model` has no .encoder_q (PRODEN and other
+    single-encoder algorithms have no separate contrastive representation)."""
+    if not hasattr(model, 'encoder_q'):
+        return None
+    model.eval()
+
+    train_loader = _build_train_eval_loader(pl_ds, spec, orig_targets, batch_size)
+    bank_feats, bank_labels = [], []
+    for imgs, labels in train_loader:
+        imgs = imgs.to(device)
+        _, feat = model.encoder_q(imgs)
+        bank_feats.append(F.normalize(feat, dim=1).cpu())
+        bank_labels.append(labels if torch.is_tensor(labels) else torch.as_tensor(labels))
+    bank_feats = torch.cat(bank_feats, dim=0).to(device)
+    bank_labels = torch.cat(bank_labels, dim=0).to(device)
+
+    correct = total = 0
+    for imgs, labels in test_loader:
+        imgs, labels = imgs.to(device), labels.to(device)
+        _, feat = model.encoder_q(imgs)
+        feat = F.normalize(feat, dim=1)
+        sim = feat @ bank_feats.T
+        topk_sim, topk_idx = sim.topk(min(k_neighbors, bank_feats.shape[0]), dim=1)
+        topk_labels = bank_labels[topk_idx]
+        weights = (topk_sim / temperature).exp()
+        one_hot = F.one_hot(topk_labels, C).float()
+        scores = (one_hot * weights.unsqueeze(-1)).sum(dim=1)
+        pred = scores.argmax(dim=1)
+        correct += (pred == labels).sum().item()
+        total += labels.size(0)
+    return 100.0 * correct / max(total, 1)
+
+
+def maybe_run_knn_eval(raw_cfg, model, pl_ds, orig_targets, test_loader, device, C, epoch, algorithm):
+    """No-op unless --knn_eval is enabled, or `model` has no .encoder_q.
+    Intended to be called once at the end of training (the full
+    O(N_test x N_train) similarity matrix is comparatively expensive)."""
+    cfg = _detail_cfg(raw_cfg)
+    knn_cfg = cfg.get('knn') or {}
+    if not knn_cfg.get('enabled'):
+        return
+    acc = knn_eval(model, pl_ds, orig_targets, test_loader, device, C,
+                    spec=(raw_cfg or {}).get('_dataset_spec'),
+                    k_neighbors=knn_cfg.get('k', 20), temperature=knn_cfg.get('temperature', 0.07))
+    if acc is None:
+        return
+    out_dir = cell_dir(raw_cfg, algorithm, C)
+    fields = ['epoch', 'knn_top1_acc', 'k_neighbors', 'temperature']
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, 'knn_eval.csv')
+    new_file = not os.path.isfile(path)
+    with open(path, 'a', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        if new_file:
+            w.writeheader()
+        w.writerow({'epoch': epoch, 'knn_top1_acc': round(acc, 4),
+                    'k_neighbors': knn_cfg.get('k', 20), 'temperature': knn_cfg.get('temperature', 0.07)})
+    print(f'  [knn_eval] {algorithm} C={C} epoch={epoch}  top1={acc:.2f}%', flush=True)
 
 
 # ─── plotting ───────────────────────────────────────────────────────────────

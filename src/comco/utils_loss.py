@@ -68,6 +68,7 @@ class ComCoContrastiveLoss(nn.Module):
         pseudo_q: torch.Tensor,    # [B] pseudo-labels for queries
         warmup_pos: bool,
         warmup_neg: bool,
+        return_masks: bool = False,
     ) -> torch.Tensor:
         B = q.shape[0]
         A = all_feats.shape[0]
@@ -134,4 +135,7 @@ class ComCoContrastiveLoss(nn.Module):
         log_prob = logits - torch.log(exp_logits.sum(dim=1, keepdim=True) + 1e-12)
 
         mean_log_prob_pos = (pos_mask * log_prob).sum(dim=1) / (pos_mask.sum(dim=1) + 1e-12)
-        return -mean_log_prob_pos.mean()
+        loss = -mean_log_prob_pos.mean()
+        if return_masks:
+            return loss, pos_mask, denom_mask
+        return loss

@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from src.pll_init import candidate_masked_init, uniform_all_init, biased_oracle_init
+
 
 class ProdenLoss(nn.Module):
     """
@@ -14,24 +16,38 @@ class ProdenLoss(nn.Module):
     the new pipeline (run_proden). See docs/proden_explanation.md.
 
     Maintains a persistent confidence matrix conf[N, C] for every training sample:
-      - Initialised uniformly over candidate labels.
+      - Initialised uniformly over candidate labels (or another init_mode, see below).
       - forward() uses the *stored* confidence as soft-label weights for the loss,
         then updates conf[indices] in-place with the current model's renormalised
-        softmax — ready for the next batch.
+        softmax — ready for the next batch. This renormalize-every-batch update is
+        UNCHANGED regardless of init_mode: only the very first batch(es) touching a
+        given sample still reflect its initial confidence, after which it's
+        overwritten by the model's own prediction -- see
+        src/pipeline/algorithms/runners.py's PRODEN-UniformInit / PRODEN-BiasedInit
+        variants, which exist specifically to demonstrate this insensitivity as a
+        contrast against PiCO's slow EMA-driven confidence update.
 
     Args:
         partial_targets: list of 1-D LongTensors, one per sample (candidate indices).
         num_classes:     total number of classes C.
+        init_mode:       'candidate_masked' (default, existing behavior) | 'uniform_all'
+                          | 'biased_oracle' -- see src/pll_init.py.
+        orig_targets:    true labels, required only for init_mode='biased_oracle'.
     """
 
-    def __init__(self, partial_targets: list, num_classes: int):
+    def __init__(self, partial_targets: list, num_classes: int,
+                 init_mode: str = 'candidate_masked', orig_targets=None):
         super().__init__()
-        N = len(partial_targets)
-        conf = torch.zeros(N, num_classes)
-        for i, cands in enumerate(partial_targets):
-            k = max(len(cands), 1)
-            for j in cands:
-                conf[i, j.item()] = 1.0 / k
+        if init_mode == 'candidate_masked':
+            conf = candidate_masked_init(partial_targets, num_classes)
+        elif init_mode == 'uniform_all':
+            conf = uniform_all_init(len(partial_targets), num_classes)
+        elif init_mode == 'biased_oracle':
+            if orig_targets is None:
+                raise ValueError("init_mode='biased_oracle' requires orig_targets")
+            conf = biased_oracle_init(partial_targets, orig_targets, num_classes)
+        else:
+            raise ValueError(f'Unknown init_mode {init_mode!r}')
         self.register_buffer('conf', conf)   # [N, C], lives on same device as model
 
     def forward(self, outputs: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:

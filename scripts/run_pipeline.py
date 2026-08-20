@@ -98,6 +98,25 @@ def _add_run_parser(sub):
     p.add_argument('--tsne_max_points', type=int, default=2000,
                     help='Max test-set samples to embed per --tsne snapshot (t-SNE cost grows '
                          'roughly with n log n).')
+    p.add_argument('--concentration', action='store_true',
+                    help='Log per-sample and averaged prediction-concentration (entropy + '
+                         'max-softmax-prob of the model\'s own predicted distribution over the '
+                         'training set) every --concentration_log_every epochs, to '
+                         'results/<run_name>/detail/<algorithm>/C{C}_k{k}/concentration_summary.csv '
+                         'and concentration/ep{epoch}.npz. Independent of --detail. Works for the '
+                         'PiCO family, PRODEN family, and ComCo. Adds an extra full train-set '
+                         'forward pass each time it fires; off by default.')
+    p.add_argument('--concentration_log_every', type=int, default=10,
+                    help='Epoch cadence for --concentration logging.')
+    p.add_argument('--knn_eval', action='store_true',
+                    help='Once at the end of training, evaluate kNN top-1 accuracy using the '
+                         'contrastive encoder (train set as reference bank, test set as queries), '
+                         'written to results/<run_name>/detail/<algorithm>/C{C}_k{k}/knn_eval.csv. '
+                         'Only meaningful for dual-encoder models (PiCO/ComCo family) -- no-op '
+                         'otherwise; off by default.')
+    p.add_argument('--knn_eval_k', type=int, default=20, help='Number of neighbors for --knn_eval.')
+    p.add_argument('--knn_temperature', type=float, default=0.07,
+                    help='Softmax temperature for the --knn_eval weighted vote.')
 
 
 def _add_merge_parser(sub):

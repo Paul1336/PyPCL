@@ -217,10 +217,19 @@ def run_cpe(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epoch
 # ─── PRODEN: index-based loader + cross-epoch confidence accumulation ─────
 
 
-def run_proden(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
+def _run_proden_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                         device, tag, report_every, algorithm: str, init_mode: str):
+    """Shared body for PRODEN and its confidence-init ablations
+    (PRODEN-UniformInit, PRODEN-BiasedInit). PRODEN's own every-batch
+    renormalize-to-candidate-set update (ProdenLoss.forward) is completely
+    unchanged across all three -- only the INITIAL confidence matrix differs
+    (init_mode, see src/pll_init.py), which is deliberate: PRODEN's fast
+    renormalization overwrites the initial distribution almost immediately,
+    unlike PiCO's slow EMA, so this variant set is meant to demonstrate that
+    contrast rather than hide it behind a slower update rule."""
     spec = (raw_cfg or {}).get('_dataset_spec')
     model = create_model_for_spec(spec, C).to(device)
-    loss_fn = ProdenLoss(pl_ds.targets, C).to(device)
+    loss_fn = ProdenLoss(pl_ds.targets, C, init_mode=init_mode, orig_targets=orig_targets).to(device)
     opt = make_optimizer(model, hparams)
 
     idx_ds = (_IndexedDataset(pl_ds.data, image_size=spec.image_size, mean=spec.mean, std=spec.std,
@@ -238,7 +247,8 @@ def run_proden(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, ep
             loss_fn(model(imgs), indices).backward()
             opt.step()
 
-        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PRODEN')
+        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
+        detail.maybe_log_concentration(raw_cfg, model, pl_ds, device, C, ep + 1, algorithm)
 
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             final_acc = evaluate_model(model, loaders['test'], device)
@@ -252,6 +262,21 @@ def run_proden(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, ep
     gc.collect()
     torch.cuda.empty_cache()
     return final_acc
+
+
+def run_proden(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
+    return _run_proden_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                                device, tag, report_every, 'PRODEN', init_mode='candidate_masked')
+
+
+def run_proden_uniform_init(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
+    return _run_proden_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                                device, tag, report_every, 'PRODEN-UniformInit', init_mode='uniform_all')
+
+
+def run_proden_biased_init(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
+    return _run_proden_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                                device, tag, report_every, 'PRODEN-BiasedInit', init_mode='biased_oracle')
 
 
 # ─── PiCO family: dual-encoder + MoCo queue + prototypes ──────────────────
@@ -404,24 +429,39 @@ def _candidate_masked_init_conf(pl_ds, C: int, device) -> torch.Tensor:
     provably not the true label, diluting the classification loss's signal
     for the whole warm-up period. Same construction as ProdenLoss.__init__
     (src/proden_loss.py), which already does this correctly."""
-    conf = torch.zeros(len(pl_ds), C)
-    for i, cands in enumerate(pl_ds.targets):
-        conf[i, cands] = 1.0 / len(cands)
-    return conf.to(device)
+    from src.pll_init import candidate_masked_init
+    return candidate_masked_init(pl_ds.targets, C).to(device)
 
 
-def run_pico_fixed(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
-    # See docs/pico_explanation.md: paper-faithful warm-up (L_cont omitted
-    # entirely, not switched to plain MoCo), prot_start default following
-    # the paper's Appendix B.1 (1 epoch; use 100 for CIFAR-100 @ q=0.1 runs
-    # by overriding config.yaml's pico.prot_start for that specific config),
-    # and candidate-set-masked pseudo-target initialization (Eq. 6) instead
-    # of run_pico's uniform-over-all-C-classes init.
+def _uniform_all_init_conf(pl_ds, C: int, device) -> torch.Tensor:
+    """Uniform over ALL C classes regardless of candidate-set membership --
+    same as plain run_pico's init, but usable with PiCO-Fixed's warm-up
+    config (see PiCO-Fixed-UniformInit) to isolate the effect of the initial
+    confidence *shape* from the warm-up-length/L_cont-omission fix."""
+    from src.pll_init import uniform_all_init
+    return uniform_all_init(len(pl_ds), C).to(device)
+
+
+def _biased_oracle_init_conf(pl_ds, orig_targets, C: int, device) -> torch.Tensor:
+    """True class gets 0.2, one (fixed-seed-random, decided once) other
+    candidate from the sample's own partial-label set gets 0.8, everything
+    else 0 -- see PiCO-Fixed-BiasedInit and src/pll_init.py.biased_oracle_init."""
+    from src.pll_init import biased_oracle_init
+    return biased_oracle_init(pl_ds.targets, orig_targets, C).to(device)
+
+
+def _run_pico_fixed_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                             device, tag, report_every, algorithm: str, init_conf: torch.Tensor):
+    """Shared body for PiCO-Fixed and its confidence-init ablations
+    (PiCO-Fixed-UniformInit, PiCO-Fixed-BiasedInit): identical warm-up config
+    (prot_start_fixed, L_cont omitted entirely during warm-up per
+    docs/pico_explanation.md) and training loop; only the initial confidence
+    matrix and the `algorithm` label (used for detail-log output paths)
+    differ between the three callers below."""
     pico_cfg = raw_cfg['pico']
     pico_args = _pico_args(C, epochs, pico_cfg)
     pico_args['prot_start'] = pico_cfg.get('prot_start_fixed', 1)
     model = PiCOModel(pico_args).to(device)
-    init_conf = _candidate_masked_init_conf(pl_ds, C, device)
     cls_loss = PartialLoss(init_conf)
     cont_loss = SupConLoss()
     opt = make_optimizer(model, hparams)
@@ -437,11 +477,12 @@ def run_pico_fixed(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size
             # pico_selection_stats.csv regardless of --detail.
             detail.train_pico_epoch_fixed_with_selection_stats(
                 pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device,
-                raw_cfg, 'PiCO-Fixed', C)
+                raw_cfg, algorithm, C)
         else:
             train_pico_epoch_fixed(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
-        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-Fixed')
-        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-Fixed')
+        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
+        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
+        detail.maybe_log_concentration(raw_cfg, model, pl_ds, device, C, ep + 1, algorithm)
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             elapsed = time.perf_counter() - chunk_t0
             _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
@@ -449,11 +490,41 @@ def run_pico_fixed(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size
             gc.collect()
             torch.cuda.empty_cache()
 
+    detail.maybe_run_knn_eval(raw_cfg, model, pl_ds, orig_targets, loaders['test'], device, C, epochs, algorithm)
     acc = evaluate_model(model, loaders['test'], device)
     del model, cls_loss, cont_loss, opt, init_conf
     gc.collect()
     torch.cuda.empty_cache()
     return acc
+
+
+def run_pico_fixed(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
+    init_conf = _candidate_masked_init_conf(pl_ds, C, device)
+    return _run_pico_fixed_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                                    device, tag, report_every, 'PiCO-Fixed', init_conf)
+
+
+def run_pico_fixed_uniform_init(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
+    """Ablation: PiCO-Fixed's warm-up config, but with the initial confidence
+    spread uniformly over ALL C classes (plain PiCO's init) instead of
+    candidate-masked -- isolates whether PiCO's small-k advantage depends on
+    the initial confidence distribution's shape."""
+    init_conf = _uniform_all_init_conf(pl_ds, C, device)
+    return _run_pico_fixed_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                                    device, tag, report_every, 'PiCO-Fixed-UniformInit', init_conf)
+
+
+def run_pico_fixed_biased_init(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
+    """Ablation: PiCO-Fixed's warm-up config, but the initial confidence puts
+    0.2 on the true class and 0.8 on one other (fixed-seed-random) candidate
+    -- tests whether it's the *concentration* of initial confidence (even if
+    partly misplaced) rather than its correctness that drives PiCO's
+    small-k advantage. Uses plain PiCOModel (not PiCOOracleModel): true
+    labels are consulted only once, at init-conf construction time, not
+    during the training loop itself."""
+    init_conf = _biased_oracle_init_conf(pl_ds, orig_targets, C, device)
+    return _run_pico_fixed_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                                    device, tag, report_every, 'PiCO-Fixed-BiasedInit', init_conf)
 
 
 def run_pico_mcl(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
@@ -578,11 +649,22 @@ def run_comco(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epo
     cont_loss = ComCoContrastiveLoss(temperature=comco_args['temperature'], top_k=comco_args['top_k'])
     opt = make_optimizer(model, hparams)
 
+    detail_on = detail.is_enabled(raw_cfg)
+
     chunk_t0 = time.perf_counter()
     for ep in range(epochs):
-        train_comco_epoch(comco_args, model, loaders['comco'], cls_loss, cont_loss, opt, ep, device)
+        if detail_on:
+            # Instrumented copy of train_comco_epoch that also measures, per
+            # BATCH, contrastive positive-pair selection precision against
+            # ground truth (ComCo counterpart to PiCO's selection-stats
+            # logging) -- see src/pipeline/detail.py.
+            detail.train_comco_epoch_with_selection_stats(
+                comco_args, model, loaders['comco'], cls_loss, cont_loss, opt, ep, device, raw_cfg, 'ComCo', C)
+        else:
+            train_comco_epoch(comco_args, model, loaders['comco'], cls_loss, cont_loss, opt, ep, device)
         detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'ComCo')
         detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'ComCo')
+        detail.maybe_log_concentration(raw_cfg, model, pl_ds, device, C, ep + 1, 'ComCo')
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             elapsed = time.perf_counter() - chunk_t0
             _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
@@ -590,6 +672,7 @@ def run_comco(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epo
             gc.collect()
             torch.cuda.empty_cache()
 
+    detail.maybe_run_knn_eval(raw_cfg, model, pl_ds, orig_targets, loaders['test'], device, C, epochs, 'ComCo')
     acc = evaluate_model(model, loaders['test'], device)
     del model, cls_loss, cont_loss, opt
     gc.collect()

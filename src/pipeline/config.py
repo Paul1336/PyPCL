@@ -32,6 +32,11 @@ class PipelineConfig:
     tsne: bool
     tsne_every: int
     tsne_max_points: int
+    concentration: bool
+    concentration_log_every: int
+    knn_eval: bool
+    knn_eval_k: int
+    knn_temperature: float
     raw: dict = field(default_factory=dict)   # full config.yaml (pico/comco/solar blocks)
 
 
@@ -63,5 +68,10 @@ def load_config(args) -> PipelineConfig:
         tsne=getattr(args, 'tsne', False),
         tsne_every=getattr(args, 'tsne_every', 50),
         tsne_max_points=getattr(args, 'tsne_max_points', 2000),
+        concentration=getattr(args, 'concentration', False),
+        concentration_log_every=getattr(args, 'concentration_log_every', 10),
+        knn_eval=getattr(args, 'knn_eval', False),
+        knn_eval_k=getattr(args, 'knn_eval_k', 20),
+        knn_temperature=getattr(args, 'knn_temperature', 0.07),
         raw=raw,
     )
