@@ -59,7 +59,7 @@ def run(cfg: PipelineConfig):
     results.write_run_config(cfg.results_dir, {
         'run_name': cfg.run_name, 'algorithms': cfg.algorithms, 'dataset': cfg.dataset,
         'c_values': cfg.c_values, 'epochs': cfg.epochs, 'batch_size': cfg.batch_size,
-        'seed': cfg.seed, 'gpu_id': cfg.gpu_id, 'num_gpus': cfg.num_gpus,
+        'seeds': cfg.seeds, 'gpu_id': cfg.gpu_id, 'num_gpus': cfg.num_gpus,
         'detail': cfg.detail, 'detail_log_every': cfg.detail_log_every,
         'tsne': cfg.tsne, 'tsne_every': cfg.tsne_every, 'tsne_max_points': cfg.tsne_max_points,
         'concentration': cfg.concentration, 'concentration_log_every': cfg.concentration_log_every,
@@ -86,6 +86,17 @@ def run(cfg: PipelineConfig):
             'k': cfg.knn_eval_k,
             'temperature': cfg.knn_temperature,
         },
+        # With --seeds sweeping multiple seeds per cell, running the (fairly
+        # expensive) diagnostic instrumentation for every seed would both
+        # multiply the overhead and scatter per-seed curves into the same
+        # output files (detail.cell_dir's paths aren't seed-scoped). Since
+        # these diagnostics are for qualitative/exploratory inspection of one
+        # representative training run -- not something meant to be averaged
+        # across seeds the way final_accuracy is -- restrict them to a single
+        # designated seed (the first one) regardless of how many seeds are
+        # swept; final_accuracy is still recorded for every seed. See
+        # detail._seed_matches.
+        'diagnostics_seed': cfg.seeds[0],
     }
 
     # Fixed-class-count datasets (MNIST=10, CUB-200=200, ...) don't sweep C --
@@ -110,61 +121,65 @@ def run(cfg: PipelineConfig):
             # key (see data.q_sentinel_k's docstring).
             k_values = [data.q_sentinel_k(cfg.only_q)]
         elif spec is not None and (spec.is_preambiguous or not spec.sweeps_k):
-            k_values = [cfg.only_k] if cfg.only_k is not None else [1]
+            k_values = cfg.only_k if cfg.only_k is not None else [1]
         else:
-            k_values = [cfg.only_k] if cfg.only_k is not None else data.get_k_values(C)
+            k_values = cfg.only_k if cfg.only_k is not None else data.get_k_values(C)
         print(f'\n{"=" * 60}\ndataset={cfg.dataset}  C = {C}   '
               f'{"q = " + str(cfg.only_q) if cfg.only_q is not None else "k = " + str(k_values)}'
               f'\n{"=" * 60}', flush=True)
 
         for k in k_values:
-            pending = [a for a in my_algorithms if (cfg.dataset, C, k, a) not in done]
-            if not pending:
-                print(f'  [skip] C={C} k={k}', flush=True)
-                continue
+            print(f'\n--- C={C}  k={k} ---', flush=True)
 
-            print(f'\n--- C={C}  k={k}  pending: {pending} ---', flush=True)
-            loaders, pl_ds, orig_targets = data.load_experiment_data(
-                C, k, cfg.data_dir, cfg.seed, cfg.log_dir, cfg.batch_size, dataset=cfg.dataset,
-                q=cfg.only_q)
+            for seed in cfg.seeds:
+                pending = [a for a in my_algorithms if (cfg.dataset, C, k, a, seed) not in done]
+                if not pending:
+                    print(f'  [skip] C={C} k={k} seed={seed}', flush=True)
+                    continue
 
-            # Stash the DatasetSpec (and, for --detail, the current k) in the
-            # raw config dict every runner already receives, so
-            # create_model_for_spec / _IndexedDataset / detail.cell_dir can
-            # pick the right backbone/transform/output path without changing
-            # every runner's function signature.
-            cfg.raw['_dataset_spec'] = spec
-            cfg.raw['_current_k'] = k
+                print(f'  seed={seed}  pending: {pending}', flush=True)
+                loaders, pl_ds, orig_targets = data.load_experiment_data(
+                    C, k, cfg.data_dir, seed, cfg.log_dir, cfg.batch_size, dataset=cfg.dataset,
+                    q=cfg.only_q)
 
-            for alg in pending:
-                algo_spec = ALGORITHMS[alg]
-                hparams = ALGO_HPARAMS[alg]
-                tag = f'GPU{cfg.gpu_id} {alg} C={C} k={k}'
-                print(f'\n  >> {alg}  C={C}  k={k}', flush=True)
+                # Stash the DatasetSpec (and, for --detail, the current k/seed)
+                # in the raw config dict every runner already receives, so
+                # create_model_for_spec / _IndexedDataset / detail.cell_dir
+                # can pick the right backbone/transform/output path without
+                # changing every runner's function signature.
+                cfg.raw['_dataset_spec'] = spec
+                cfg.raw['_current_k'] = k
+                cfg.raw['_current_seed'] = seed
 
-                t0 = time.perf_counter()
-                acc = algo_spec.runner(loaders, pl_ds, orig_targets, C, hparams, cfg.raw,
-                                        cfg.batch_size, cfg.epochs, device, tag, cfg.report_every)
-                elapsed = time.perf_counter() - t0
+                for alg in pending:
+                    algo_spec = ALGORITHMS[alg]
+                    hparams = ALGO_HPARAMS[alg]
+                    tag = f'GPU{cfg.gpu_id} {alg} C={C} k={k} seed={seed}'
+                    print(f'\n  >> {alg}  C={C}  k={k}  seed={seed}', flush=True)
 
-                results.append_result(shard, cfg.dataset, C, k, alg, cfg.seed, acc, cfg.epochs, elapsed)
-                done.add((cfg.dataset, C, k, alg))
-                print(f'  DONE  {alg}  acc={acc:.2f}%  ({elapsed:.1f}s)', flush=True)
+                    t0 = time.perf_counter()
+                    acc = algo_spec.runner(loaders, pl_ds, orig_targets, C, hparams, cfg.raw,
+                                            cfg.batch_size, cfg.epochs, device, tag, cfg.report_every)
+                    elapsed = time.perf_counter() - t0
 
-            del loaders, pl_ds, orig_targets
-            gc.collect()
-            torch.cuda.empty_cache()
+                    results.append_result(shard, cfg.dataset, C, k, alg, seed, acc, cfg.epochs, elapsed)
+                    done.add((cfg.dataset, C, k, alg, seed))
+                    print(f'  DONE  {alg}  seed={seed}  acc={acc:.2f}%  ({elapsed:.1f}s)', flush=True)
 
-            try:
-                results.merge_shards(cfg.results_dir)
-            except Exception as e:
-                # merge_shards reads every sibling worker's shard file too --
-                # over NFS with several GPU processes writing concurrently, a
-                # transient torn read is possible. It must never take down
-                # this worker's training loop: the per-worker shard append
-                # above already safely recorded this cell's result, and the
-                # next successful merge (after the next cell) will catch up.
-                print(f'  [warn] merge_shards failed, continuing training '
-                      f'(will retry after next cell): {e}', flush=True)
+                del loaders, pl_ds, orig_targets
+                gc.collect()
+                torch.cuda.empty_cache()
+
+                try:
+                    results.merge_shards(cfg.results_dir)
+                except Exception as e:
+                    # merge_shards reads every sibling worker's shard file too --
+                    # over NFS with several GPU processes writing concurrently, a
+                    # transient torn read is possible. It must never take down
+                    # this worker's training loop: the per-worker shard append
+                    # above already safely recorded this cell's result, and the
+                    # next successful merge (after the next cell) will catch up.
+                    print(f'  [warn] merge_shards failed, continuing training '
+                          f'(will retry after next cell): {e}', flush=True)
 
     print(f'\nGPU {cfg.gpu_id} finished. Results -> {cfg.results_dir}', flush=True)

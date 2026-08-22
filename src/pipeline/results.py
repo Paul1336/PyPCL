@@ -106,7 +106,11 @@ def _repair_shard_if_needed(shard: str):
 
 
 def load_done(shard: str) -> set:
-    """Set of (dataset, total_classes, k, algorithm) already recorded in this shard."""
+    """Set of (dataset, total_classes, k, algorithm, seed) already recorded in
+    this shard. Includes seed (added for multi-seed sweeps, see runner.py) so
+    that resuming a run with --seeds correctly re-trains any seed that hasn't
+    completed yet for a given (C, k, algorithm), instead of skipping the
+    whole cell after just the first seed finishes."""
     _repair_shard_if_needed(shard)
     done = set()
     if not os.path.isfile(shard):
@@ -114,7 +118,7 @@ def load_done(shard: str) -> set:
     with open(shard, newline='') as f:
         for row in csv.DictReader(f):
             dataset = row.get('dataset') or _DEFAULT_DATASET
-            done.add((dataset, int(row['total_classes']), int(row['k']), row['algorithm']))
+            done.add((dataset, int(row['total_classes']), int(row['k']), row['algorithm'], int(row['seed'])))
     return done
 
 
@@ -177,12 +181,32 @@ def merge_shards(results_dir: str) -> str:
 def load_results(run_dirs: list) -> dict:
     """Merge one or more run dirs' results.csv into res[C][algorithm][k] = accuracy.
 
+    When a (C, algorithm, k) cell has multiple seeds recorded (see
+    load_results_by_seed / --seeds), this AVERAGES across all of them rather
+    than picking one arbitrarily -- accuracy-vs-k plots should show the
+    seed-mean, not whichever seed's row happened to be read last.
+
     Note: this keeps the pre-existing (C, algorithm, k) shape for backward
     compatibility with the plotting code, which doesn't yet distinguish by
     dataset. If a run mixes multiple datasets, results for the same (C, k,
-    algorithm) across different datasets will collide here (last one wins) --
-    fine for now since callers currently pass one dataset per plot; revisit
-    if cross-dataset plots become a common need."""
+    algorithm) across different datasets will collide here (averaged in
+    together) -- fine for now since callers currently pass one dataset per
+    plot; revisit if cross-dataset plots become a common need."""
+    by_seed = load_results_by_seed(run_dirs)
+    res = {}
+    for C, algs in by_seed.items():
+        for alg, ks in algs.items():
+            for k, accs in ks.items():
+                res.setdefault(C, {}).setdefault(alg, {})[k] = sum(accs) / len(accs)
+    return res
+
+
+def load_results_by_seed(run_dirs: list) -> dict:
+    """Merge one or more run dirs' results.csv into
+    res[C][algorithm][k] = [accuracy, ...] (one entry per seed, in file
+    order) -- the per-seed counterpart to load_results' averaged view. Used
+    by the `report` CLI subcommand to print individual-seed values alongside
+    the mean/std."""
     res = {}
     for run_dir in run_dirs:
         path = merged_path(run_dir)
@@ -193,7 +217,7 @@ def load_results(run_dirs: list) -> dict:
                 C = int(row['total_classes'])
                 k = int(row['k'])
                 acc = float(row['final_accuracy'])
-                res.setdefault(C, {}).setdefault(row['algorithm'], {})[k] = acc
+                res.setdefault(C, {}).setdefault(row['algorithm'], {}).setdefault(k, []).append(acc)
     return res
 
 

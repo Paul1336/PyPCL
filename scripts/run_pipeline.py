@@ -59,7 +59,14 @@ def _add_run_parser(sub):
                     help='Only used for --dataset cifar100-subset; ignored otherwise.')
     p.add_argument('--epochs', type=int, default=200)
     p.add_argument('--batch_size', type=int, default=512)
-    p.add_argument('--seed', type=int, default=42)
+    p.add_argument('--seeds', nargs='+', type=int, default=[42, 43, 44],
+                    help='One or more random seeds to sweep per (C, k, algorithm) cell -- each '
+                         'seed gets its own row in results.csv (dedup/resume key includes seed, '
+                         'so partially-completed seed sweeps resume correctly). Use `report` to '
+                         'see per-seed values plus the mean/std across seeds. Diagnostic '
+                         'instrumentation (--detail/--tsne/--concentration/--knn_eval) only runs '
+                         'for the first seed in this list, regardless of how many are swept -- see '
+                         'src/pipeline/detail.py _seed_matches. Default: 3 seeds.')
     p.add_argument('--data_dir', default='./data')
     p.add_argument('--log_dir', default='logs/cifar100_subset')
     p.add_argument('--config', default='config.yaml')
@@ -69,7 +76,9 @@ def _add_run_parser(sub):
                     help='Pin this worker to one algorithm (overrides gpu_id round-robin)')
     p.add_argument('--report_every', type=int, default=10, help='Print ETA every N epochs')
     p.add_argument('--only_c', type=int, default=None, help='Run only this C value')
-    p.add_argument('--only_k', type=int, default=None, help='Run only this k value')
+    p.add_argument('--only_k', nargs='+', type=int, default=None,
+                    help='Run only this k value, or a specific list of k values (e.g. --only_k 5 8 10) '
+                         'instead of the default per-C k-schedule.')
     p.add_argument('--only_q', type=float, default=None,
                     help='Use variable (q-based) candidate-label generation instead of a fixed k: '
                          'each false label is independently included w.p. q (0-1). Replaces the '
@@ -122,6 +131,15 @@ def _add_run_parser(sub):
 def _add_merge_parser(sub):
     p = sub.add_parser('merge', help='Merge per-worker CSV shards into results.csv')
     p.add_argument('--run', required=True, dest='run_name')
+
+
+def _add_report_parser(sub):
+    p = sub.add_parser('report', help='Print per-seed accuracy plus mean/std across seeds, '
+                                       'one row per (C, k, algorithm)')
+    p.add_argument('--runs', nargs='+', required=True, help='run_name(s) to merge into one report')
+    p.add_argument('--algorithms', nargs='+', default=None, choices=ALL_ALGORITHM_NAMES)
+    p.add_argument('--c_values', nargs='+', type=int, default=None)
+    p.add_argument('--out', default=None, help='Optional: also write the table as CSV to this path')
 
 
 def _add_plot_parser(sub):
@@ -195,6 +213,30 @@ def _add_detail_plot_pico_multik_parser(sub):
     p.add_argument('--out', required=True)
 
 
+def _add_detail_plot_concentration_parser(sub):
+    p = sub.add_parser('detail-plot-concentration',
+                        help='Overlay per-algorithm prediction-concentration trends (mean entropy + '
+                             'max-softmax-prob vs epoch, N algorithms) (requires `run --concentration`)')
+    p.add_argument('--entries', nargs='+', required=True,
+                    help='RUN:ALG:LABEL triples, one per line, in order, e.g. '
+                         '--entries 0820_ablation:PiCO-Fixed:PiCO-Fixed '
+                         '0820_ablation:PiCO-Fixed-UniformInit:UniformInit')
+    p.add_argument('--C', type=int, required=True)
+    p.add_argument('--k', type=int, required=True)
+    p.add_argument('--out', required=True)
+
+
+def _add_detail_plot_knn_parser(sub):
+    p = sub.add_parser('detail-plot-knn',
+                        help='Bar chart comparing final kNN top-1 accuracy across N algorithms '
+                             '(requires `run --knn_eval`)')
+    p.add_argument('--entries', nargs='+', required=True,
+                    help='RUN:ALG:LABEL triples, one per bar, in order')
+    p.add_argument('--C', type=int, required=True)
+    p.add_argument('--k', type=int, required=True)
+    p.add_argument('--out', required=True)
+
+
 def _add_detail_plot_pico_oracle_parser(sub):
     p = sub.add_parser('detail-plot-pico-oracle',
                         help="PiCO-Oracle's graduated correction: natural (pre-correction) vs. "
@@ -211,12 +253,15 @@ def main():
     sub = parser.add_subparsers(dest='command', required=True)
     _add_run_parser(sub)
     _add_merge_parser(sub)
+    _add_report_parser(sub)
     _add_plot_parser(sub)
     _add_detail_plot_parser(sub)
     _add_detail_plot_multi_parser(sub)
     _add_detail_plot_pico_parser(sub)
     _add_detail_plot_pico_multik_parser(sub)
     _add_detail_plot_pico_oracle_parser(sub)
+    _add_detail_plot_concentration_parser(sub)
+    _add_detail_plot_knn_parser(sub)
     args = parser.parse_args()
 
     if args.command == 'run':
@@ -229,6 +274,50 @@ def main():
     elif args.command == 'merge':
         out = results_mod.merge_shards(os.path.join('results', args.run_name))
         print(f'Merged -> {out}')
+    elif args.command == 'report':
+        import csv as csv_mod
+        import statistics
+
+        run_dirs = [os.path.join('results', r) for r in args.runs]
+        by_seed = results_mod.load_results_by_seed(run_dirs)
+
+        rows = []
+        for C in sorted(by_seed):
+            if args.c_values and C not in args.c_values:
+                continue
+            for alg in sorted(by_seed[C]):
+                if args.algorithms and alg not in args.algorithms:
+                    continue
+                for k in sorted(by_seed[C][alg]):
+                    accs = by_seed[C][alg][k]
+                    mean = statistics.mean(accs)
+                    std = statistics.stdev(accs) if len(accs) > 1 else 0.0
+                    rows.append({'C': C, 'k': k, 'algorithm': alg, 'n_seeds': len(accs),
+                                 'accs': accs, 'mean': mean, 'std': std})
+
+        if not rows:
+            print(f'No results found in {run_dirs}' +
+                  (f' matching --algorithms {args.algorithms}' if args.algorithms else '') +
+                  (f' --c_values {args.c_values}' if args.c_values else ''))
+        else:
+            name_w = max(len(r['algorithm']) for r in rows)
+            print(f"{'C':>4}{'k':>5}  {'algorithm':<{name_w}}  {'mean±std':>14}  {'n':>3}  per-seed")
+            for r in rows:
+                acc_str = ', '.join(f'{a:.2f}' for a in r['accs'])
+                print(f"{r['C']:>4}{r['k']:>5}  {r['algorithm']:<{name_w}}  "
+                      f"{r['mean']:>7.2f}±{r['std']:<5.2f}  {r['n_seeds']:>3}  [{acc_str}]")
+
+        if args.out:
+            os.makedirs(os.path.dirname(os.path.abspath(args.out)) or '.', exist_ok=True)
+            with open(args.out, 'w', newline='') as f:
+                w = csv_mod.DictWriter(f, fieldnames=['C', 'k', 'algorithm', 'n_seeds', 'mean', 'std', 'accs'])
+                w.writeheader()
+                for r in rows:
+                    w.writerow({'C': r['C'], 'k': r['k'], 'algorithm': r['algorithm'],
+                                'n_seeds': r['n_seeds'], 'mean': round(r['mean'], 4),
+                                'std': round(r['std'], 4),
+                                'accs': ';'.join(f'{a:.4f}' for a in r['accs'])})
+            print(f'\nWrote -> {args.out}')
     elif args.command == 'plot':
         run_dirs = [os.path.join('results', r) for r in args.runs]
         rename = dict(pair.split('=', 1) for pair in args.rename) if args.rename else None
@@ -282,6 +371,20 @@ def main():
         from src.pipeline.detail import plot_pico_oracle_correction_stats
         plot_pico_oracle_correction_stats(os.path.join('results', args.run_name), args.C, args.k, args.out,
                                            show_neg=not args.hide_neg)
+    elif args.command == 'detail-plot-concentration':
+        from src.pipeline.detail import plot_concentration_trend
+        entries = []
+        for triple in args.entries:
+            run_name, alg, label = triple.split(':', 2)
+            entries.append((os.path.join('results', run_name), alg, label))
+        plot_concentration_trend(entries, args.C, args.k, args.out)
+    elif args.command == 'detail-plot-knn':
+        from src.pipeline.detail import plot_knn_eval_bar
+        entries = []
+        for triple in args.entries:
+            run_name, alg, label = triple.split(':', 2)
+            entries.append((os.path.join('results', run_name), alg, label))
+        plot_knn_eval_bar(entries, args.C, args.k, args.out)
 
 
 if __name__ == '__main__':

@@ -703,11 +703,19 @@ def run_comco_fixed(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_siz
     cont_loss = ComCoContrastiveLoss(temperature=comco_args['temperature'], top_k=comco_args['top_k'])
     opt = make_optimizer(model, hparams)
 
+    detail_on = detail.is_enabled(raw_cfg)
+
     chunk_t0 = time.perf_counter()
     for ep in range(epochs):
-        train_comco_epoch(comco_args, model, loaders['comco'], cls_loss, cont_loss, opt, ep, device)
+        if detail_on:
+            detail.train_comco_epoch_with_selection_stats(
+                comco_args, model, loaders['comco'], cls_loss, cont_loss, opt, ep, device, raw_cfg,
+                'ComCo-Fixed', C)
+        else:
+            train_comco_epoch(comco_args, model, loaders['comco'], cls_loss, cont_loss, opt, ep, device)
         detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'ComCo-Fixed')
         detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'ComCo-Fixed')
+        detail.maybe_log_concentration(raw_cfg, model, pl_ds, device, C, ep + 1, 'ComCo-Fixed')
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             elapsed = time.perf_counter() - chunk_t0
             _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
@@ -715,6 +723,7 @@ def run_comco_fixed(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_siz
             gc.collect()
             torch.cuda.empty_cache()
 
+    detail.maybe_run_knn_eval(raw_cfg, model, pl_ds, orig_targets, loaders['test'], device, C, epochs, 'ComCo-Fixed')
     acc = evaluate_model(model, loaders['test'], device)
     del model, cls_loss, cont_loss, opt
     gc.collect()

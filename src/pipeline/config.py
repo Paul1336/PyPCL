@@ -15,7 +15,7 @@ class PipelineConfig:
     c_values: list
     epochs: int
     batch_size: int
-    seed: int
+    seeds: list
     data_dir: str
     log_dir: str
     results_dir: str
@@ -25,7 +25,7 @@ class PipelineConfig:
     algo_override: str
     report_every: int
     only_c: int
-    only_k: int
+    only_k: list
     only_q: float
     detail: bool
     detail_log_every: int
@@ -51,7 +51,7 @@ def load_config(args) -> PipelineConfig:
         c_values=args.c_values,
         epochs=args.epochs,
         batch_size=args.batch_size,
-        seed=args.seed,
+        seeds=getattr(args, 'seeds', None) or [42, 43, 44],
         data_dir=args.data_dir,
         log_dir=args.log_dir,
         results_dir=os.path.join('results', args.run_name),

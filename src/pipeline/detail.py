@@ -94,8 +94,23 @@ _STD = [0.247, 0.2435, 0.2616]
 # ─── config helpers ────────────────────────────────────────────────────────
 
 
+def _seed_matches(raw_cfg: dict) -> bool:
+    """True unless a 'diagnostics_seed' has been designated (see runner.py,
+    set when --seeds sweeps more than one seed) AND the CURRENT seed doesn't
+    match it. All diagnostic gates (--detail, --tsne, --concentration,
+    --knn_eval) route through this so that, when sweeping multiple seeds,
+    the (fairly expensive, and not seed-scoped in its output paths)
+    instrumentation only runs for one designated seed instead of multiplying
+    overhead and interleaving different seeds' curves into the same files."""
+    cfg = _detail_cfg(raw_cfg)
+    diag_seed = cfg.get('diagnostics_seed')
+    if diag_seed is None:
+        return True
+    return (raw_cfg or {}).get('_current_seed') == diag_seed
+
+
 def is_enabled(raw_cfg: dict) -> bool:
-    return bool((raw_cfg or {}).get('_detail', {}).get('enabled'))
+    return bool((raw_cfg or {}).get('_detail', {}).get('enabled')) and _seed_matches(raw_cfg)
 
 
 def _detail_cfg(raw_cfg: dict) -> dict:
@@ -184,7 +199,7 @@ def maybe_log_checkpoint(raw_cfg, model, test_loader, device, C, epoch, algorith
     `report_every` ETA-printing cadence on purpose, so detail resolution
     doesn't silently degrade if report_every is set coarser."""
     cfg = _detail_cfg(raw_cfg)
-    if not cfg.get('enabled'):
+    if not is_enabled(raw_cfg):
         return
     log_every = cfg.get('log_every', 10)
     if epoch % log_every != 0:
@@ -281,12 +296,13 @@ def log_prediction_concentration_checkpoint(model, pl_ds, spec, device, C, epoch
 
 
 def maybe_log_concentration(raw_cfg, model, pl_ds, device, C, epoch, algorithm, batch_size=512):
-    """No-op unless --concentration is enabled and `epoch` lands on a
+    """No-op unless --concentration is enabled, the current seed matches
+    '_detail'.diagnostics_seed (see _seed_matches), and `epoch` lands on a
     --concentration_log_every boundary. Independent of --detail (same
     convention as --tsne)."""
     cfg = _detail_cfg(raw_cfg)
     conc_cfg = cfg.get('concentration') or {}
-    if not conc_cfg.get('enabled'):
+    if not conc_cfg.get('enabled') or not _seed_matches(raw_cfg):
         return
     log_every = conc_cfg.get('log_every', 10)
     if epoch % log_every != 0:
@@ -674,7 +690,7 @@ def maybe_plot_tsne(raw_cfg, model, test_loader, device, C, epoch, algorithm):
     """
     cfg = _detail_cfg(raw_cfg)
     tsne_cfg = cfg.get('tsne') or {}
-    if not tsne_cfg.get('enabled'):
+    if not tsne_cfg.get('enabled') or not _seed_matches(raw_cfg):
         return
     every = tsne_cfg.get('every', 50)
     if epoch % every != 0:
@@ -770,7 +786,7 @@ def maybe_run_knn_eval(raw_cfg, model, pl_ds, orig_targets, test_loader, device,
     O(N_test x N_train) similarity matrix is comparatively expensive)."""
     cfg = _detail_cfg(raw_cfg)
     knn_cfg = cfg.get('knn') or {}
-    if not knn_cfg.get('enabled'):
+    if not knn_cfg.get('enabled') or not _seed_matches(raw_cfg):
         return
     acc = knn_eval(model, pl_ds, orig_targets, test_loader, device, C,
                     spec=(raw_cfg or {}).get('_dataset_spec'),
@@ -1242,6 +1258,134 @@ def plot_pico_oracle_correction_stats(results_dir: str, C: int, k: int, out_path
                  f'(faint = per-batch, bold = 1-epoch rolling mean)')
     ax.legend(fontsize=8, loc='lower right')
     ax.grid(True, alpha=0.3)
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)) or '.', exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    return out_path
+
+
+def _load_concentration_csv(path):
+    if not os.path.isfile(path):
+        return None
+    with open(path, newline='') as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        return None
+    return {
+        'epochs': [int(r['epoch']) for r in rows],
+        'mean_entropy': [float(r['mean_entropy']) for r in rows],
+        'std_entropy': [float(r['std_entropy']) for r in rows],
+        'mean_max_prob': [float(r['mean_max_prob']) for r in rows],
+        'std_max_prob': [float(r['std_max_prob']) for r in rows],
+    }
+
+
+def plot_concentration_trend(entries: list, C: int, k: int, out_path: str) -> str:
+    """Overlay per-algorithm prediction-concentration trends -- mean entropy
+    (top panel) and mean max-softmax-prob (bottom panel), both vs. epoch,
+    +-1 std shaded -- for N algorithms on one figure. Reads
+    concentration_summary.csv (see maybe_log_concentration / `run
+    --concentration`).
+
+    entries: list of (results_dir, algorithm, display_name) tuples, one line
+    per entry, in order -- same convention as plot_heatmap_multi, so each
+    algorithm can live in a different results_dir/run_name."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    data = []
+    for results_dir, alg, display in entries:
+        d = _load_concentration_csv(
+            os.path.join(results_dir, 'detail', alg, f'C{C}_k{k}', 'concentration_summary.csv'))
+        data.append((alg, display, d))
+
+    loaded = [d for _, _, d in data if d is not None]
+    if not loaded:
+        algs = ', '.join(alg for alg, _, _ in data)
+        raise ValueError(f'No concentration logs found for C={C} k={k}, algorithm(s) {algs} '
+                          f'(did you run with --concentration?)')
+
+    fig, (ax_ent, ax_prob) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    cmap = plt.get_cmap('tab10')
+    for i, (alg, display, d) in enumerate(data):
+        if d is None:
+            print(f'  [plot_concentration_trend] skip {alg}: no concentration_summary.csv '
+                  f'(did you run it with --concentration?)', flush=True)
+            continue
+        color = cmap(i % 10)
+        epochs = d['epochs']
+        me, se = np.array(d['mean_entropy']), np.array(d['std_entropy'])
+        mp, sp = np.array(d['mean_max_prob']), np.array(d['std_max_prob'])
+        ax_ent.plot(epochs, me, label=display, color=color, linewidth=2)
+        ax_ent.fill_between(epochs, me - se, me + se, color=color, alpha=0.15)
+        ax_prob.plot(epochs, mp, label=display, color=color, linewidth=2)
+        ax_prob.fill_between(epochs, mp - sp, mp + sp, color=color, alpha=0.15)
+
+    ax_ent.set_ylabel('Mean prediction entropy')
+    ax_ent.set_title(f'Prediction concentration  —  C={C}  k={k}  (shaded = ±1 std across samples)')
+    ax_ent.grid(True, alpha=0.3)
+    ax_ent.legend(fontsize=8, loc='best')
+
+    ax_prob.set_ylabel('Mean max softmax prob')
+    ax_prob.set_xlabel('Epoch checkpoint')
+    ax_prob.set_ylim(0, 1.05)
+    ax_prob.grid(True, alpha=0.3)
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)) or '.', exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    return out_path
+
+
+def plot_knn_eval_bar(entries: list, C: int, k: int, out_path: str) -> str:
+    """Bar chart comparing final kNN top-1 accuracy across N algorithms.
+    Reads knn_eval.csv (see maybe_run_knn_eval / `run --knn_eval`); if
+    knn_eval.csv has more than one row (e.g. maybe_run_knn_eval called more
+    than once for the same cell), uses the last (most recent) row.
+    Algorithms with no knn_eval.csv (no .encoder_q, e.g. PRODEN, or
+    --knn_eval not used) are skipped with a console note rather than
+    erroring the whole plot.
+
+    entries: list of (results_dir, algorithm, display_name) tuples, same
+    convention as plot_heatmap_multi / plot_concentration_trend."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    labels, accs = [], []
+    for results_dir, alg, display in entries:
+        path = os.path.join(results_dir, 'detail', alg, f'C{C}_k{k}', 'knn_eval.csv')
+        if not os.path.isfile(path):
+            print(f'  [plot_knn_eval_bar] skip {alg}: no knn_eval.csv '
+                  f'(no .encoder_q, or --knn_eval not used)', flush=True)
+            continue
+        with open(path, newline='') as f:
+            rows = list(csv.DictReader(f))
+        if not rows:
+            continue
+        labels.append(display)
+        accs.append(float(rows[-1]['knn_top1_acc']))
+
+    if not labels:
+        algs = ', '.join(alg for _, alg, _ in entries)
+        raise ValueError(f'No knn_eval logs found for C={C} k={k}, algorithm(s) {algs} '
+                          f'(did you run with --knn_eval, and is the model a PiCO/ComCo-family '
+                          f'dual-encoder model?)')
+
+    fig, ax = plt.subplots(figsize=(max(6, 1.2 * len(labels)), 5))
+    cmap = plt.get_cmap('tab10')
+    colors = [cmap(i % 10) for i in range(len(labels))]
+    bars = ax.bar(labels, accs, color=colors)
+    for bar, acc in zip(bars, accs):
+        ax.text(bar.get_x() + bar.get_width() / 2, acc + 1, f'{acc:.1f}%', ha='center', fontsize=9)
+
+    ax.set_ylabel('kNN top-1 accuracy (%)')
+    ax.set_ylim(0, 105)
+    ax.set_title(f'kNN accuracy (train-set reference bank → test-set query)  —  C={C}  k={k}')
+    ax.grid(True, axis='y', alpha=0.3)
+    plt.setp(ax.get_xticklabels(), rotation=30, ha='right')
 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)) or '.', exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches='tight')
