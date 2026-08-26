@@ -22,6 +22,11 @@ IMAGE_ONLY_ALGORITHMS = {'PiCO', 'PiCO-Oracle', 'PiCO-MOCO', 'PiCO-Fixed',
                           'PiCO-Fixed-UniformInit', 'PiCO-Fixed-BiasedInit',
                           'PiCO-MCL', 'PiCO-SC', 'ComCo', 'ComCo-Fixed', 'SoLar'}
 
+# Parametrized biased-init sweep's PiCO-Fixed-family variants also use
+# loaders['pico'] -- see algorithms.runners.BIASED_SWEEP_RUNNERS.
+from src.pll_init import BIAS_WEIGHTS as _BIAS_WEIGHTS, biased_variant_name as _biased_variant_name  # noqa: E402
+IMAGE_ONLY_ALGORITHMS |= {_biased_variant_name('PiCO-Fixed', s, w) for s in ('cand', 'all') for w in _BIAS_WEIGHTS}
+
 
 def _dataset_spec(dataset_name: str):
     """Returns the DatasetSpec for `dataset_name`, or None for the original
@@ -128,16 +133,23 @@ def run(cfg: PipelineConfig):
               f'{"q = " + str(cfg.only_q) if cfg.only_q is not None else "k = " + str(k_values)}'
               f'\n{"=" * 60}', flush=True)
 
-        for k in k_values:
-            print(f'\n--- C={C}  k={k} ---', flush=True)
-
-            for seed in cfg.seeds:
+        # Seed is the OUTER loop, k the inner one (not the other way around):
+        # this sweeps every k for the first seed to completion before
+        # touching the second seed at all, so a full (all-k, all-algorithm)
+        # single-seed pass is available for early/preliminary analysis
+        # (merge + report can be run at any point mid-run -- only completed
+        # cells show up) well before the remaining seeds finish accumulating
+        # for the final mean/std. Resume/dedup is keyed on
+        # (dataset, C, k, algorithm, seed) regardless of loop order, so this
+        # doesn't change what eventually gets trained, only the order.
+        for seed in cfg.seeds:
+            for k in k_values:
                 pending = [a for a in my_algorithms if (cfg.dataset, C, k, a, seed) not in done]
                 if not pending:
-                    print(f'  [skip] C={C} k={k} seed={seed}', flush=True)
+                    print(f'\n  [skip] C={C} k={k} seed={seed}', flush=True)
                     continue
 
-                print(f'  seed={seed}  pending: {pending}', flush=True)
+                print(f'\n--- C={C}  k={k}  seed={seed}  pending: {pending} ---', flush=True)
                 loaders, pl_ds, orig_targets = data.load_experiment_data(
                     C, k, cfg.data_dir, seed, cfg.log_dir, cfg.batch_size, dataset=cfg.dataset,
                     q=cfg.only_q)

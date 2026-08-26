@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.pll_init import candidate_masked_init, uniform_all_init, biased_oracle_init
+from src.pll_init import (biased_all_init, biased_candidates_init, biased_oracle_init,
+                           candidate_masked_init, uniform_all_init)
 
 
 class ProdenLoss(nn.Module):
@@ -31,12 +32,17 @@ class ProdenLoss(nn.Module):
         partial_targets: list of 1-D LongTensors, one per sample (candidate indices).
         num_classes:     total number of classes C.
         init_mode:       'candidate_masked' (default, existing behavior) | 'uniform_all'
-                          | 'biased_oracle' -- see src/pll_init.py.
-        orig_targets:    true labels, required only for init_mode='biased_oracle'.
+                          | 'biased_oracle' | 'biased_candidates' | 'biased_all' --
+                          see src/pll_init.py.
+        orig_targets:    true labels, required for init_mode in
+                          {'biased_oracle', 'biased_candidates', 'biased_all'}.
+        true_weight:     weight given to the true class; required for init_mode in
+                          {'biased_candidates', 'biased_all'} (parametrized sweep,
+                          see src/pll_init.py.BIAS_WEIGHTS).
     """
 
     def __init__(self, partial_targets: list, num_classes: int,
-                 init_mode: str = 'candidate_masked', orig_targets=None):
+                 init_mode: str = 'candidate_masked', orig_targets=None, true_weight: float = None):
         super().__init__()
         if init_mode == 'candidate_masked':
             conf = candidate_masked_init(partial_targets, num_classes)
@@ -46,6 +52,14 @@ class ProdenLoss(nn.Module):
             if orig_targets is None:
                 raise ValueError("init_mode='biased_oracle' requires orig_targets")
             conf = biased_oracle_init(partial_targets, orig_targets, num_classes)
+        elif init_mode == 'biased_candidates':
+            if orig_targets is None or true_weight is None:
+                raise ValueError("init_mode='biased_candidates' requires orig_targets and true_weight")
+            conf = biased_candidates_init(partial_targets, orig_targets, num_classes, true_weight)
+        elif init_mode == 'biased_all':
+            if orig_targets is None or true_weight is None:
+                raise ValueError("init_mode='biased_all' requires orig_targets and true_weight")
+            conf = biased_all_init(partial_targets, orig_targets, num_classes, true_weight)
         else:
             raise ValueError(f'Unknown init_mode {init_mode!r}')
         self.register_buffer('conf', conf)   # [N, C], lives on same device as model

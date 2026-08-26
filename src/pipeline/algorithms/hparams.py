@@ -35,6 +35,16 @@ ALGO_HPARAMS = {
     'SoLar':    _SGD,
 }
 
+# Parametrized biased-init sweep (see src/pll_init.py.BIAS_WEIGHTS /
+# biased_variant_name and src/pipeline/algorithms/runners.py's
+# BIASED_SWEEP_RUNNERS) -- same optimizer as each variant's base algorithm.
+from src.pll_init import BIAS_WEIGHTS, biased_variant_name  # noqa: E402
+
+for _w in BIAS_WEIGHTS:
+    for _strategy in ('cand', 'all'):
+        ALGO_HPARAMS[biased_variant_name('PiCO-Fixed', _strategy, _w)] = _ADAM
+        ALGO_HPARAMS[biased_variant_name('PRODEN', _strategy, _w)] = _SGD
+
 
 def make_optimizer(model, hparams: dict):
     import torch.optim as optim

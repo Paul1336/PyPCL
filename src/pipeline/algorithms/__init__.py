@@ -25,7 +25,7 @@ class AlgorithmSpec:
 def _build_registry() -> dict:
     from . import runners as r
 
-    return {
+    registry = {
         'CLPL':     AlgorithmSpec('CLPL',     'PLL', r.run_clpl),
         'Wu2022':   AlgorithmSpec('Wu2022',   'PLL', r.run_wu),
         'PRODEN':   AlgorithmSpec('PRODEN',   'PLL', r.run_proden),
@@ -50,6 +50,13 @@ def _build_registry() -> dict:
         'ComCo':    AlgorithmSpec('ComCo',    'CLL', r.run_comco),
         'ComCo-Fixed': AlgorithmSpec('ComCo-Fixed', 'CLL', r.run_comco_fixed),
     }
+
+    # Parametrized biased-init sweep (PiCO-Fixed-Biased{Cand,All}-W* /
+    # PRODEN-Biased{Cand,All}-W*, both PLL) -- see runners.BIASED_SWEEP_RUNNERS.
+    for name, fn in r.BIASED_SWEEP_RUNNERS.items():
+        registry[name] = AlgorithmSpec(name, 'PLL', fn)
+
+    return registry
 
 
 ALGORITHMS = _build_registry()
