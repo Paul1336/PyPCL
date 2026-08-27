@@ -84,3 +84,82 @@ def train_pico_oracle_graded_epoch(pico_args, model, loader, loss_fn, loss_cont_
         total_loss += loss.item()
         progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
     return total_loss / len(loader)
+
+
+def train_pico_oracle_add_graded_epoch(pico_args, model, loader, loss_fn, loss_cont_fn, optimizer, epoch, device,
+                                        precision_threshold, max_add_ratio=1.0):
+    """Additive counterpart to train_pico_oracle_graded_epoch above: instead
+    of REMOVING false positives from the model's own natural mask to raise
+    precision to `precision_threshold`, this ADDS randomly-chosen genuine
+    TRUE positives (same_true==1 pairs the natural mask did NOT select)
+    until precision reaches the threshold. The natural mask's existing
+    selections -- including its false positives -- are never touched or
+    removed, only grown; precision moves toward the target purely by
+    diluting the fixed false-positive count with more genuine true
+    positives, not by shrinking the denominator.
+
+    `max_add_ratio` caps how many pairs can be added per batch, as a
+    multiple of that batch's own natural pos_total (e.g. max_add_ratio=1.0
+    means at most doubling the natural positive-set size). Without this cap,
+    a high threshold (e.g. 0.9) against a naturally low-precision mask can
+    demand adding an unboundedly large number of pairs; when the cap binds,
+    the achieved precision honestly falls short of precision_threshold for
+    that batch. Guards precision_threshold >= 1.0 by skipping correction
+    entirely (exact 1.0 precision is unreachable by finite addition while
+    any false positive remains, and the closed-form solution below divides
+    by (1 - precision_threshold)) -- not exercised by any of this repo's
+    threshold sweeps, which stay below 1.0.
+
+    Same pos_total == 0 convention as train_pico_oracle_graded_epoch:
+    nothing to correct (precision undefined) if the natural mask selected
+    zero positives in the first place."""
+    model.train()
+    total_loss = 0
+    start_upd_prot = epoch >= pico_args['prot_start']
+
+    progress_bar = tqdm(loader, desc=f"PiCO-Oracle-Add Epoch {epoch + 1}/{pico_args['epochs']}")
+    for (images_w, images_s, partial_Y, true_labels, index) in progress_bar:
+        images_w, images_s, partial_Y, true_labels, index = (
+            images_w.to(device), images_s.to(device), partial_Y.to(device),
+            true_labels.to(device), index.to(device))
+
+        cls_out, features, true_targets, pseudo_targets, score_prot = model(
+            images_w, images_s, partial_Y, true_labels, pico_args)
+        batch_size = cls_out.shape[0]
+
+        if start_upd_prot:
+            loss_fn.confidence_update(temp_un_conf=score_prot.detach(), batch_index=index, batchY=partial_Y)
+
+        loss_cls = loss_fn(cls_out, index)
+
+        if start_upd_prot:
+            mask = torch.eq(pseudo_targets[:batch_size].unsqueeze(1), pseudo_targets.unsqueeze(0)).float()
+            same_true = torch.eq(true_targets[:batch_size].unsqueeze(1), true_targets.unsqueeze(0)).float()
+
+            pos_total = int(mask.sum().item())
+            if pos_total > 0:
+                true_pos = int((mask * same_true).sum().item())
+                precision = true_pos / pos_total
+                if precision < precision_threshold and precision_threshold < 1.0:
+                    ideal_n_add = max(0, math.ceil(
+                        (precision_threshold * pos_total - true_pos) / (1.0 - precision_threshold)))
+                    cap = max(1, math.ceil(max_add_ratio * pos_total))
+                    avail_idx = ((mask == 0) & (same_true == 1)).nonzero(as_tuple=False)
+                    n_add = min(ideal_n_add, cap, avail_idx.shape[0])
+                    if n_add > 0:
+                        perm = torch.randperm(avail_idx.shape[0], device=device)[:n_add]
+                        sel = avail_idx[perm]
+                        mask[sel[:, 0], sel[:, 1]] = 1.0
+
+            loss_cont = loss_cont_fn(features=features, mask=mask, batch_size=batch_size)
+            loss = loss_cls + pico_args['loss_weight'] * loss_cont
+        else:
+            loss = loss_cls
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
+    return total_loss / len(loader)

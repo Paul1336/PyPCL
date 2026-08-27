@@ -30,7 +30,7 @@ from src.engine import (evaluate_model, train_algorithm, train_comco_epoch,
                          train_pico_epoch, train_pico_mclloss_epoch,
                          train_pico_moco_epoch, train_pico_sc_epoch, train_solar)
 from src.fixed_pico_engine import train_pico_epoch_fixed
-from src.oracle_pico_engine import train_pico_oracle_graded_epoch
+from src.oracle_pico_engine import train_pico_oracle_add_graded_epoch, train_pico_oracle_graded_epoch
 from src.mcl_losses import MCL_LOG
 from src.fixed_mcl_losses import FixedMCLLog
 from src.model_setup import setup_solar
@@ -379,6 +379,63 @@ def run_pico_oracle(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_siz
             gc.collect()
             torch.cuda.empty_cache()
 
+    acc = evaluate_model(model, loaders['test'], device)
+    del model, cls_loss, cont_loss, opt, init_conf
+    gc.collect()
+    torch.cuda.empty_cache()
+    return acc
+
+
+def run_pico_oracle_add(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
+    """Additive counterpart to run_pico_oracle: instead of REMOVING false
+    positives from the natural mask to reach config.yaml's
+    pico.oracle_precision_threshold, ADDS randomly-chosen genuine true
+    positives (pairs the natural mask didn't select but which do share the
+    true class) until the threshold is reached, capped at
+    pico.oracle_max_add_ratio (default 1.0, i.e. at most doubling the
+    natural positive-set size per batch) to avoid unboundedly large
+    injections at high thresholds -- see
+    src/oracle_pico_engine.py::train_pico_oracle_add_graded_epoch. Otherwise
+    identical setup to run_pico_oracle (PiCO-Fixed-aligned warm-up,
+    candidate-masked init). Not for real use: requires true labels at train
+    time, unavailable in a genuine partial-label setting."""
+    pico_cfg = raw_cfg['pico']
+    pico_args = _pico_args(C, epochs, pico_cfg)
+    pico_args['prot_start'] = pico_cfg.get('prot_start_fixed', 1)
+    precision_threshold = pico_cfg.get('oracle_precision_threshold', 1.0)
+    max_add_ratio = pico_cfg.get('oracle_max_add_ratio', 1.0)
+    model = PiCOOracleModel(pico_args).to(device)
+    init_conf = _candidate_masked_init_conf(pl_ds, C, device)
+    cls_loss = PartialLoss(init_conf)
+    cont_loss = SupConLoss()
+    opt = make_optimizer(model, hparams)
+
+    detail_on = detail.is_enabled(raw_cfg)
+
+    chunk_t0 = time.perf_counter()
+    for ep in range(epochs):
+        cls_loss.set_conf_ema_m(ep, pico_args)
+        if detail_on:
+            detail.train_pico_oracle_add_graded_epoch_with_stats(
+                pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device,
+                raw_cfg, 'PiCO-Oracle-Add', C, precision_threshold, max_add_ratio)
+        else:
+            train_pico_oracle_add_graded_epoch(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep,
+                                                device, precision_threshold, max_add_ratio)
+
+        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-Oracle-Add')
+        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-Oracle-Add')
+        detail.maybe_log_concentration(raw_cfg, model, pl_ds, device, C, ep + 1, 'PiCO-Oracle-Add')
+
+        if (ep + 1) % report_every == 0 or ep + 1 == epochs:
+            elapsed = time.perf_counter() - chunk_t0
+            _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
+            chunk_t0 = time.perf_counter()
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    detail.maybe_run_knn_eval(raw_cfg, model, pl_ds, orig_targets, loaders['test'], device, C, epochs,
+                               'PiCO-Oracle-Add')
     acc = evaluate_model(model, loaders['test'], device)
     del model, cls_loss, cont_loss, opt, init_conf
     gc.collect()

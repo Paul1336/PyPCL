@@ -588,6 +588,129 @@ def log_pico_oracle_correction_stats_batch(raw_cfg, algorithm, C, epoch, batch_r
             })
 
 
+def train_pico_oracle_add_graded_epoch_with_stats(pico_args, model, loader, loss_fn, loss_cont_fn,
+                                                    optimizer, epoch, device, raw_cfg, algorithm, C,
+                                                    precision_threshold, max_add_ratio=1.0):
+    """--detail-logging counterpart to
+    src.oracle_pico_engine.train_pico_oracle_add_graded_epoch -- additive
+    counterpart to train_pico_oracle_graded_epoch_with_stats above: instead
+    of REMOVING false positives from the natural mask, ADDS randomly-chosen
+    genuine true positives (same_true==1 pairs the natural mask did not
+    select) until precision reaches precision_threshold, capped at
+    max_add_ratio * pos_total additions per batch (see the engine
+    function's docstring for why the cap exists). Logs precision_before/
+    after, negative precision, pos_total, how many pairs were added
+    (n_added), the actual achieved add_ratio (= n_added / pos_total, for
+    directly comparing against how much of max_add_ratio's cap was used),
+    and whether the cap bound (n_capped, so a `precision_after` that still
+    falls short of the threshold can be told apart from one that genuinely
+    reached it) to pico_oracle_add_correction_stats.csv via
+    log_pico_oracle_add_correction_stats_batch."""
+    model.train()
+    total_loss = 0.0
+    start_upd_prot = epoch >= pico_args['prot_start']
+    # (batch_idx, precision_before, precision_after, neg_precision, pos_total, n_added, n_capped, add_ratio)
+    batch_rows = []
+
+    progress_bar = tqdm(loader, desc=f"PiCO-Oracle-Add Epoch {epoch + 1}/{pico_args['epochs']} [detail]")
+    for batch_idx, (images_w, images_s, partial_Y, true_labels, index) in enumerate(progress_bar):
+        images_w, images_s, partial_Y, true_labels, index = (
+            images_w.to(device), images_s.to(device), partial_Y.to(device),
+            true_labels.to(device), index.to(device))
+
+        cls_out, features, true_targets, pseudo_targets, score_prot = model(
+            images_w, images_s, partial_Y, true_labels, pico_args)
+        batch_size = cls_out.shape[0]
+
+        if start_upd_prot:
+            loss_fn.confidence_update(temp_un_conf=score_prot.detach(), batch_index=index, batchY=partial_Y)
+
+        loss_cls = loss_fn(cls_out, index)
+
+        prec_before = prec_after = neg_prec = float('nan')
+        pos_total = n_added = 0
+        n_capped = False
+
+        if start_upd_prot:
+            mask = torch.eq(pseudo_targets[:batch_size].unsqueeze(1), pseudo_targets.unsqueeze(0)).float()
+            same_true = torch.eq(true_targets[:batch_size].unsqueeze(1), true_targets.unsqueeze(0)).float()
+
+            pos_total = int(mask.sum().item())
+            if pos_total > 0:
+                true_pos = int((mask * same_true).sum().item())
+                prec_before = true_pos / pos_total
+                if prec_before < precision_threshold and precision_threshold < 1.0:
+                    ideal_n_add = max(0, math.ceil(
+                        (precision_threshold * pos_total - true_pos) / (1.0 - precision_threshold)))
+                    cap = max(1, math.ceil(max_add_ratio * pos_total))
+                    avail_idx = ((mask == 0) & (same_true == 1)).nonzero(as_tuple=False)
+                    n_added = min(ideal_n_add, cap, avail_idx.shape[0])
+                    n_capped = n_added < ideal_n_add
+                    if n_added > 0:
+                        perm = torch.randperm(avail_idx.shape[0], device=device)[:n_added]
+                        sel = avail_idx[perm]
+                        mask[sel[:, 0], sel[:, 1]] = 1.0
+                new_pos_total = pos_total + n_added
+                prec_after = ((true_pos + n_added) / new_pos_total) if new_pos_total > 0 else float('nan')
+
+            neg_mask = (mask == 0).float()
+            neg_total = neg_mask.sum().item()
+            neg_prec = ((neg_mask * (1 - same_true)).sum() / neg_total).item() if neg_total > 0 else float('nan')
+
+            loss_cont = loss_cont_fn(features=features, mask=mask, batch_size=batch_size)
+            loss = loss_cls + pico_args['loss_weight'] * loss_cont
+        else:
+            loss = loss_cls
+
+        # Actual achieved add ratio (n_added relative to the batch's own
+        # natural pos_total) -- lets you directly see how much of
+        # max_add_ratio's cap got used, without having to divide n_added by
+        # pos_total yourself from the raw columns.
+        add_ratio = (n_added / pos_total) if pos_total > 0 else float('nan')
+        batch_rows.append((batch_idx, prec_before, prec_after, neg_prec, pos_total, n_added, n_capped, add_ratio))
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
+
+    log_pico_oracle_add_correction_stats_batch(raw_cfg, algorithm, C, epoch + 1, batch_rows)
+
+    return total_loss / len(loader)
+
+
+def log_pico_oracle_add_correction_stats_batch(raw_cfg, algorithm, C, epoch, batch_rows):
+    """batch_rows: list of (batch_idx, precision_before, precision_after,
+    neg_precision, pos_total, n_added, n_capped, add_ratio) for every batch
+    in this epoch (see train_pico_oracle_add_graded_epoch_with_stats)."""
+    cfg = _detail_cfg(raw_cfg)
+    if not cfg.get('enabled') or not batch_rows:
+        return
+    out_dir = cell_dir(raw_cfg, algorithm, C)
+    fields = ['epoch', 'batch', 'precision_before', 'precision_after', 'neg_precision',
+              'pos_total', 'n_added', 'n_capped', 'add_ratio']
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, 'pico_oracle_add_correction_stats.csv')
+    new_file = not os.path.isfile(path)
+
+    def _r(v):
+        return '' if v != v else round(v, 6)
+
+    with open(path, 'a', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        if new_file:
+            w.writeheader()
+        for batch_idx, prec_before, prec_after, neg_prec, pos_total, n_added, n_capped, add_ratio in batch_rows:
+            w.writerow({
+                'epoch': epoch, 'batch': batch_idx, 'add_ratio': _r(add_ratio),
+                'precision_before': _r(prec_before), 'precision_after': _r(prec_after),
+                'neg_precision': _r(neg_prec), 'pos_total': pos_total, 'n_added': n_added,
+                'n_capped': int(n_capped),
+            })
+
+
 # ─── (5) ComCo contrastive positive-pair selection precision ──────────────
 
 

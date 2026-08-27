@@ -23,6 +23,7 @@ ALGO_HPARAMS = {
     'CPE':      _ADAM,
     'PiCO':     _ADAM,
     'PiCO-Oracle': _ADAM,
+    'PiCO-Oracle-Add': _ADAM,
     'PiCO-Fixed': _ADAM,
     'PiCO-Fixed-UniformInit': _ADAM,
     'PiCO-Fixed-BiasedInit':  _ADAM,
