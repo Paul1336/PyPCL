@@ -12,7 +12,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 
-from src.pipeline.results import load_results
+from src.pipeline.results import load_results, load_results_by_seed
 
 STYLES = {
     'CLPL':     dict(color='#1f77b4', marker='o', linestyle='-',  linewidth=2, markersize=6),
@@ -119,6 +119,82 @@ def plot_accuracy_vs_k(run_dirs: list, algorithms: list = None, c_values: list =
             ax.legend(fontsize=8, loc='best', ncol=2)
 
     fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f'  [plot] -> {out_path}', flush=True)
+    return out_path
+
+
+def plot_accuracy_vs_weight(run_dirs: list, C: int, k: int, series: list, weights: list,
+                             baselines: list = None, out_path: str = 'plots/comparison.png',
+                             title: str = None) -> str:
+    """Accuracy vs. true-class weight (W), for one fixed (C, k) point -- the
+    complementary view to plot_accuracy_vs_k's accuracy-vs-k-for-fixed-W: here
+    x is the parametrized biased-init sweep's true-class weight (see
+    src/pll_init.py's biased_variant_name/biased_rand_variant_name 'W{:02d}'
+    convention). Plotted at CATEGORICAL, evenly-spaced x positions in the
+    given `weights` order -- not spaced proportionally to the numeric W
+    values -- since the sweep's own W values (e.g. 5, 6, 8, 10, 20) aren't
+    meant to be read on a linear scale.
+
+    series: list of (name_template, label) pairs. name_template must contain
+    '{w}', filled in with each weight formatted as a 2-digit zero-padded tag
+    (e.g. 'PiCO-Fixed-BiasedCand-W{w}' -> 'PiCO-Fixed-BiasedCand-W05' for
+    w=5) -- one line per entry, plotted across every value in `weights` in
+    order, with +-1 std error bars across seeds (see
+    results.load_results_by_seed).
+
+    weights: list of ints (e.g. [5, 6, 8, 10]) -- x-axis category order;
+    tick labels are 'W{n}'.
+
+    baselines: optional list of (algorithm, label) pairs, each drawn as a
+    horizontal dashed reference line spanning the whole plot -- for
+    algorithms that don't vary with W (e.g. the unbiased PiCO-Fixed / PRODEN
+    / ComCo-Fixed baselines)."""
+    import statistics
+
+    by_seed = load_results_by_seed(run_dirs)
+    xs = list(range(len(weights)))
+    xticklabels = [f'W{w}' for w in weights]
+
+    fig, ax = plt.subplots(figsize=(8, 5.5))
+    cmap = plt.get_cmap('tab10')
+
+    for i, (name_template, label) in enumerate(series):
+        means, stds = [], []
+        for w in weights:
+            alg = name_template.format(w=f'{w:02d}')
+            accs = by_seed.get(C, {}).get(alg, {}).get(k, [])
+            if accs:
+                means.append(statistics.mean(accs))
+                stds.append(statistics.stdev(accs) if len(accs) > 1 else 0.0)
+            else:
+                print(f'  [plot_accuracy_vs_weight] no data for {alg} at C={C} k={k}', flush=True)
+                means.append(float('nan'))
+                stds.append(0.0)
+        ax.errorbar(xs, means, yerr=stds, label=label, color=cmap(i % 10), marker='o',
+                    linewidth=2, capsize=4, markersize=6)
+
+    if baselines:
+        base_cmap = plt.get_cmap('Set2')
+        for i, (alg, label) in enumerate(baselines):
+            accs = by_seed.get(C, {}).get(alg, {}).get(k, [])
+            if not accs:
+                print(f'  [plot_accuracy_vs_weight] no data for baseline {alg} at C={C} k={k}', flush=True)
+                continue
+            mean = statistics.mean(accs)
+            ax.axhline(mean, color=base_cmap(i), linestyle='--', linewidth=1.5,
+                       label=f'{label} (baseline)')
+
+    ax.set_xticks(xs)
+    ax.set_xticklabels(xticklabels)
+    ax.set_xlabel('True-class weight (W)')
+    ax.set_ylabel('Test accuracy (%)')
+    ax.set_title(title or f'Accuracy vs. W  —  C={C}  k={k}')
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8, loc='best')
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)) or '.', exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f'  [plot] -> {out_path}', flush=True)

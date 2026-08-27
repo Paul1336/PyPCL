@@ -42,7 +42,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.pipeline.algorithms import ALL_ALGORITHM_NAMES
 from src.pipeline.config import load_config
 from src.pipeline import results as results_mod
-from src.pipeline.plotting import plot_accuracy_vs_k
+from src.pipeline.plotting import plot_accuracy_vs_k, plot_accuracy_vs_weight
 from src.pipeline.datasets import ALL_DATASET_NAMES
 
 
@@ -154,6 +154,28 @@ def _add_plot_parser(sub):
                          "(data selection still uses the real algorithm name; only the shown text changes)")
 
 
+def _add_plot_weight_parser(sub):
+    p = sub.add_parser('plot-weight',
+                        help='Accuracy vs. true-class weight (W), for one fixed (C, k) -- the parametrized '
+                             'biased-init sweep (PiCO-Fixed-Biased{Cand,All}-W* / PRODEN-Biased{Cand,All}-W*) '
+                             'complement to `plot`\'s accuracy-vs-k view')
+    p.add_argument('--runs', nargs='+', required=True, help='run_name(s) to merge into one plot')
+    p.add_argument('--C', type=int, required=True)
+    p.add_argument('--k', type=int, required=True)
+    p.add_argument('--weights', nargs='+', type=int, required=True,
+                    help='True-class weight values, x-axis category order, e.g. --weights 5 6 8 10')
+    p.add_argument('--series', nargs='+', required=True,
+                    help="TEMPLATE:LABEL pairs, one line per entry, e.g. "
+                         "--series 'PiCO-Fixed-BiasedCand-W{w}:PiCO-BiasedCand' "
+                         "'PiCO-Fixed-BiasedAll-W{w}:PiCO-BiasedAll' -- TEMPLATE must contain literal '{w}', "
+                         "filled with each --weights value as a 2-digit zero-padded tag.")
+    p.add_argument('--baselines', nargs='+', default=None,
+                    help='ALGORITHM:LABEL pairs drawn as horizontal dashed reference lines, e.g. '
+                         '--baselines PiCO-Fixed:PiCO PRODEN:PRODEN ComCo-Fixed:ComCo')
+    p.add_argument('--title', default=None)
+    p.add_argument('--out', required=True)
+
+
 def _add_detail_plot_parser(sub):
     p = sub.add_parser('detail-plot', help='Per-class accuracy/loss heatmap over epoch checkpoints '
                                             '(requires --detail during run); one or two algorithms side by side')
@@ -255,6 +277,7 @@ def main():
     _add_merge_parser(sub)
     _add_report_parser(sub)
     _add_plot_parser(sub)
+    _add_plot_weight_parser(sub)
     _add_detail_plot_parser(sub)
     _add_detail_plot_multi_parser(sub)
     _add_detail_plot_pico_parser(sub)
@@ -331,6 +354,12 @@ def main():
         rename = dict(pair.split('=', 1) for pair in args.rename) if args.rename else None
         plot_accuracy_vs_k(run_dirs, algorithms=args.algorithms, c_values=args.c_values,
                             out_path=args.out, group_by=args.group_by, rename=rename)
+    elif args.command == 'plot-weight':
+        run_dirs = [os.path.join('results', r) for r in args.runs]
+        series = [tuple(s.split(':', 1)) for s in args.series]
+        baselines = [tuple(b.split(':', 1)) for b in args.baselines] if args.baselines else None
+        plot_accuracy_vs_weight(run_dirs, args.C, args.k, series, args.weights,
+                                 baselines=baselines, out_path=args.out, title=args.title)
     elif args.command == 'detail-plot':
         class_names = None
         if args.show_class_names:
