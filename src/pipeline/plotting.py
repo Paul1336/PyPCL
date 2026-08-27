@@ -127,35 +127,42 @@ def plot_accuracy_vs_k(run_dirs: list, algorithms: list = None, c_values: list =
 
 def plot_accuracy_vs_weight(run_dirs: list, C: int, k: int, series: list, weights: list,
                              baselines: list = None, out_path: str = 'plots/comparison.png',
-                             title: str = None) -> str:
-    """Accuracy vs. true-class weight (W), for one fixed (C, k) point -- the
-    complementary view to plot_accuracy_vs_k's accuracy-vs-k-for-fixed-W: here
-    x is the parametrized biased-init sweep's true-class weight (see
-    src/pll_init.py's biased_variant_name/biased_rand_variant_name 'W{:02d}'
-    convention). Plotted at CATEGORICAL, evenly-spaced x positions in the
-    given `weights` order -- not spaced proportionally to the numeric W
-    values -- since the sweep's own W values (e.g. 5, 6, 8, 10, 20) aren't
-    meant to be read on a linear scale.
+                             title: str = None, zero_pad: bool = True, x_prefix: str = 'W',
+                             xlabel: str = None) -> str:
+    """Accuracy vs. a swept init-parameter (true-class weight W, or the
+    BiasedRand family's Wf), for one fixed (C, k) point -- the complementary
+    view to plot_accuracy_vs_k's accuracy-vs-k-for-fixed-parameter. Plotted
+    at CATEGORICAL, evenly-spaced x positions in the given `weights` order --
+    not spaced proportionally to the numeric values -- since the sweep's own
+    values (e.g. 5, 6, 8, 10, 20 for W; 5, 8, 10, 12, 15 for Wf) aren't meant
+    to be read on a linear scale.
 
     series: list of (name_template, label) pairs. name_template must contain
-    '{w}', filled in with each weight formatted as a 2-digit zero-padded tag
-    (e.g. 'PiCO-Fixed-BiasedCand-W{w}' -> 'PiCO-Fixed-BiasedCand-W05' for
+    '{w}', filled in with each value from `weights` formatted per `zero_pad`
+    (True: 2-digit zero-padded, matching biased_variant_name's 'W{:02d}'
+    convention, e.g. 'PiCO-Fixed-BiasedCand-W{w}' -> '...-W05' for w=5;
+    False: plain int, matching biased_rand_variant_name's 'Wf{wf}' convention
+    -- no padding -- e.g. 'PiCO-Fixed-BiasedRand-W10-Wf{w}' -> '...-Wf5' for
     w=5) -- one line per entry, plotted across every value in `weights` in
     order, with +-1 std error bars across seeds (see
     results.load_results_by_seed).
 
-    weights: list of ints (e.g. [5, 6, 8, 10]) -- x-axis category order;
-    tick labels are 'W{n}'.
+    weights: list of ints (e.g. [5, 6, 8, 10] for W, or [5, 8, 10, 12, 15]
+    for Wf) -- x-axis category order; tick labels are '{x_prefix}{n}'.
 
     baselines: optional list of (algorithm, label) pairs, each drawn as a
     horizontal dashed reference line spanning the whole plot -- for
-    algorithms that don't vary with W (e.g. the unbiased PiCO-Fixed / PRODEN
-    / ComCo-Fixed baselines)."""
+    algorithms that don't vary with the swept parameter (e.g. the unbiased
+    PiCO-Fixed / PRODEN / ComCo-Fixed baselines). Pull these from a
+    DIFFERENT run_dir than the swept series if the sweep's own run_name
+    didn't include the baselines (run_dirs accepts more than one and merges
+    them, same as plot_accuracy_vs_k) -- baseline accuracy doesn't depend on
+    which sweep trained it, only on (C, k, algorithm, seed)."""
     import statistics
 
     by_seed = load_results_by_seed(run_dirs)
     xs = list(range(len(weights)))
-    xticklabels = [f'W{w}' for w in weights]
+    xticklabels = [f'{x_prefix}{w}' for w in weights]
 
     fig, ax = plt.subplots(figsize=(8, 5.5))
     cmap = plt.get_cmap('tab10')
@@ -163,7 +170,8 @@ def plot_accuracy_vs_weight(run_dirs: list, C: int, k: int, series: list, weight
     for i, (name_template, label) in enumerate(series):
         means, stds = [], []
         for w in weights:
-            alg = name_template.format(w=f'{w:02d}')
+            tag = f'{w:02d}' if zero_pad else str(w)
+            alg = name_template.format(w=tag)
             accs = by_seed.get(C, {}).get(alg, {}).get(k, [])
             if accs:
                 means.append(statistics.mean(accs))
@@ -188,9 +196,9 @@ def plot_accuracy_vs_weight(run_dirs: list, C: int, k: int, series: list, weight
 
     ax.set_xticks(xs)
     ax.set_xticklabels(xticklabels)
-    ax.set_xlabel('True-class weight (W)')
+    ax.set_xlabel(xlabel or f'{x_prefix} (swept parameter)')
     ax.set_ylabel('Test accuracy (%)')
-    ax.set_title(title or f'Accuracy vs. W  —  C={C}  k={k}')
+    ax.set_title(title or f'Accuracy vs. {x_prefix}  —  C={C}  k={k}')
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=8, loc='best')
 

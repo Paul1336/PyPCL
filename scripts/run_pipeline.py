@@ -171,7 +171,17 @@ def _add_plot_weight_parser(sub):
                          "filled with each --weights value as a 2-digit zero-padded tag.")
     p.add_argument('--baselines', nargs='+', default=None,
                     help='ALGORITHM:LABEL pairs drawn as horizontal dashed reference lines, e.g. '
-                         '--baselines PiCO-Fixed:PiCO PRODEN:PRODEN ComCo-Fixed:ComCo')
+                         '--baselines PiCO-Fixed:PiCO PRODEN:PRODEN ComCo-Fixed:ComCo -- pulled from the '
+                         'same --runs, so pass a run that actually has them if the swept sweep\'s own '
+                         'run_name doesn\'t (e.g. --runs biased_rand_sweep biased_weight_sweep)')
+    p.add_argument('--no_zero_pad', action='store_true',
+                    help="Format {w} as a plain int instead of a 2-digit zero-padded tag -- use this for "
+                         "the BiasedRand family's Wf (e.g. --series "
+                         "'PiCO-Fixed-BiasedRand-W10-Wf{w}:PiCO W10' --weights 5 8 10 12 15 --no_zero_pad), "
+                         "since biased_rand_variant_name's 'Wf{wf}' suffix isn't zero-padded (unlike W).")
+    p.add_argument('--x_prefix', default='W', help="Tick-label / axis-label prefix, e.g. 'Wf' for the "
+                                                     "BiasedRand family's Wf sweep instead of W.")
+    p.add_argument('--xlabel', default=None, help='Override the x-axis label text.')
     p.add_argument('--title', default=None)
     p.add_argument('--out', required=True)
 
@@ -359,7 +369,8 @@ def main():
         series = [tuple(s.split(':', 1)) for s in args.series]
         baselines = [tuple(b.split(':', 1)) for b in args.baselines] if args.baselines else None
         plot_accuracy_vs_weight(run_dirs, args.C, args.k, series, args.weights,
-                                 baselines=baselines, out_path=args.out, title=args.title)
+                                 baselines=baselines, out_path=args.out, title=args.title,
+                                 zero_pad=not args.no_zero_pad, x_prefix=args.x_prefix, xlabel=args.xlabel)
     elif args.command == 'detail-plot':
         class_names = None
         if args.show_class_names:
