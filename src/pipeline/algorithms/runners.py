@@ -218,21 +218,22 @@ def run_cpe(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epoch
 
 
 def _run_proden_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
-                         device, tag, report_every, algorithm: str, init_mode: str, true_weight: float = None):
+                         device, tag, report_every, algorithm: str, init_mode: str, true_weight: float = None,
+                         wf: int = None):
     """Shared body for PRODEN and its confidence-init ablations
     (PRODEN-UniformInit, PRODEN-BiasedInit, and the parametrized
-    PRODEN-Biased{Cand,All}-W* sweep). PRODEN's own every-batch
-    renormalize-to-candidate-set update (ProdenLoss.forward) is completely
-    unchanged across all of them -- only the INITIAL confidence matrix
-    differs (init_mode, see src/pll_init.py), which is deliberate: PRODEN's
-    fast renormalization overwrites the initial distribution almost
-    immediately, unlike PiCO's slow EMA, so this variant set is meant to
-    demonstrate that contrast rather than hide it behind a slower update
-    rule."""
+    PRODEN-Biased{Cand,All}-W* / PRODEN-BiasedRand-W*-Wf* sweeps). PRODEN's
+    own every-batch renormalize-to-candidate-set update (ProdenLoss.forward)
+    is completely unchanged across all of them -- only the INITIAL
+    confidence matrix differs (init_mode, see src/pll_init.py), which is
+    deliberate: PRODEN's fast renormalization overwrites the initial
+    distribution almost immediately, unlike PiCO's slow EMA, so this
+    variant set is meant to demonstrate that contrast rather than hide it
+    behind a slower update rule."""
     spec = (raw_cfg or {}).get('_dataset_spec')
     model = create_model_for_spec(spec, C).to(device)
     loss_fn = ProdenLoss(pl_ds.targets, C, init_mode=init_mode, orig_targets=orig_targets,
-                          true_weight=true_weight).to(device)
+                          true_weight=true_weight, wf=wf).to(device)
     opt = make_optimizer(model, hparams)
 
     idx_ds = (_IndexedDataset(pl_ds.data, image_size=spec.image_size, mean=spec.mean, std=spec.std,
@@ -584,6 +585,53 @@ def _build_biased_sweep_runners() -> dict:
 
 
 BIASED_SWEEP_RUNNERS = _build_biased_sweep_runners()
+
+
+# ─── Parametrized biased-init sweep #2: true_weight x wf (how many other ──
+#     candidates the remainder is spread across, chosen at random)
+#
+# Interpolates between biased_oracle_init (wf=1) and biased_candidates_init
+# (wf = every other candidate) -- see biased_partial_random_init in
+# src/pll_init.py. Same factory pattern as BIASED_SWEEP_RUNNERS above.
+
+
+def _make_pico_fixed_biased_rand_runner(true_weight: float, wf: int):
+    from src.pll_init import biased_partial_random_init, biased_rand_variant_name
+    algorithm = biased_rand_variant_name('PiCO-Fixed', true_weight, wf)
+
+    def _runner(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
+        init_conf = biased_partial_random_init(pl_ds.targets, orig_targets, C, true_weight, wf).to(device)
+        return _run_pico_fixed_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                                        device, tag, report_every, algorithm, init_conf)
+
+    return algorithm, _runner
+
+
+def _make_proden_biased_rand_runner(true_weight: float, wf: int):
+    from src.pll_init import biased_rand_variant_name
+    algorithm = biased_rand_variant_name('PRODEN', true_weight, wf)
+
+    def _runner(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
+        return _run_proden_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                                    device, tag, report_every, algorithm, init_mode='biased_partial_random',
+                                    true_weight=true_weight, wf=wf)
+
+    return algorithm, _runner
+
+
+def _build_biased_rand_sweep_runners() -> dict:
+    from src.pll_init import BIAS_RAND_WEIGHTS, BIAS_RAND_WF_VALUES
+    runners = {}
+    for w in BIAS_RAND_WEIGHTS:
+        for wf in BIAS_RAND_WF_VALUES:
+            name, fn = _make_pico_fixed_biased_rand_runner(w, wf)
+            runners[name] = fn
+            name, fn = _make_proden_biased_rand_runner(w, wf)
+            runners[name] = fn
+    return runners
+
+
+BIASED_RAND_SWEEP_RUNNERS = _build_biased_rand_sweep_runners()
 
 
 def run_pico_mcl(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):

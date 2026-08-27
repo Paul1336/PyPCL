@@ -281,14 +281,22 @@ def main():
         run_dirs = [os.path.join('results', r) for r in args.runs]
         by_seed = results_mod.load_results_by_seed(run_dirs)
 
+        # Sort by k first, then by algorithm name (alphabetical) within each
+        # k -- for the parametrized biased-sweep naming convention
+        # (*-BiasedCand-W05/W06/W08/W10/W20, *-BiasedAll-W05/...), zero-padded
+        # weight suffixes mean alphabetical order already groups each family
+        # together in ascending true-class-weight order, so no separate
+        # "family" key is needed.
         rows = []
         for C in sorted(by_seed):
             if args.c_values and C not in args.c_values:
                 continue
-            for alg in sorted(by_seed[C]):
-                if args.algorithms and alg not in args.algorithms:
-                    continue
-                for k in sorted(by_seed[C][alg]):
+            algs = sorted(a for a in by_seed[C] if not args.algorithms or a in args.algorithms)
+            ks = sorted({k for alg in algs for k in by_seed[C][alg]})
+            for k in ks:
+                for alg in algs:
+                    if k not in by_seed[C][alg]:
+                        continue
                     accs = by_seed[C][alg][k]
                     mean = statistics.mean(accs)
                     std = statistics.stdev(accs) if len(accs) > 1 else 0.0

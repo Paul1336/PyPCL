@@ -22,10 +22,17 @@ IMAGE_ONLY_ALGORITHMS = {'PiCO', 'PiCO-Oracle', 'PiCO-MOCO', 'PiCO-Fixed',
                           'PiCO-Fixed-UniformInit', 'PiCO-Fixed-BiasedInit',
                           'PiCO-MCL', 'PiCO-SC', 'ComCo', 'ComCo-Fixed', 'SoLar'}
 
-# Parametrized biased-init sweep's PiCO-Fixed-family variants also use
-# loaders['pico'] -- see algorithms.runners.BIASED_SWEEP_RUNNERS.
-from src.pll_init import BIAS_WEIGHTS as _BIAS_WEIGHTS, biased_variant_name as _biased_variant_name  # noqa: E402
+# Parametrized biased-init sweeps' PiCO-Fixed-family variants also use
+# loaders['pico'] -- see algorithms.runners.BIASED_SWEEP_RUNNERS /
+# BIASED_RAND_SWEEP_RUNNERS.
+from src.pll_init import (BIAS_RAND_WEIGHTS as _BIAS_RAND_WEIGHTS,  # noqa: E402
+                           BIAS_RAND_WF_VALUES as _BIAS_RAND_WF_VALUES,
+                           BIAS_WEIGHTS as _BIAS_WEIGHTS,
+                           biased_rand_variant_name as _biased_rand_variant_name,
+                           biased_variant_name as _biased_variant_name)
 IMAGE_ONLY_ALGORITHMS |= {_biased_variant_name('PiCO-Fixed', s, w) for s in ('cand', 'all') for w in _BIAS_WEIGHTS}
+IMAGE_ONLY_ALGORITHMS |= {_biased_rand_variant_name('PiCO-Fixed', w, wf)
+                           for w in _BIAS_RAND_WEIGHTS for wf in _BIAS_RAND_WF_VALUES}
 
 
 def _dataset_spec(dataset_name: str):

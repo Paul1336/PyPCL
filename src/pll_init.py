@@ -99,6 +99,42 @@ def biased_all_init(partial_targets: list, orig_targets, num_classes: int,
     return conf
 
 
+def biased_partial_random_init(partial_targets: list, orig_targets, num_classes: int,
+                                true_weight: float, wf: int,
+                                seed: int = DEFAULT_BIASED_INIT_SEED) -> torch.Tensor:
+    """True class gets weight `true_weight`; the remaining (1 - true_weight)
+    is spread UNIFORMLY across `wf` OTHER candidates chosen uniformly at
+    random (fixed/reproducible seed, chosen once at construction time, never
+    resampled per epoch) from that sample's own partial-label set.
+
+    Interpolates between biased_oracle_init (wf=1, fixed true_weight=0.2) and
+    biased_candidates_init (wf = every other candidate) as a single
+    continuously-tunable parameter: wf controls how many wrong candidates
+    the "misplaced" confidence gets concentrated onto versus spread across.
+
+    If a sample's candidate set has fewer than `wf` OTHER candidates (e.g.
+    k <= wf), uses all of them instead -- same degenerate-case convention as
+    biased_oracle_init/biased_candidates_init (all mass on the true class if
+    there are no others at all)."""
+    N = len(partial_targets)
+    conf = torch.zeros(N, num_classes)
+    g = torch.Generator().manual_seed(seed)
+    for i, cands in enumerate(partial_targets):
+        true_c = int(orig_targets[i])
+        others = [int(c) for c in cands if int(c) != true_c]
+        if not others:
+            conf[i, true_c] = 1.0
+            continue
+        n_pick = min(wf, len(others))
+        perm = torch.randperm(len(others), generator=g)[:n_pick]
+        picks = [others[j] for j in perm.tolist()]
+        conf[i, true_c] = true_weight
+        share = (1.0 - true_weight) / n_pick
+        for c in picks:
+            conf[i, c] = share
+    return conf
+
+
 # The set of true-class weights swept by the biased_candidates_init /
 # biased_all_init experiment family, and the naming convention for the
 # resulting algorithm registry entries (see
@@ -116,3 +152,17 @@ def biased_variant_name(base: str, strategy: str, true_weight: float) -> str:
     | 'all' (biased_all_init)."""
     suffix = 'BiasedCand' if strategy == 'cand' else 'BiasedAll'
     return f'{base}-{suffix}-{weight_tag(true_weight)}'
+
+
+# The (true_weight, wf) grid swept by the biased_partial_random_init
+# experiment family -- see src/pipeline/algorithms/runners.py's
+# BIASED_RAND_SWEEP_RUNNERS and src/pipeline/algorithms/hparams.py. Distinct
+# from BIAS_WEIGHTS/biased_variant_name above (biased_candidates_init /
+# biased_all_init have no `wf` parameter).
+BIAS_RAND_WEIGHTS = [0.10, 0.08]
+BIAS_RAND_WF_VALUES = [5, 8, 10, 12, 15]
+
+
+def biased_rand_variant_name(base: str, true_weight: float, wf: int) -> str:
+    """base: 'PiCO-Fixed' | 'PRODEN'."""
+    return f'{base}-BiasedRand-{weight_tag(true_weight)}-Wf{wf}'
