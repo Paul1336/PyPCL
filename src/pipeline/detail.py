@@ -20,9 +20,13 @@
    fraction actually share a true label; of the pairs it treats as
    "different class" (negative), what fraction actually differ. Only
    measurable for the within-batch block of `mask` (the MoCo queue's
-   historical entries don't carry true labels). Rows are buffered and
-   written once per epoch (one row per batch) rather than once per batch, to
-   avoid a file-open per batch over a shared NFS results dir. Written to:
+   historical entries don't carry true labels). Also logs the raw pair
+   confusion-matrix counts (tp/fp/tn/fn) behind those two precision numbers,
+   so recall and other stats can be derived without re-deriving them from
+   precision alone -- see log_pico_selection_stats_batch's docstring for the
+   exact tp/fp/tn/fn definitions. Rows are buffered and written once per
+   epoch (one row per batch) rather than once per batch, to avoid a
+   file-open per batch over a shared NFS results dir. Written to:
        results/<run_name>/detail/<algorithm>/C{C}_k{k}/pico_selection_stats.csv
 
 3. t-SNE snapshots of the contrastive projection-head representation
@@ -363,13 +367,18 @@ def train_pico_epoch_with_selection_stats(pico_args, model, loader, loss_fn, los
             within_batch_mask = mask[:, :batch_size]
             m_pos = within_batch_mask * (1 - eye)          # selected-positive, excluding self-pairs
             m_neg = (1 - within_batch_mask) * (1 - eye)    # selected-negative, excluding self-pairs
+            tp = (m_pos * same_true).sum().item()
+            fp = (m_pos * (1 - same_true)).sum().item()
+            tn = (m_neg * (1 - same_true)).sum().item()
+            fn = (m_neg * same_true).sum().item()
             pos_total = m_pos.sum().item()
             neg_total = m_neg.sum().item()
-            pos_prec = (m_pos * same_true).sum().item() / pos_total if pos_total > 0 else float('nan')
-            neg_prec = (m_neg * (1 - same_true)).sum().item() / neg_total if neg_total > 0 else float('nan')
+            pos_prec = tp / pos_total if pos_total > 0 else float('nan')
+            neg_prec = tn / neg_total if neg_total > 0 else float('nan')
         else:
+            tp = fp = tn = fn = 0
             pos_prec = neg_prec = float('nan')
-        batch_rows.append((batch_idx, pos_prec, neg_prec))
+        batch_rows.append((batch_idx, pos_prec, neg_prec, tp, fp, tn, fn))
 
         loss_cls = loss_fn(cls_out, index)
         loss_cont = loss_cont_fn(features=features, mask=mask, batch_size=batch_size)
@@ -427,13 +436,18 @@ def train_pico_epoch_fixed_with_selection_stats(pico_args, model, loader, loss_f
             within_batch_mask = mask[:, :batch_size]
             m_pos = within_batch_mask * (1 - eye)
             m_neg = (1 - within_batch_mask) * (1 - eye)
+            tp = (m_pos * same_true).sum().item()
+            fp = (m_pos * (1 - same_true)).sum().item()
+            tn = (m_neg * (1 - same_true)).sum().item()
+            fn = (m_neg * same_true).sum().item()
             pos_total = m_pos.sum().item()
             neg_total = m_neg.sum().item()
-            pos_prec = (m_pos * same_true).sum().item() / pos_total if pos_total > 0 else float('nan')
-            neg_prec = (m_neg * (1 - same_true)).sum().item() / neg_total if neg_total > 0 else float('nan')
+            pos_prec = tp / pos_total if pos_total > 0 else float('nan')
+            neg_prec = tn / neg_total if neg_total > 0 else float('nan')
         else:
+            tp = fp = tn = fn = 0
             pos_prec = neg_prec = float('nan')
-        batch_rows.append((batch_idx, pos_prec, neg_prec))
+        batch_rows.append((batch_idx, pos_prec, neg_prec, tp, fp, tn, fn))
 
         loss_cls = loss_fn(cls_out, index)
         if start_upd_prot:
@@ -455,14 +469,25 @@ def train_pico_epoch_fixed_with_selection_stats(pico_args, model, loader, loss_f
 
 
 def log_pico_selection_stats_batch(raw_cfg, algorithm, C, epoch, batch_rows):
-    """batch_rows: list of (batch_idx, pos_precision, neg_precision) for
-    every batch in this epoch, written in one file open/append (see
-    train_pico_epoch_with_selection_stats's docstring for why)."""
+    """batch_rows: list of (batch_idx, pos_precision, neg_precision, tp, fp,
+    tn, fn) for every batch in this epoch, written in one file open/append
+    (see train_pico_epoch_with_selection_stats's docstring for why).
+
+    tp/fp/tn/fn are the raw contrastive within-batch pair confusion-matrix
+    counts (self-pairs excluded) behind pos_precision/neg_precision:
+    - tp: mask says same pseudo-class AND true labels actually match
+    - fp: mask says same pseudo-class BUT true labels differ
+    - tn: mask says different pseudo-class AND true labels actually differ
+    - fn: mask says different pseudo-class BUT true labels actually match
+    pos_precision = tp/(tp+fp), neg_precision = tn/(tn+fn); recall
+    (tp/(tp+fn)) and other confusion-matrix stats can be derived from the
+    raw counts. All four are 0 (not NaN) for batches before prot_start,
+    where mask is None and pos/neg_precision are NaN."""
     cfg = _detail_cfg(raw_cfg)
     if not cfg.get('enabled') or not batch_rows:
         return
     out_dir = cell_dir(raw_cfg, algorithm, C)
-    fields = ['epoch', 'batch', 'pos_precision', 'neg_precision']
+    fields = ['epoch', 'batch', 'pos_precision', 'neg_precision', 'tp', 'fp', 'tn', 'fn']
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, 'pico_selection_stats.csv')
     new_file = not os.path.isfile(path)
@@ -470,12 +495,13 @@ def log_pico_selection_stats_batch(raw_cfg, algorithm, C, epoch, batch_rows):
         w = csv.DictWriter(f, fieldnames=fields)
         if new_file:
             w.writeheader()
-        for batch_idx, pos_precision, neg_precision in batch_rows:
+        for batch_idx, pos_precision, neg_precision, tp, fp, tn, fn in batch_rows:
             w.writerow({
                 'epoch': epoch,
                 'batch': batch_idx,
                 'pos_precision': '' if pos_precision != pos_precision else round(pos_precision, 6),
                 'neg_precision': '' if neg_precision != neg_precision else round(neg_precision, 6),
+                'tp': int(tp), 'fp': int(fp), 'tn': int(tn), 'fn': int(fn),
             })
 
 

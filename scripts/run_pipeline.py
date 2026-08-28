@@ -91,7 +91,8 @@ def _add_run_parser(sub):
                          'eval every --detail_log_every epochs, written to '
                          'results/<run_name>/detail/<algorithm>/C{C}_k{k}/per_class_loss.csv. For '
                          'PiCO specifically, also logs per-batch contrastive positive/negative '
-                         'pair-selection precision against ground truth to pico_selection_stats.csv '
+                         'pair-selection precision (plus the raw tp/fp/tn/fn pair counts behind it) '
+                         'against ground truth to pico_selection_stats.csv '
                          '(every batch, not gated by --detail_log_every). '
                          'Adds real overhead; off by default.')
     p.add_argument('--detail_log_every', type=int, default=10,

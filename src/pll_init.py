@@ -139,12 +139,21 @@ def biased_partial_random_init(partial_targets: list, orig_targets, num_classes:
 # biased_all_init experiment family, and the naming convention for the
 # resulting algorithm registry entries (see
 # src/pipeline/algorithms/runners.py's BIASED_SWEEP_RUNNERS and
-# src/pipeline/algorithms/hparams.py).
-BIAS_WEIGHTS = [0.20, 0.10, 0.08, 0.06, 0.05]
+# src/pipeline/algorithms/hparams.py). 0.045/0.052/0.066/0.083 added
+# 2026-08-29 for a finer-grained PiCO-Fixed-BiasedCand sweep.
+BIAS_WEIGHTS = [0.20, 0.10, 0.08, 0.06, 0.05, 0.045, 0.052, 0.066, 0.083]
 
 
 def weight_tag(true_weight: float) -> str:
-    return f'W{round(true_weight * 100):02d}'
+    """Wxx for a whole-number percentage (unchanged from before, so existing
+    W20/W10/W08/W06/W05 algorithm names/results/output paths stay identical),
+    W<pct> with the minimal decimal representation otherwise (e.g. 0.045 ->
+    'W4.5') -- plain round-to-2-digits would collide (0.05 and 0.052 both
+    round to 'W05')."""
+    pct = round(true_weight * 100, 4)
+    if pct == int(pct):
+        return f'W{int(pct):02d}'
+    return f'W{f"{pct:.4f}".rstrip("0").rstrip(".")}'
 
 
 def biased_variant_name(base: str, strategy: str, true_weight: float) -> str:

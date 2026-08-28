@@ -4,8 +4,10 @@ results — this is the only module that orchestrates all of them."""
 
 import gc
 import os
+import random
 import time
 
+import numpy as np
 import torch
 
 from src.pipeline import data, results
@@ -33,6 +35,33 @@ from src.pll_init import (BIAS_RAND_WEIGHTS as _BIAS_RAND_WEIGHTS,  # noqa: E402
 IMAGE_ONLY_ALGORITHMS |= {_biased_variant_name('PiCO-Fixed', s, w) for s in ('cand', 'all') for w in _BIAS_WEIGHTS}
 IMAGE_ONLY_ALGORITHMS |= {_biased_rand_variant_name('PiCO-Fixed', w, wf)
                            for w in _BIAS_RAND_WEIGHTS for wf in _BIAS_RAND_WF_VALUES}
+
+
+def _set_seed(seed: int) -> None:
+    """Seeds the global Python/NumPy/PyTorch RNGs so everything downstream of
+    this call for the rest of this cell -- PL/CL candidate-label sampling
+    (ComparisonDataGenerator draws from the global np.random state), model
+    weight init, DataLoader shuffling, and data augmentation -- is
+    reproducible per --seeds value. Deliberately does NOT touch which C
+    classes get selected: select_cifar100_classes uses its own independent,
+    fixed-seed np.random.RandomState (see
+    src.cifar100_subset.CLASS_SELECTION_SEED), so it's unaffected by this.
+
+    Called twice per (C, k, algorithm, seed) cell below: once before data
+    generation, and again (same seed) right before each algorithm's own
+    runner call. The second call matters because loaders/pl_ds are shared
+    across every algorithm in `pending` for a given (C, k, seed) -- without
+    re-seeding per algorithm, an algorithm's model init would depend on how
+    much RNG state the *other* algorithms that happened to run before it (in
+    this worker process) had already consumed, making a single (C, k,
+    algorithm, seed) cell's result depend on unrelated scheduling details
+    (multi-GPU round-robin sharding, --algo pinning, resumed partial runs)
+    instead of being reproducible on its own."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def _dataset_spec(dataset_name: str):
@@ -157,6 +186,7 @@ def run(cfg: PipelineConfig):
                     continue
 
                 print(f'\n--- C={C}  k={k}  seed={seed}  pending: {pending} ---', flush=True)
+                _set_seed(seed)
                 loaders, pl_ds, orig_targets = data.load_experiment_data(
                     C, k, cfg.data_dir, seed, cfg.log_dir, cfg.batch_size, dataset=cfg.dataset,
                     q=cfg.only_q)
@@ -176,6 +206,7 @@ def run(cfg: PipelineConfig):
                     tag = f'GPU{cfg.gpu_id} {alg} C={C} k={k} seed={seed}'
                     print(f'\n  >> {alg}  C={C}  k={k}  seed={seed}', flush=True)
 
+                    _set_seed(seed)
                     t0 = time.perf_counter()
                     acc = algo_spec.runner(loaders, pl_ds, orig_targets, C, hparams, cfg.raw,
                                             cfg.batch_size, cfg.epochs, device, tag, cfg.report_every)

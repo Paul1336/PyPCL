@@ -23,6 +23,15 @@ from src.data_utils import ComparisonDataGenerator, WeaklySupervisedDataset
 _MEAN = [0.4914, 0.4822, 0.4465]
 _STD  = [0.247,  0.2435, 0.2616]
 
+# Which C classes get selected is deliberately independent of --seeds: a
+# seed sweep (run_pipeline.py's --seeds) is meant to vary training-side
+# randomness (model init, dataloader shuffling, augmentation, PL/CL
+# candidate-label sampling -- see runner.py's _set_seed), while every seed in
+# the sweep still trains/evaluates on the exact same C-class subset. Fixed at
+# the CLI's original default (42) rather than threaded through from the
+# caller's `seed` argument -- mirrors src/pll_init.py's DEFAULT_BIASED_INIT_SEED.
+CLASS_SELECTION_SEED = 42
+
 # CIFAR-100's fine-label (0-99) -> coarse-superclass (0-19) mapping, extracted
 # directly from the dataset's own pickled 'coarse_labels' field (see
 # docs/00_paper_alignment_guide.md's Phase 3 notes) -- not reconstructed from
@@ -143,7 +152,14 @@ def prepare_cifar100_subset(
                            Ignored when hierarchical_q or q is set (both are
                            probabilistic, with no fixed candidate-set size).
         data_dir:         Directory where CIFAR-100 is / will be downloaded.
-        seed:             RNG seed for class selection (fixed per total_classes).
+        seed:             Does NOT affect which classes get selected (see
+                           CLASS_SELECTION_SEED) -- caller (runner.py's
+                           _set_seed) is expected to have already seeded the
+                           global random/numpy/torch RNGs with this value
+                           before calling, so PL/CL candidate-label sampling
+                           (ComparisonDataGenerator, which draws from the
+                           global np.random state) varies with it. Still
+                           recorded in log_info for provenance.
         log_dir:          Directory for JSON selection logs.
         hierarchical:     If True, candidate labels are drawn preferentially from
                            the same CIFAR-100 coarse superclass as the true label,
@@ -180,8 +196,10 @@ def prepare_cifar100_subset(
     # --- Load CIFAR-100 (cached after first call) ---
     raw = _get_cifar100_raw(data_dir)
 
-    # --- Select classes (deterministic per total_classes + seed) ---
-    selected_indices = select_cifar100_classes(total_classes, seed=seed)
+    # --- Select classes (deterministic per total_classes; independent of
+    # `seed` -- see CLASS_SELECTION_SEED above. A --seeds sweep must keep
+    # training on the same C-class subset across every seed value.) ---
+    selected_indices = select_cifar100_classes(total_classes, seed=CLASS_SELECTION_SEED)
     selected_class_names = [raw['classes'][i] for i in selected_indices]
     label_remap = {orig: new for new, orig in enumerate(selected_indices)}
 
