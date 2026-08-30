@@ -234,6 +234,35 @@ def _add_detail_plot_pico_parser(sub):
     p.add_argument('--out', required=True)
 
 
+def _add_detail_plot_pico_confusion_parser(sub):
+    p = sub.add_parser('detail-plot-pico-confusion',
+                        help="PiCO's contrastive pair-selection confusion matrix (TP/TN/FP/FN, as a "
+                             "% of within-batch pairs, with raw counts annotated) vs. training step, "
+                             "for one (algorithm, C, k) (requires --detail)")
+    p.add_argument('--run', required=True, dest='run_name')
+    p.add_argument('--alg', default='PiCO-Fixed', help="Which PiCO-family algorithm's log to read "
+                                                         "(default: PiCO-Fixed)")
+    p.add_argument('--display_name', default=None, help="Override --alg's title text only")
+    p.add_argument('--C', type=int, required=True)
+    p.add_argument('--k', type=int, required=True)
+    p.add_argument('--out', required=True)
+
+
+def _add_detail_plot_pico_confusion_all_parser(sub):
+    p = sub.add_parser('detail-plot-pico-confusion-all',
+                        help='Batch version of detail-plot-pico-confusion: one PNG per (algorithm, C, k) '
+                             'combination found under results/<run>/detail/, all written into one folder '
+                             '(requires --detail)')
+    p.add_argument('--run', required=True, dest='run_name')
+    p.add_argument('--out_dir', required=True, help='Folder to write every PNG into (created if missing)')
+    p.add_argument('--algorithms', nargs='+', default=None,
+                    help='Restrict to these algorithms only (default: every algorithm found under detail/)')
+    p.add_argument('--c_values', nargs='+', type=int, default=None,
+                    help='Restrict to these C values only (default: every C found)')
+    p.add_argument('--k_values', nargs='+', type=int, default=None,
+                    help='Restrict to these k values only (default: every k found)')
+
+
 def _add_detail_plot_pico_multik_parser(sub):
     p = sub.add_parser('detail-plot-pico-multik',
                         help="Overlay one algorithm's positive-pair selection precision across several "
@@ -292,6 +321,8 @@ def main():
     _add_detail_plot_parser(sub)
     _add_detail_plot_multi_parser(sub)
     _add_detail_plot_pico_parser(sub)
+    _add_detail_plot_pico_confusion_parser(sub)
+    _add_detail_plot_pico_confusion_all_parser(sub)
     _add_detail_plot_pico_multik_parser(sub)
     _add_detail_plot_pico_oracle_parser(sub)
     _add_detail_plot_concentration_parser(sub)
@@ -409,6 +440,16 @@ def main():
         from src.pipeline.detail import plot_pico_selection_stats
         plot_pico_selection_stats(os.path.join('results', args.run_name), args.alg, args.C, args.k, args.out,
                                    display_name=args.display_name)
+    elif args.command == 'detail-plot-pico-confusion':
+        from src.pipeline.detail import plot_pico_confusion_stats
+        plot_pico_confusion_stats(os.path.join('results', args.run_name), args.alg, args.C, args.k, args.out,
+                                   display_name=args.display_name)
+    elif args.command == 'detail-plot-pico-confusion-all':
+        from src.pipeline.detail import plot_pico_confusion_stats_all
+        written = plot_pico_confusion_stats_all(
+            os.path.join('results', args.run_name), args.out_dir,
+            algorithms=args.algorithms, c_values=args.c_values, k_values=args.k_values)
+        print(f'\nWrote {len(written)} plot(s) -> {args.out_dir}')
     elif args.command == 'detail-plot-pico-multik':
         from src.pipeline.detail import plot_pico_selection_stats_multi_k
         run_dirs = {}

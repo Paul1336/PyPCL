@@ -1279,6 +1279,123 @@ def plot_pico_selection_stats(results_dir: str, algorithm: str, C: int, k: int, 
     return out_path
 
 
+def plot_pico_confusion_stats(results_dir: str, algorithm: str, C: int, k: int, out_path: str,
+                               display_name: str = None) -> str:
+    """Line chart of the contrastive pair-selection confusion-matrix counts
+    (tp/fp/tn/fn -- see log_pico_selection_stats_batch) as a PERCENTAGE of
+    that batch's total within-batch pairs, one point per BATCH in
+    chronological order -- same x-axis convention as
+    plot_pico_selection_stats. Four lines (TP/TN/FP/FN); raw per-batch values
+    plotted thin/faded, a rolling mean (window = one epoch's worth of
+    batches) overlaid bold, same smoothing convention as
+    plot_pico_selection_stats. Percentage alone doesn't say how many pairs
+    that is, so each line's raw count at the last batch with defined data is
+    annotated directly next to its endpoint.
+
+    Rows before prot_start (mask is None, tp=fp=tn=fn=0, so total=0) are
+    plotted as gaps (NaN), same convention as pos/neg_precision's NaN there."""
+    import numpy as np
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    display_name = display_name or algorithm
+    path = os.path.join(results_dir, 'detail', algorithm, f'C{C}_k{k}', 'pico_selection_stats.csv')
+    if not os.path.isfile(path):
+        raise ValueError(f'No selection-stats log found at {path} (did you run with --detail?)')
+    with open(path, newline='') as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        raise ValueError(f'{path} has no rows')
+
+    steps = list(range(len(rows)))   # chronological training step (rows are written in batch order)
+    raw = {label: np.array([float(r[label.lower()]) for r in rows]) for label in ('TP', 'TN', 'FP', 'FN')}
+    total = raw['TP'] + raw['TN'] + raw['FP'] + raw['FN']
+    with np.errstate(invalid='ignore', divide='ignore'):
+        pct = {label: np.where(total > 0, raw[label] / total * 100, np.nan) for label in raw}
+
+    # batches-per-epoch, for the rolling-mean window
+    epochs = [int(r['epoch']) for r in rows]
+    batches_per_epoch = sum(1 for e in epochs if e == epochs[0]) or 1
+
+    colors = {'TP': '#2ca02c', 'TN': '#1f77b4', 'FP': '#d62728', 'FN': '#ff7f0e'}
+    smooth = {label: _rolling_mean(pct[label], batches_per_epoch) for label in pct}
+
+    # Last batch with defined (non-NaN) data, for the endpoint raw-count
+    # annotations -- same for every line since prot_start gates all four
+    # together (mask is None -> all four are 0/0 before it).
+    valid_idx = [i for i in range(len(steps)) if not np.isnan(pct['TP'][i])]
+    last_valid = valid_idx[-1] if valid_idx else None
+
+    fig, ax = plt.subplots(figsize=(12, 5.5))
+    for label in ('TP', 'TN', 'FP', 'FN'):
+        ax.plot(steps, pct[label], color=colors[label], linewidth=0.5, alpha=0.3)
+        ax.plot(steps, smooth[label], color=colors[label], linewidth=2, label=label)
+        if last_valid is not None and not np.isnan(smooth[label][last_valid]):
+            ax.annotate(f'{label}: {smooth[label][last_valid]:.1f}%  (n={int(raw[label][last_valid]):,})',
+                        xy=(steps[last_valid], smooth[label][last_valid]), xytext=(8, 0),
+                        textcoords='offset points', color=colors[label], fontsize=8,
+                        va='center', fontweight='bold', annotation_clip=False)
+
+    ax.set_xlabel(f'Training step (batch, chronological — ~{batches_per_epoch} batches/epoch)')
+    ax.set_ylabel('% of within-batch pairs')
+    ax.set_ylim(0, 100)
+    if steps:
+        ax.set_xlim(steps[0], steps[-1] + max(1, int(len(steps) * 0.16)))  # room for endpoint labels
+    ax.set_title(f'{display_name} contrastive pair-selection confusion matrix  —  C={C}  k={k}\n'
+                 f'(faint = per-batch, bold = 1-epoch rolling mean; n = raw pair count at last logged batch)')
+    ax.legend(fontsize=9, loc='center left')
+    ax.grid(True, alpha=0.3)
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)) or '.', exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    return out_path
+
+
+def plot_pico_confusion_stats_all(results_dir: str, out_dir: str, algorithms: list = None,
+                                   c_values: list = None, k_values: list = None) -> list:
+    """Batch counterpart to plot_pico_confusion_stats: scans
+    results_dir/detail/*/C{C}_k{k}/pico_selection_stats.csv for every
+    (algorithm, C, k) combination that has one (optionally restricted to
+    `algorithms`/`c_values`/`k_values`), and writes one PNG per combination
+    into a single flat out_dir as '{algorithm}_C{C}_k{k}.png'. Returns the
+    list of paths actually written; combinations that error (e.g. an empty
+    log) are skipped with a printed warning rather than aborting the whole
+    batch."""
+    import glob as _glob
+    import re as _re
+
+    base = os.path.join(results_dir, 'detail')
+    pattern = os.path.join(base, '*', 'C*_k*', 'pico_selection_stats.csv')
+    written = []
+    for path in sorted(_glob.glob(pattern)):
+        rel = os.path.relpath(path, base)
+        parts = rel.split(os.sep)
+        if len(parts) != 3:
+            continue
+        alg_dir, ck_dir, _ = parts
+        m = _re.match(r'^C(\d+)_k(-?\d+)$', ck_dir)
+        if not m:
+            continue
+        C, k = int(m.group(1)), int(m.group(2))
+        if algorithms is not None and alg_dir not in algorithms:
+            continue
+        if c_values is not None and C not in c_values:
+            continue
+        if k_values is not None and k not in k_values:
+            continue
+
+        out_path = os.path.join(out_dir, f'{alg_dir}_C{C}_k{k}.png')
+        try:
+            plot_pico_confusion_stats(results_dir, alg_dir, C, k, out_path)
+            written.append(out_path)
+            print(f'  [plot_pico_confusion_stats_all] wrote {out_path}', flush=True)
+        except Exception as e:
+            print(f'  [plot_pico_confusion_stats_all] skip {alg_dir} C={C} k={k}: {e}', flush=True)
+    return written
+
+
 def plot_pico_selection_stats_multi_k(run_dirs: dict, algorithm: str, C: int, out_path: str,
                                        display_name: str = None) -> str:
     """Overlay positive-pair selection precision (rolling-mean only, no raw
