@@ -401,7 +401,7 @@ def main():
             name_w = max(len(r['algorithm']) for r in rows)
             header = f"{'C':>4}{'k':>5}  {'algorithm':<{name_w}}  {'mean±std':>14}  {'n':>3}"
             if confusion_fn is not None:
-                header += f"  {'TP':>8}{'FP':>8}{'TN':>8}{'FN':>8}  {'ep':>4}"
+                header += f"  {'TP':>14}{'FP':>14}{'TN':>14}{'FN':>14}  {'ep':>4}"
             header += '  per-seed'
             print(header)
             for r in rows:
@@ -411,16 +411,21 @@ def main():
                 if confusion_fn is not None:
                     c = r['confusion']
                     if c is None:
-                        line += f"  {'--':>8}{'--':>8}{'--':>8}{'--':>8}  {'--':>4}"
+                        line += f"  {'--':>14}{'--':>14}{'--':>14}{'--':>14}  {'--':>4}"
                     else:
-                        line += (f"  {c['tp']:>8}{c['fp']:>8}{c['tn']:>8}{c['fn']:>8}  {c['epoch']:>4}")
+                        def _cell(count, pct):
+                            return f"{count:>6} ({pct:4.1f}%)"
+                        line += (f"  {_cell(c['tp'], c['tp_pct']):>14}{_cell(c['fp'], c['fp_pct']):>14}"
+                                  f"{_cell(c['tn'], c['tn_pct']):>14}{_cell(c['fn'], c['fn_pct']):>14}"
+                                  f"  {c['epoch']:>4}")
                 line += f"  [{acc_str}]"
                 print(line)
 
         if args.out:
             fields = ['C', 'k', 'algorithm', 'n_seeds', 'mean', 'std', 'accs']
             if confusion_fn is not None:
-                fields += ['confusion_epoch', 'tp', 'fp', 'tn', 'fn']
+                fields += ['confusion_epoch', 'tp', 'tp_pct', 'fp', 'fp_pct',
+                           'tn', 'tn_pct', 'fn', 'fn_pct']
             os.makedirs(os.path.dirname(os.path.abspath(args.out)) or '.', exist_ok=True)
             with open(args.out, 'w', newline='') as f:
                 w = csv_mod.DictWriter(f, fieldnames=fields)
@@ -432,9 +437,13 @@ def main():
                                'accs': ';'.join(f'{a:.4f}' for a in r['accs'])}
                     if confusion_fn is not None:
                         c = r['confusion']
-                        out_row.update({'confusion_epoch': c['epoch'] if c else '',
-                                         'tp': c['tp'] if c else '', 'fp': c['fp'] if c else '',
-                                         'tn': c['tn'] if c else '', 'fn': c['fn'] if c else ''})
+                        out_row.update({
+                            'confusion_epoch': c['epoch'] if c else '',
+                            'tp': c['tp'] if c else '', 'tp_pct': round(c['tp_pct'], 2) if c else '',
+                            'fp': c['fp'] if c else '', 'fp_pct': round(c['fp_pct'], 2) if c else '',
+                            'tn': c['tn'] if c else '', 'tn_pct': round(c['tn_pct'], 2) if c else '',
+                            'fn': c['fn'] if c else '', 'fn_pct': round(c['fn_pct'], 2) if c else '',
+                        })
                     w.writerow(out_row)
             print(f'\nWrote -> {args.out}')
     elif args.command == 'plot':

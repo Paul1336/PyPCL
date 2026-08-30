@@ -519,7 +519,11 @@ def final_epoch_pico_confusion(results_dir: str, algorithm: str, C: int, k: int)
 
     Returns None if the log doesn't exist, is empty, or the last epoch's
     rows are all still pre-prot_start (mask was None, so tp=fp=tn=fn=0 for
-    every batch that epoch -- total=0, nothing meaningful to report)."""
+    every batch that epoch -- total=0, nothing meaningful to report).
+    Besides the raw tp/fp/tn/fn/total counts, also returns each count as a
+    percentage of `total` (tp_pct/fp_pct/tn_pct/fn_pct -- same 'what % of
+    all pairs' framing as plot_pico_confusion_stats' y-axis) alongside the
+    precision/recall-style ratios (pos_precision/neg_precision/recall)."""
     path = os.path.join(results_dir, 'detail', algorithm, f'C{C}_k{k}', 'pico_selection_stats.csv')
     if not os.path.isfile(path):
         return None
@@ -537,7 +541,9 @@ def final_epoch_pico_confusion(results_dir: str, algorithm: str, C: int, k: int)
     if total == 0:
         return None
     return {
-        'epoch': last_epoch, 'tp': tp, 'fp': fp, 'tn': tn, 'fn': fn,
+        'epoch': last_epoch, 'total': total, 'tp': tp, 'fp': fp, 'tn': tn, 'fn': fn,
+        'tp_pct': tp / total * 100, 'fp_pct': fp / total * 100,
+        'tn_pct': tn / total * 100, 'fn_pct': fn / total * 100,
         'pos_precision': tp / (tp + fp) if (tp + fp) else float('nan'),
         'neg_precision': tn / (tn + fn) if (tn + fn) else float('nan'),
         'recall': tp / (tp + fn) if (tp + fn) else float('nan'),
