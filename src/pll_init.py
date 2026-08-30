@@ -144,16 +144,31 @@ def biased_partial_random_init(partial_targets: list, orig_targets, num_classes:
 BIAS_WEIGHTS = [0.20, 0.10, 0.08, 0.06, 0.05, 0.045, 0.052, 0.066, 0.083]
 
 
-def weight_tag(true_weight: float) -> str:
-    """Wxx for a whole-number percentage (unchanged from before, so existing
-    W20/W10/W08/W06/W05 algorithm names/results/output paths stay identical),
-    W<pct> with the minimal decimal representation otherwise (e.g. 0.045 ->
-    'W4.5') -- plain round-to-2-digits would collide (0.05 and 0.052 both
-    round to 'W05')."""
+def weight_pct_str(true_weight: float) -> str:
+    """The numeric part of weight_tag, without the leading 'W' -- factored
+    out so callers that build their own 'W{tag}'-shaped template (e.g.
+    src/pipeline/plotting.py's plot_accuracy_vs_weight, which formats
+    'PiCO-Fixed-BiasedCand-W{w}'.format(w=...)) can reuse the EXACT same
+    percentage-string logic as weight_tag/biased_variant_name instead of
+    re-deriving their own zero-padding rule that can silently drift out of
+    sync with it (as happened before 2026-08-29: plot_accuracy_vs_weight's
+    own f'{w:02d}' couldn't represent the fractional weights added below).
+
+    '{:02d}' for a whole-number percentage (unchanged from before, so
+    existing W20/W10/W08/W06/W05 algorithm names/results/output paths stay
+    identical), the minimal decimal representation otherwise (e.g. 0.045 ->
+    '4.5') -- plain round-to-2-digits would collide (0.05 and 0.052 both
+    round to '05')."""
     pct = round(true_weight * 100, 4)
     if pct == int(pct):
-        return f'W{int(pct):02d}'
-    return f'W{f"{pct:.4f}".rstrip("0").rstrip(".")}'
+        return f'{int(pct):02d}'
+    return f'{pct:.4f}'.rstrip('0').rstrip('.')
+
+
+def weight_tag(true_weight: float) -> str:
+    """Wxx for a whole-number percentage, W<pct> with the minimal decimal
+    representation otherwise -- see weight_pct_str."""
+    return f'W{weight_pct_str(true_weight)}'
 
 
 def biased_variant_name(base: str, strategy: str, true_weight: float) -> str:

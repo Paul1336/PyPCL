@@ -139,16 +139,19 @@ def plot_accuracy_vs_weight(run_dirs: list, C: int, k: int, series: list, weight
 
     series: list of (name_template, label) pairs. name_template must contain
     '{w}', filled in with each value from `weights` formatted per `zero_pad`
-    (True: 2-digit zero-padded, matching biased_variant_name's 'W{:02d}'
-    convention, e.g. 'PiCO-Fixed-BiasedCand-W{w}' -> '...-W05' for w=5;
-    False: plain int, matching biased_rand_variant_name's 'Wf{wf}' convention
-    -- no padding -- e.g. 'PiCO-Fixed-BiasedRand-W10-Wf{w}' -> '...-Wf5' for
-    w=5) -- one line per entry, plotted across every value in `weights` in
-    order, with +-1 std error bars across seeds (see
+    (True: src.pll_init.weight_pct_str -- the exact same percentage-string
+    logic biased_variant_name uses to build the real algorithm names, e.g.
+    'PiCO-Fixed-BiasedCand-W{w}' -> '...-W05' for w=5, '...-W4.5' for
+    w=4.5; False: plain int, matching biased_rand_variant_name's 'Wf{wf}'
+    convention -- no padding -- e.g. 'PiCO-Fixed-BiasedRand-W10-Wf{w}' ->
+    '...-Wf5' for w=5) -- one line per entry, plotted across every value in
+    `weights` in order, with +-1 std error bars across seeds (see
     results.load_results_by_seed).
 
-    weights: list of ints (e.g. [5, 6, 8, 10] for W, or [5, 8, 10, 12, 15]
-    for Wf) -- x-axis category order; tick labels are '{x_prefix}{n}'.
+    weights: list of numbers (e.g. [5, 6, 8, 10] or [4.5, 5.2, 6.6, 8.3] for
+    W, or [5, 8, 10, 12, 15] for Wf) -- x-axis category order; tick labels
+    are '{x_prefix}{n}'. Fractional W values are only meaningful with
+    zero_pad=True (see below) -- Wf is always a plain integer count.
 
     baselines: optional list of (algorithm, label) pairs, each drawn as a
     horizontal dashed reference line spanning the whole plot -- for
@@ -160,9 +163,14 @@ def plot_accuracy_vs_weight(run_dirs: list, C: int, k: int, series: list, weight
     which sweep trained it, only on (C, k, algorithm, seed)."""
     import statistics
 
+    from src.pll_init import weight_pct_str
+
+    def _fmt_num(w):
+        return str(int(w)) if float(w).is_integer() else str(w)
+
     by_seed = load_results_by_seed(run_dirs)
     xs = list(range(len(weights)))
-    xticklabels = [f'{x_prefix}{w}' for w in weights]
+    xticklabels = [f'{x_prefix}{_fmt_num(w)}' for w in weights]
 
     fig, ax = plt.subplots(figsize=(8, 5.5))
     cmap = plt.get_cmap('tab10')
@@ -170,7 +178,7 @@ def plot_accuracy_vs_weight(run_dirs: list, C: int, k: int, series: list, weight
     for i, (name_template, label) in enumerate(series):
         means, stds = [], []
         for w in weights:
-            tag = f'{w:02d}' if zero_pad else str(w)
+            tag = weight_pct_str(w / 100) if zero_pad else _fmt_num(w)
             alg = name_template.format(w=tag)
             accs = by_seed.get(C, {}).get(alg, {}).get(k, [])
             if accs:

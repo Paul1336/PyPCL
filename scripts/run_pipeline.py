@@ -141,6 +141,13 @@ def _add_report_parser(sub):
     p.add_argument('--algorithms', nargs='+', default=None, choices=ALL_ALGORITHM_NAMES)
     p.add_argument('--c_values', nargs='+', type=int, default=None)
     p.add_argument('--out', default=None, help='Optional: also write the table as CSV to this path')
+    p.add_argument('--confusion', action='store_true',
+                    help="Also report each cell's FINAL-epoch PiCO contrastive pair-selection confusion "
+                         "matrix (tp/fp/tn/fn, summed over that epoch's batches -- requires `run --detail`). "
+                         "Unlike accuracy, this is NOT averaged across seeds: --detail only logs for one "
+                         "seed per cell (the diagnostics_seed), so these columns reflect that seed alone. "
+                         "Blank for any (C, k, algorithm) with no pico_selection_stats.csv (non-PiCO "
+                         "algorithms, or a log that never reached prot_start).")
 
 
 def _add_plot_parser(sub):
@@ -163,8 +170,9 @@ def _add_plot_weight_parser(sub):
     p.add_argument('--runs', nargs='+', required=True, help='run_name(s) to merge into one plot')
     p.add_argument('--C', type=int, required=True)
     p.add_argument('--k', type=int, required=True)
-    p.add_argument('--weights', nargs='+', type=int, required=True,
-                    help='True-class weight values, x-axis category order, e.g. --weights 5 6 8 10')
+    p.add_argument('--weights', nargs='+', type=float, required=True,
+                    help='True-class weight values (percentages), x-axis category order, e.g. '
+                         '--weights 5 6 8 10 20, or fractional --weights 4.5 5.2 6.6 8.3 10 20')
     p.add_argument('--series', nargs='+', required=True,
                     help="TEMPLATE:LABEL pairs, one line per entry, e.g. "
                          "--series 'PiCO-Fixed-BiasedCand-W{w}:PiCO-BiasedCand' "
@@ -346,6 +354,20 @@ def main():
         run_dirs = [os.path.join('results', r) for r in args.runs]
         by_seed = results_mod.load_results_by_seed(run_dirs)
 
+        confusion_fn = None
+        if args.confusion:
+            from src.pipeline.detail import final_epoch_pico_confusion
+
+            def confusion_fn(alg, C, k):
+                # First run_dir that actually has a log wins -- --detail
+                # output isn't seed-scoped, so at most one run_dir in a
+                # --runs sweep would ever have this cell's log anyway.
+                for rd in run_dirs:
+                    conf = final_epoch_pico_confusion(rd, alg, C, k)
+                    if conf is not None:
+                        return conf
+                return None
+
         # Sort by k first, then by algorithm name (alphabetical) within each
         # k -- for the parametrized biased-sweep naming convention
         # (*-BiasedCand-W05/W06/W08/W10/W20, *-BiasedAll-W05/...), zero-padded
@@ -365,8 +387,11 @@ def main():
                     accs = by_seed[C][alg][k]
                     mean = statistics.mean(accs)
                     std = statistics.stdev(accs) if len(accs) > 1 else 0.0
-                    rows.append({'C': C, 'k': k, 'algorithm': alg, 'n_seeds': len(accs),
-                                 'accs': accs, 'mean': mean, 'std': std})
+                    row = {'C': C, 'k': k, 'algorithm': alg, 'n_seeds': len(accs),
+                           'accs': accs, 'mean': mean, 'std': std}
+                    if confusion_fn is not None:
+                        row['confusion'] = confusion_fn(alg, C, k)
+                    rows.append(row)
 
         if not rows:
             print(f'No results found in {run_dirs}' +
@@ -374,22 +399,43 @@ def main():
                   (f' --c_values {args.c_values}' if args.c_values else ''))
         else:
             name_w = max(len(r['algorithm']) for r in rows)
-            print(f"{'C':>4}{'k':>5}  {'algorithm':<{name_w}}  {'mean±std':>14}  {'n':>3}  per-seed")
+            header = f"{'C':>4}{'k':>5}  {'algorithm':<{name_w}}  {'mean±std':>14}  {'n':>3}"
+            if confusion_fn is not None:
+                header += f"  {'TP':>8}{'FP':>8}{'TN':>8}{'FN':>8}  {'ep':>4}"
+            header += '  per-seed'
+            print(header)
             for r in rows:
                 acc_str = ', '.join(f'{a:.2f}' for a in r['accs'])
-                print(f"{r['C']:>4}{r['k']:>5}  {r['algorithm']:<{name_w}}  "
-                      f"{r['mean']:>7.2f}±{r['std']:<5.2f}  {r['n_seeds']:>3}  [{acc_str}]")
+                line = (f"{r['C']:>4}{r['k']:>5}  {r['algorithm']:<{name_w}}  "
+                        f"{r['mean']:>7.2f}±{r['std']:<5.2f}  {r['n_seeds']:>3}")
+                if confusion_fn is not None:
+                    c = r['confusion']
+                    if c is None:
+                        line += f"  {'--':>8}{'--':>8}{'--':>8}{'--':>8}  {'--':>4}"
+                    else:
+                        line += (f"  {c['tp']:>8}{c['fp']:>8}{c['tn']:>8}{c['fn']:>8}  {c['epoch']:>4}")
+                line += f"  [{acc_str}]"
+                print(line)
 
         if args.out:
+            fields = ['C', 'k', 'algorithm', 'n_seeds', 'mean', 'std', 'accs']
+            if confusion_fn is not None:
+                fields += ['confusion_epoch', 'tp', 'fp', 'tn', 'fn']
             os.makedirs(os.path.dirname(os.path.abspath(args.out)) or '.', exist_ok=True)
             with open(args.out, 'w', newline='') as f:
-                w = csv_mod.DictWriter(f, fieldnames=['C', 'k', 'algorithm', 'n_seeds', 'mean', 'std', 'accs'])
+                w = csv_mod.DictWriter(f, fieldnames=fields)
                 w.writeheader()
                 for r in rows:
-                    w.writerow({'C': r['C'], 'k': r['k'], 'algorithm': r['algorithm'],
-                                'n_seeds': r['n_seeds'], 'mean': round(r['mean'], 4),
-                                'std': round(r['std'], 4),
-                                'accs': ';'.join(f'{a:.4f}' for a in r['accs'])})
+                    out_row = {'C': r['C'], 'k': r['k'], 'algorithm': r['algorithm'],
+                               'n_seeds': r['n_seeds'], 'mean': round(r['mean'], 4),
+                               'std': round(r['std'], 4),
+                               'accs': ';'.join(f'{a:.4f}' for a in r['accs'])}
+                    if confusion_fn is not None:
+                        c = r['confusion']
+                        out_row.update({'confusion_epoch': c['epoch'] if c else '',
+                                         'tp': c['tp'] if c else '', 'fp': c['fp'] if c else '',
+                                         'tn': c['tn'] if c else '', 'fn': c['fn'] if c else ''})
+                    w.writerow(out_row)
             print(f'\nWrote -> {args.out}')
     elif args.command == 'plot':
         run_dirs = [os.path.join('results', r) for r in args.runs]

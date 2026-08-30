@@ -505,6 +505,45 @@ def log_pico_selection_stats_batch(raw_cfg, algorithm, C, epoch, batch_rows):
             })
 
 
+def final_epoch_pico_confusion(results_dir: str, algorithm: str, C: int, k: int) -> dict:
+    """Sums tp/fp/tn/fn (see log_pico_selection_stats_batch) over every batch
+    row in the LAST epoch present in pico_selection_stats.csv -- the 'final'
+    contrastive pair-selection confusion-matrix snapshot for one (algorithm,
+    C, k) cell, for scripts/run_pipeline.py's `report --confusion`.
+
+    This reflects whichever seed --detail was logging for (the
+    diagnostics_seed -- always the first value in --seeds, see
+    _seed_matches), NOT an average across every seed the way `report`'s
+    accuracy column is -- there's no cross-seed confusion-matrix log to
+    average over, since --detail only ever ran for one seed per cell.
+
+    Returns None if the log doesn't exist, is empty, or the last epoch's
+    rows are all still pre-prot_start (mask was None, so tp=fp=tn=fn=0 for
+    every batch that epoch -- total=0, nothing meaningful to report)."""
+    path = os.path.join(results_dir, 'detail', algorithm, f'C{C}_k{k}', 'pico_selection_stats.csv')
+    if not os.path.isfile(path):
+        return None
+    with open(path, newline='') as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        return None
+    last_epoch = max(int(r['epoch']) for r in rows)
+    tp = fp = tn = fn = 0
+    for r in rows:
+        if int(r['epoch']) != last_epoch:
+            continue
+        tp += int(r['tp']); fp += int(r['fp']); tn += int(r['tn']); fn += int(r['fn'])
+    total = tp + fp + tn + fn
+    if total == 0:
+        return None
+    return {
+        'epoch': last_epoch, 'tp': tp, 'fp': fp, 'tn': tn, 'fn': fn,
+        'pos_precision': tp / (tp + fp) if (tp + fp) else float('nan'),
+        'neg_precision': tn / (tn + fn) if (tn + fn) else float('nan'),
+        'recall': tp / (tp + fn) if (tp + fn) else float('nan'),
+    }
+
+
 def train_pico_oracle_graded_epoch_with_stats(pico_args, model, loader, loss_fn, loss_cont_fn,
                                                 optimizer, epoch, device, raw_cfg, algorithm, C,
                                                 precision_threshold):
