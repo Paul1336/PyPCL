@@ -143,11 +143,19 @@ def _add_report_parser(sub):
     p.add_argument('--out', default=None, help='Optional: also write the table as CSV to this path')
     p.add_argument('--confusion', action='store_true',
                     help="Also report each cell's FINAL-epoch PiCO contrastive pair-selection confusion "
-                         "matrix (tp/fp/tn/fn, summed over that epoch's batches -- requires `run --detail`). "
-                         "Unlike accuracy, this is NOT averaged across seeds: --detail only logs for one "
-                         "seed per cell (the diagnostics_seed), so these columns reflect that seed alone. "
-                         "Blank for any (C, k, algorithm) with no pico_selection_stats.csv (non-PiCO "
-                         "algorithms, or a log that never reached prot_start).")
+                         "matrix (tp/fp/tn/fn, summed over that epoch's batches, plus tp/(tp+fp) as "
+                         "'precision_pct' -- requires `run --detail`). Unlike accuracy, this is NOT "
+                         "averaged across seeds: --detail only logs for one seed per cell (the "
+                         "diagnostics_seed), so these columns reflect that seed alone. Blank for any "
+                         "(C, k, algorithm) with no pico_selection_stats.csv (non-PiCO algorithms, or a "
+                         "log that never reached prot_start).")
+    p.add_argument('--sort_by', default='default',
+                    choices=['default', 'tp', 'fp', 'tn', 'fn', 'accuracy', 'precision'],
+                    help="Row order. 'default': C, then k, then algorithm name (alphabetical) -- the "
+                         "original grouping. 'tp'/'fp'/'tn'/'fn': descending by that --confusion raw "
+                         "count (requires --confusion; rows with no confusion data sort last). "
+                         "'accuracy': descending by mean accuracy. 'precision': descending by "
+                         "tp/(tp+fp) (requires --confusion).")
 
 
 def _add_plot_parser(sub):
@@ -393,6 +401,20 @@ def main():
                         row['confusion'] = confusion_fn(alg, C, k)
                     rows.append(row)
 
+        if args.sort_by != 'default':
+            if args.sort_by in ('tp', 'fp', 'tn', 'fn', 'precision') and confusion_fn is None:
+                parser.error(f"--sort_by {args.sort_by} requires --confusion")
+
+            def _sort_key(r):
+                if args.sort_by == 'accuracy':
+                    return r['mean']
+                c = r.get('confusion')
+                field = 'pos_precision' if args.sort_by == 'precision' else args.sort_by
+                v = (c or {}).get(field, -1)
+                return -1 if v != v else v   # v != v catches NaN (e.g. tp+fp == 0)
+
+            rows.sort(key=_sort_key, reverse=True)
+
         if not rows:
             print(f'No results found in {run_dirs}' +
                   (f' matching --algorithms {args.algorithms}' if args.algorithms else '') +
@@ -401,7 +423,7 @@ def main():
             name_w = max(len(r['algorithm']) for r in rows)
             header = f"{'C':>4}{'k':>5}  {'algorithm':<{name_w}}  {'mean±std':>14}  {'n':>3}"
             if confusion_fn is not None:
-                header += f"  {'TP':>14}{'FP':>14}{'TN':>14}{'FN':>14}  {'ep':>4}"
+                header += f"  {'TP':>14}{'FP':>14}{'TN':>14}{'FN':>14}  {'TP/(TP+FP)':>10}  {'ep':>4}"
             header += '  per-seed'
             print(header)
             for r in rows:
@@ -411,13 +433,15 @@ def main():
                 if confusion_fn is not None:
                     c = r['confusion']
                     if c is None:
-                        line += f"  {'--':>14}{'--':>14}{'--':>14}{'--':>14}  {'--':>4}"
+                        line += f"  {'--':>14}{'--':>14}{'--':>14}{'--':>14}  {'--':>10}  {'--':>4}"
                     else:
                         def _cell(count, pct):
                             return f"{count:>6} ({pct:4.1f}%)"
+                        prec = c['pos_precision']
+                        prec_str = '--' if prec != prec else f"{prec * 100:.2f}%"
                         line += (f"  {_cell(c['tp'], c['tp_pct']):>14}{_cell(c['fp'], c['fp_pct']):>14}"
                                   f"{_cell(c['tn'], c['tn_pct']):>14}{_cell(c['fn'], c['fn_pct']):>14}"
-                                  f"  {c['epoch']:>4}")
+                                  f"  {prec_str:>10}  {c['epoch']:>4}")
                 line += f"  [{acc_str}]"
                 print(line)
 
@@ -425,7 +449,7 @@ def main():
             fields = ['C', 'k', 'algorithm', 'n_seeds', 'mean', 'std', 'accs']
             if confusion_fn is not None:
                 fields += ['confusion_epoch', 'tp', 'tp_pct', 'fp', 'fp_pct',
-                           'tn', 'tn_pct', 'fn', 'fn_pct']
+                           'tn', 'tn_pct', 'fn', 'fn_pct', 'precision_pct']
             os.makedirs(os.path.dirname(os.path.abspath(args.out)) or '.', exist_ok=True)
             with open(args.out, 'w', newline='') as f:
                 w = csv_mod.DictWriter(f, fieldnames=fields)
@@ -437,12 +461,14 @@ def main():
                                'accs': ';'.join(f'{a:.4f}' for a in r['accs'])}
                     if confusion_fn is not None:
                         c = r['confusion']
+                        prec = c['pos_precision'] if c else float('nan')
                         out_row.update({
                             'confusion_epoch': c['epoch'] if c else '',
                             'tp': c['tp'] if c else '', 'tp_pct': round(c['tp_pct'], 2) if c else '',
                             'fp': c['fp'] if c else '', 'fp_pct': round(c['fp_pct'], 2) if c else '',
                             'tn': c['tn'] if c else '', 'tn_pct': round(c['tn_pct'], 2) if c else '',
                             'fn': c['fn'] if c else '', 'fn_pct': round(c['fn_pct'], 2) if c else '',
+                            'precision_pct': '' if prec != prec else round(prec * 100, 2),
                         })
                     w.writerow(out_row)
             print(f'\nWrote -> {args.out}')
