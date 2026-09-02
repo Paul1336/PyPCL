@@ -691,6 +691,41 @@ def _build_biased_rand_sweep_runners() -> dict:
 BIASED_RAND_SWEEP_RUNNERS = _build_biased_rand_sweep_runners()
 
 
+# ─── Parametrized biased-init sweep #3: true_weight x n, random pool drawn ─
+#     from ALL other classes (not just the sample's own candidate set)
+#
+# PRODEN-only (unlike the two families above): requested specifically for a
+# PRODEN true_weight=20% sweep over n=4/9/14/19 at C=20 k=5, where k-1=4
+# other candidates was too small a pool for n>4 -- see
+# src/pll_init.py.biased_random_all_init / BIAS_RAND_ALL_WEIGHTS /
+# BIAS_RAND_ALL_N_VALUES. Same factory pattern as BIASED_RAND_SWEEP_RUNNERS.
+
+
+def _make_proden_biased_rand_all_runner(true_weight: float, n: int):
+    from src.pll_init import biased_rand_all_variant_name
+    algorithm = biased_rand_all_variant_name('PRODEN', true_weight, n)
+
+    def _runner(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
+        return _run_proden_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                                    device, tag, report_every, algorithm, init_mode='biased_random_all',
+                                    true_weight=true_weight, wf=n)
+
+    return algorithm, _runner
+
+
+def _build_biased_rand_all_sweep_runners() -> dict:
+    from src.pll_init import BIAS_RAND_ALL_N_VALUES, BIAS_RAND_ALL_WEIGHTS
+    runners = {}
+    for w in BIAS_RAND_ALL_WEIGHTS:
+        for n in BIAS_RAND_ALL_N_VALUES:
+            name, fn = _make_proden_biased_rand_all_runner(w, n)
+            runners[name] = fn
+    return runners
+
+
+BIASED_RAND_ALL_SWEEP_RUNNERS = _build_biased_rand_all_sweep_runners()
+
+
 def run_pico_mcl(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
     pico_cfg = raw_cfg['pico']
     pico_args = _pico_args(C, epochs, pico_cfg)

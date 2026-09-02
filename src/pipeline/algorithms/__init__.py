@@ -62,6 +62,12 @@ def _build_registry() -> dict:
     for name, fn in r.BIASED_RAND_SWEEP_RUNNERS.items():
         registry[name] = AlgorithmSpec(name, 'PLL', fn)
 
+    # Parametrized biased-init sweep #3 (PRODEN-BiasedRandAll-W*-N*, random
+    # pool drawn from ALL classes rather than just the candidate set, PRODEN
+    # only, PLL) -- see runners.BIASED_RAND_ALL_SWEEP_RUNNERS.
+    for name, fn in r.BIASED_RAND_ALL_SWEEP_RUNNERS.items():
+        registry[name] = AlgorithmSpec(name, 'PLL', fn)
+
     return registry
 
 

@@ -135,6 +135,44 @@ def biased_partial_random_init(partial_targets: list, orig_targets, num_classes:
     return conf
 
 
+def biased_random_all_init(orig_targets, num_classes: int, true_weight: float, n: int,
+                            seed: int = DEFAULT_BIASED_INIT_SEED) -> torch.Tensor:
+    """True class gets weight `true_weight`; the remaining (1 - true_weight)
+    is spread UNIFORMLY across `n` OTHER classes chosen uniformly at random
+    from ALL (num_classes - 1) other classes -- fixed/reproducible seed,
+    chosen once at construction time, never resampled per epoch.
+
+    Unlike biased_partial_random_init, the random pool here is every class
+    in [0, num_classes) except the true one, NOT restricted to the sample's
+    own partial-label candidate set -- so picks can land outside the
+    candidate set entirely. Needs no `partial_targets` for that reason (the
+    pool doesn't depend on each sample's own candidate set). At n =
+    num_classes - 1 this is equivalent to biased_all_init (every other class
+    gets an equal share); smaller n interpolates toward concentrating the
+    misplaced weight onto fewer, still-random classes.
+
+    Degenerate case (num_classes == 1, no other classes to pick from): all
+    mass on the true class, same convention as the other biased_*_init
+    functions."""
+    N = len(orig_targets)
+    conf = torch.zeros(N, num_classes)
+    g = torch.Generator().manual_seed(seed)
+    for i in range(N):
+        true_c = int(orig_targets[i])
+        others = [c for c in range(num_classes) if c != true_c]
+        if not others:
+            conf[i, true_c] = 1.0
+            continue
+        n_pick = min(n, len(others))
+        perm = torch.randperm(len(others), generator=g)[:n_pick]
+        picks = [others[j] for j in perm.tolist()]
+        conf[i, true_c] = true_weight
+        share = (1.0 - true_weight) / n_pick
+        for c in picks:
+            conf[i, c] = share
+    return conf
+
+
 # The set of true-class weights swept by the biased_candidates_init /
 # biased_all_init experiment family, and the naming convention for the
 # resulting algorithm registry entries (see
@@ -190,3 +228,21 @@ BIAS_RAND_WF_VALUES = [5, 8, 10, 12, 15]
 def biased_rand_variant_name(base: str, true_weight: float, wf: int) -> str:
     """base: 'PiCO-Fixed' | 'PRODEN'."""
     return f'{base}-BiasedRand-{weight_tag(true_weight)}-Wf{wf}'
+
+
+# The (true_weight, n) grid swept by the biased_random_all_init experiment
+# family -- see src/pipeline/algorithms/runners.py's
+# BIASED_RAND_ALL_SWEEP_RUNNERS and src/pipeline/algorithms/hparams.py.
+# Distinct from BIAS_RAND_WEIGHTS/BIAS_RAND_WF_VALUES above: that family
+# picks its `wf` random others from each sample's own candidate set (capped
+# at k-1); this one picks its `n` random others from ALL num_classes-1 other
+# classes, so n can exceed k-1 (added 2026-09-03 for a PRODEN true_weight=20%
+# sweep over n=4/9/14/19 at C=20 k=5, where k-1=4 was too small a candidate
+# pool for n>4).
+BIAS_RAND_ALL_WEIGHTS = [0.20]
+BIAS_RAND_ALL_N_VALUES = [4, 9, 14, 19]
+
+
+def biased_rand_all_variant_name(base: str, true_weight: float, n: int) -> str:
+    """base: 'PiCO-Fixed' | 'PRODEN'."""
+    return f'{base}-BiasedRandAll-{weight_tag(true_weight)}-N{n}'

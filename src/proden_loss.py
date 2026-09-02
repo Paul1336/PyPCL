@@ -3,7 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from src.pll_init import (biased_all_init, biased_candidates_init, biased_oracle_init,
-                           biased_partial_random_init, candidate_masked_init, uniform_all_init)
+                           biased_partial_random_init, biased_random_all_init,
+                           candidate_masked_init, uniform_all_init)
 
 
 class ProdenLoss(nn.Module):
@@ -33,15 +34,21 @@ class ProdenLoss(nn.Module):
         num_classes:     total number of classes C.
         init_mode:       'candidate_masked' (default, existing behavior) | 'uniform_all'
                           | 'biased_oracle' | 'biased_candidates' | 'biased_all'
-                          | 'biased_partial_random' -- see src/pll_init.py.
+                          | 'biased_partial_random' | 'biased_random_all' -- see src/pll_init.py.
         orig_targets:    true labels, required for init_mode in
-                          {'biased_oracle', 'biased_candidates', 'biased_all', 'biased_partial_random'}.
+                          {'biased_oracle', 'biased_candidates', 'biased_all', 'biased_partial_random',
+                          'biased_random_all'}.
         true_weight:     weight given to the true class; required for init_mode in
-                          {'biased_candidates', 'biased_all', 'biased_partial_random'} (parametrized
-                          sweep, see src/pll_init.py.BIAS_WEIGHTS / BIAS_RAND_WEIGHTS).
-        wf:              number of other candidates the remaining weight is spread across;
-                          required for init_mode='biased_partial_random' (see
-                          src/pll_init.py.BIAS_RAND_WF_VALUES).
+                          {'biased_candidates', 'biased_all', 'biased_partial_random',
+                          'biased_random_all'} (parametrized sweep, see src/pll_init.py.BIAS_WEIGHTS /
+                          BIAS_RAND_WEIGHTS / BIAS_RAND_ALL_WEIGHTS).
+        wf:              number of other classes the remaining weight is spread across; required for
+                          init_mode in {'biased_partial_random', 'biased_random_all'}. For
+                          'biased_partial_random' these are drawn from the sample's own candidate set
+                          (see src/pll_init.py.BIAS_RAND_WF_VALUES); for 'biased_random_all' they're
+                          drawn from ALL other classes instead (see BIAS_RAND_ALL_N_VALUES) -- same
+                          parameter slot, reused rather than adding a separate `n` kwarg since both
+                          modes just need "how many others" as a single int.
     """
 
     def __init__(self, partial_targets: list, num_classes: int,
@@ -68,6 +75,10 @@ class ProdenLoss(nn.Module):
             if orig_targets is None or true_weight is None or wf is None:
                 raise ValueError("init_mode='biased_partial_random' requires orig_targets, true_weight, and wf")
             conf = biased_partial_random_init(partial_targets, orig_targets, num_classes, true_weight, wf)
+        elif init_mode == 'biased_random_all':
+            if orig_targets is None or true_weight is None or wf is None:
+                raise ValueError("init_mode='biased_random_all' requires orig_targets, true_weight, and wf")
+            conf = biased_random_all_init(orig_targets, num_classes, true_weight, wf)
         else:
             raise ValueError(f'Unknown init_mode {init_mode!r}')
         self.register_buffer('conf', conf)   # [N, C], lives on same device as model
