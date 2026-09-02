@@ -31,6 +31,7 @@ def _build_registry() -> dict:
         'PRODEN':   AlgorithmSpec('PRODEN',   'PLL', r.run_proden),
         'PRODEN-UniformInit': AlgorithmSpec('PRODEN-UniformInit', 'PLL', r.run_proden_uniform_init),
         'PRODEN-BiasedInit':  AlgorithmSpec('PRODEN-BiasedInit',  'PLL', r.run_proden_biased_init),
+        'PRODEN-RandomCandInit': AlgorithmSpec('PRODEN-RandomCandInit', 'PLL', r.run_proden_random_cand_init),
         'PiCO':     AlgorithmSpec('PiCO',     'PLL', r.run_pico),
         'PiCO-Oracle': AlgorithmSpec('PiCO-Oracle', 'PLL', r.run_pico_oracle),
         'PiCO-Oracle-Add': AlgorithmSpec('PiCO-Oracle-Add', 'PLL', r.run_pico_oracle_add),

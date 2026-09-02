@@ -283,6 +283,20 @@ def run_proden_biased_init(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, ba
                                 device, tag, report_every, 'PRODEN-BiasedInit', init_mode='biased_oracle')
 
 
+def run_proden_random_cand_init(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
+    """Ablation: initial confidence puts ~100% on ONE candidate chosen
+    uniformly at random from each sample's own partial-label set -- NOT
+    necessarily the true class -- with a tiny epsilon floor on the rest of
+    the candidate set so PRODEN's candidate_mask still covers all of it from
+    the start (see src/pll_init.py.random_candidate_init's docstring for why
+    an exact one-hot init would permanently lock the mask to a single,
+    often-wrong class). Tests PRODEN's fast-renormalization recovery under
+    the most extreme initial concentration on a single (usually wrong)
+    class."""
+    return _run_proden_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                                device, tag, report_every, 'PRODEN-RandomCandInit', init_mode='random_candidate')
+
+
 # ─── PiCO family: dual-encoder + MoCo queue + prototypes ──────────────────
 
 

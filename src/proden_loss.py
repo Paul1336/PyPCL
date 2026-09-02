@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from src.pll_init import (biased_all_init, biased_candidates_init, biased_oracle_init,
                            biased_partial_random_init, biased_random_all_init,
-                           candidate_masked_init, uniform_all_init)
+                           candidate_masked_init, random_candidate_init, uniform_all_init)
 
 
 class ProdenLoss(nn.Module):
@@ -34,7 +34,8 @@ class ProdenLoss(nn.Module):
         num_classes:     total number of classes C.
         init_mode:       'candidate_masked' (default, existing behavior) | 'uniform_all'
                           | 'biased_oracle' | 'biased_candidates' | 'biased_all'
-                          | 'biased_partial_random' | 'biased_random_all' -- see src/pll_init.py.
+                          | 'biased_partial_random' | 'biased_random_all' | 'random_candidate'
+                          -- see src/pll_init.py.
         orig_targets:    true labels, required for init_mode in
                           {'biased_oracle', 'biased_candidates', 'biased_all', 'biased_partial_random',
                           'biased_random_all'}.
@@ -79,6 +80,8 @@ class ProdenLoss(nn.Module):
             if orig_targets is None or true_weight is None or wf is None:
                 raise ValueError("init_mode='biased_random_all' requires orig_targets, true_weight, and wf")
             conf = biased_random_all_init(orig_targets, num_classes, true_weight, wf)
+        elif init_mode == 'random_candidate':
+            conf = random_candidate_init(partial_targets, num_classes)
         else:
             raise ValueError(f'Unknown init_mode {init_mode!r}')
         self.register_buffer('conf', conf)   # [N, C], lives on same device as model

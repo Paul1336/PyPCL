@@ -57,6 +57,47 @@ def biased_oracle_init(partial_targets: list, orig_targets, num_classes: int,
     return conf
 
 
+def random_candidate_init(partial_targets: list, num_classes: int, epsilon: float = 1e-3,
+                           seed: int = DEFAULT_BIASED_INIT_SEED) -> torch.Tensor:
+    """Picks ONE candidate uniformly at random from each sample's own
+    partial-label candidate set (fixed/reproducible seed, chosen once at
+    construction time, never resampled per epoch) -- NOT necessarily the
+    true class, picked independent of any ground truth -- and assigns it
+    weight (1 - epsilon); the remaining candidates in that same set share
+    epsilon uniformly.
+
+    epsilon keeps every OTHER candidate's confidence entry nonzero (instead
+    of exactly 0) specifically so PRODEN's mask = (conf > 0) still covers
+    the FULL candidate set from the very first batch onward. An exactly
+    one-hot init (epsilon=0) would make that mask permanently collapse to
+    just the single random candidate forever: ProdenLoss.forward's update
+    renormalizes candidate_mask * softmax(outputs), and a single-nonzero-
+    entry mask always renormalizes back to that same single index (1.0
+    there, 0 elsewhere) no matter what the model predicts -- the support can
+    never grow again once it's down to one class. That degenerates PRODEN
+    into plain supervised learning on a fixed, often-wrong label instead of
+    a partial-label method that can still recover via its own predictions.
+
+    Degenerate k=1 case (candidate set == {true_label}, so 'random pick' has
+    only one option): all mass on that one class -- also correct with
+    epsilon, since there's no OTHER candidate left for it to go to."""
+    N = len(partial_targets)
+    conf = torch.zeros(N, num_classes)
+    g = torch.Generator().manual_seed(seed)
+    for i, cands in enumerate(partial_targets):
+        cand_list = [int(c) for c in cands]
+        if len(cand_list) == 1:
+            conf[i, cand_list[0]] = 1.0
+            continue
+        pick = cand_list[torch.randint(len(cand_list), (1,), generator=g).item()]
+        others = [c for c in cand_list if c != pick]
+        conf[i, pick] = 1.0 - epsilon
+        share = epsilon / len(others)
+        for c in others:
+            conf[i, c] = share
+    return conf
+
+
 def biased_candidates_init(partial_targets: list, orig_targets, num_classes: int,
                             true_weight: float) -> torch.Tensor:
     """True class gets weight `true_weight`; the remaining (1 - true_weight)

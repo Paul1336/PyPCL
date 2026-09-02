@@ -15,6 +15,7 @@ ALGO_HPARAMS = {
     'PRODEN':   _SGD,
     'PRODEN-UniformInit': _SGD,
     'PRODEN-BiasedInit':  _SGD,
+    'PRODEN-RandomCandInit': _SGD,
     'MCL-LOG':  _ADAM,
     'MCL-LOG-Fixed': _ADAM,
     'SCL-NL':   _ADAM,
