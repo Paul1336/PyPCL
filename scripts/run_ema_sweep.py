@@ -7,8 +7,10 @@ PiCO-Fixed and PRODEN, under five confidence-update EMA momentum levels
 src/pll_init.py CONF_EMA_SCALES; scale 1 == original PiCO, scale 0 == hard
 overwrite every update == original PRODEN):
 
-  exp 'w' (slide 63, TC-PLS W sweep):   C=20, k in {5,10,12,15,19},
-        init in {unbiased baseline, TC-PLS W in {4.5,5.2,6.6,8.3,10,20}%}
+  exp 'w' (slide 63, TC-PLS W sweep):   C=20, k in {10,15,19},
+        init in {unbiased baseline (drop with --no_baseline), TC-PLS W in {5.2,10,20}%}
+        (trimmed 2026-09-15 from k in {5,10,12,15,19} x W in {4.5,5.2,6.6,8.3,10,20}
+        to keep the 5-EMA-level x 2-algorithm x 3-seed sweep tractable)
   exp 'n' (slide 64, TC-n-PLS n sweep): C=20, k=5, W=20%,
         n in {4,9,14,19} wrong classes drawn from ALL other classes
 
@@ -56,8 +58,8 @@ from src.pll_init import (BIAS_RAND_ALL_N_VALUES, CONF_EMA_SCALES, CONF_EMA_SWEE
 
 DATASET = 'cifar100-subset'
 C = 20
-EXP_W_K_VALUES = [5, 10, 12, 15, 19]
-EXP_W_WEIGHTS = [0.045, 0.052, 0.066, 0.083, 0.10, 0.20]   # slide 63's TC-PLS sweep
+EXP_W_K_VALUES = [10, 15, 19]
+EXP_W_WEIGHTS = [0.052, 0.10, 0.20]   # trimmed subset of slide 63's TC-PLS sweep (see docstring)
 EXP_N_K_VALUES = [5]
 EXP_N_WEIGHT = 0.20
 EXP_N_VALUES = list(BIAS_RAND_ALL_N_VALUES)                # [4, 9, 14, 19], slide 64
@@ -70,15 +72,18 @@ REPORT_FILE = 'ema_sweep_report.csv'
 # ─── cell enumeration ──────────────────────────────────────────────────────
 
 
-def build_cells(seeds, experiments=EXPERIMENTS, bases=CONF_EMA_SWEEP_BASES, scales=CONF_EMA_SCALES):
+def build_cells(seeds, experiments=EXPERIMENTS, bases=CONF_EMA_SWEEP_BASES, scales=CONF_EMA_SCALES,
+                include_baseline=True):
     """Seed-major list of cells; within a seed, PiCO-Fixed (heavy) before
-    PRODEN (light) so the longest jobs start first."""
+    PRODEN (light) so the longest jobs start first. include_baseline adds the
+    unbiased (candidate-masked) init to exp 'w' -- the dashed reference lines
+    on slide 63."""
     cells = []
     for seed in seeds:
         for base in bases:
             if 'w' in experiments:
                 for k in EXP_W_K_VALUES:
-                    for w in [None] + EXP_W_WEIGHTS:
+                    for w in ([None] if include_baseline else []) + EXP_W_WEIGHTS:
                         base_name = base if w is None else biased_variant_name(base, 'cand', w)
                         init = 'baseline' if w is None else f'W{weight_pct_str(w)}'
                         for scale in scales:
@@ -162,17 +167,18 @@ def cmd_run(args):
     os.makedirs(results_dir, exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
 
-    cells = build_cells(args.seeds, args.experiments, args.bases)
+    cells = build_cells(args.seeds, args.experiments, args.bases, include_baseline=not args.no_baseline)
     done = load_done(results_dir)
     pending = deque(c for c in cells if c['key'] not in done)
+    n_done, n_pending_total = len(cells) - len(pending), len(pending)
     if args.limit is not None:
         pending = deque(list(pending)[:args.limit])
 
     n_slots = len(args.gpus) * args.slots_per_gpu
-    print(f'run_name={run_name}  cells={len(cells)}  already done={len(cells) - len(pending)}  '
-          f'pending={len(pending)}  gpus={args.gpus} x{args.slots_per_gpu} slot(s)  '
-          f'seeds={args.seeds}  epochs={args.epochs}  detail={"first seed only" if args.detail else "off"}',
-          flush=True)
+    print(f'run_name={run_name}  cells={len(cells)}  already done={n_done}  pending={n_pending_total}'
+          + (f'  (launching only the first {len(pending)}: --limit)' if args.limit is not None else '')
+          + f'\ngpus={args.gpus} x{args.slots_per_gpu} slot(s)  seeds={args.seeds}  epochs={args.epochs}  '
+          f'detail={"first seed only" if args.detail else "off"}', flush=True)
     _print_breakdown(cells, done)
 
     if args.dry_run:
@@ -241,7 +247,13 @@ def cmd_run(args):
         if not same:
             same = [r['training_time_s'] + 45 for key, r in shard_rows.items()
                     if key[3].startswith(cell['base']) and r['training_time_s'] > 0]
-        return statistics.mean(same) if same else (900.0 if cell['base'] == 'PiCO-Fixed' else 180.0)
+        if same:
+            return statistics.mean(same)
+        # No history yet: a rough per-200-epoch guess (PiCO ~15 min, PRODEN
+        # ~3 min on one GPU) scaled to --epochs, plus ~45 s of data loading
+        # and CUDA start-up per cell. Replaced by real timings as cells finish.
+        per_200 = 900.0 if cell['base'] == 'PiCO-Fixed' else 180.0
+        return per_200 * args.epochs / 200.0 + 45.0
 
     def write_progress():
         shard_rows = read_rows(results_dir)
@@ -316,7 +328,7 @@ def cmd_run(args):
 def _finish_up(results_dir, args):
     out = results_mod.merge_shards(results_dir)
     print(f'Merged -> {out}')
-    _report(args.run_name, args.seeds, args.experiments, args.bases, out_path=None)
+    _report(args.run_name, args.seeds, args.experiments, args.bases, not args.no_baseline, out_path=None)
 
 
 def _print_breakdown(cells, done):
@@ -338,7 +350,7 @@ def _print_breakdown(cells, done):
 
 def cmd_status(args):
     results_dir = results_dir_of(args.run_name)
-    cells = build_cells(args.seeds, args.experiments, args.bases)
+    cells = build_cells(args.seeds, args.experiments, args.bases, include_baseline=not args.no_baseline)
     done = load_done(results_dir)
     print(f"run_name={args.run_name}  done {sum(c['key'] in done for c in cells)}/{len(cells)}")
     _print_breakdown(cells, done)
@@ -363,10 +375,10 @@ def cmd_status(args):
 # ─── report ────────────────────────────────────────────────────────────────
 
 
-def _report(run_name, seeds, experiments, bases, out_path):
+def _report(run_name, seeds, experiments, bases, include_baseline, out_path):
     results_dir = results_dir_of(run_name)
     rows = read_rows(results_dir)
-    cells = build_cells(seeds, experiments, bases)
+    cells = build_cells(seeds, experiments, bases, include_baseline=include_baseline)
 
     # (exp, k, base, init, ema) -> list of accuracies over seeds
     accs = {}
@@ -418,7 +430,7 @@ def _init_sort_key(init):
 
 
 def cmd_report(args):
-    _report(args.run_name, args.seeds, args.experiments, args.bases, args.out)
+    _report(args.run_name, args.seeds, args.experiments, args.bases, not args.no_baseline, args.out)
 
 
 # ─── CLI ───────────────────────────────────────────────────────────────────
@@ -431,6 +443,8 @@ def _add_common(p):
     p.add_argument('--experiments', nargs='+', choices=list(EXPERIMENTS), default=list(EXPERIMENTS),
                    help="'w' = slide-63 TC-PLS W sweep, 'n' = slide-64 TC-n-PLS n sweep")
     p.add_argument('--bases', nargs='+', choices=list(CONF_EMA_SWEEP_BASES), default=list(CONF_EMA_SWEEP_BASES))
+    p.add_argument('--no_baseline', action='store_true',
+                   help="Drop the unbiased-init reference cells from exp 'w' (only the TC-PLS W values)")
 
 
 def main():
