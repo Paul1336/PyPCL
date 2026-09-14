@@ -219,7 +219,7 @@ def run_cpe(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epoch
 
 def _run_proden_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
                          device, tag, report_every, algorithm: str, init_mode: str, true_weight: float = None,
-                         wf: int = None):
+                         wf: int = None, conf_ema_range=None):
     """Shared body for PRODEN and its confidence-init ablations
     (PRODEN-UniformInit, PRODEN-BiasedInit, and the parametrized
     PRODEN-Biased{Cand,All}-W* / PRODEN-BiasedRand-W*-Wf* sweeps). PRODEN's
@@ -229,11 +229,17 @@ def _run_proden_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch
     deliberate: PRODEN's fast renormalization overwrites the initial
     distribution almost immediately, unlike PiCO's slow EMA, so this
     variant set is meant to demonstrate that contrast rather than hide it
-    behind a slower update rule."""
+    behind a slower update rule.
+
+    conf_ema_range (optional [start, end]): the one exception to "update
+    rule unchanged" -- the conf_ema sweep (CONF_EMA_SWEEP_RUNNERS) passes a
+    PiCO-style EMA momentum schedule so PRODEN's confidence update keeps a
+    memory of its previous value instead of hard-overwriting. None keeps
+    the original PRODEN (conf_ema_m == 0)."""
     spec = (raw_cfg or {}).get('_dataset_spec')
     model = create_model_for_spec(spec, C).to(device)
     loss_fn = ProdenLoss(pl_ds.targets, C, init_mode=init_mode, orig_targets=orig_targets,
-                          true_weight=true_weight, wf=wf).to(device)
+                          true_weight=true_weight, wf=wf, conf_ema_range=conf_ema_range).to(device)
     opt = make_optimizer(model, hparams)
 
     idx_ds = (_IndexedDataset(pl_ds.data, image_size=spec.image_size, mean=spec.mean, std=spec.std,
@@ -244,6 +250,7 @@ def _run_proden_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch
     chunk_t0 = time.perf_counter()
     final_acc = 0.0
     for ep in range(epochs):
+        loss_fn.set_conf_ema_m(ep, epochs)   # no-op (stays 0) unless conf_ema_range was given
         model.train()
         for imgs, indices in idx_loader:
             imgs, indices = imgs.to(device), indices.to(device)
@@ -526,16 +533,24 @@ def _biased_oracle_init_conf(pl_ds, orig_targets, C: int, device) -> torch.Tenso
 
 
 def _run_pico_fixed_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
-                             device, tag, report_every, algorithm: str, init_conf: torch.Tensor):
+                             device, tag, report_every, algorithm: str, init_conf: torch.Tensor,
+                             conf_ema_range=None):
     """Shared body for PiCO-Fixed and its confidence-init ablations
     (PiCO-Fixed-UniformInit, PiCO-Fixed-BiasedInit): identical warm-up config
     (prot_start_fixed, L_cont omitted entirely during warm-up per
     docs/pico_explanation.md) and training loop; only the initial confidence
     matrix and the `algorithm` label (used for detail-log output paths)
-    differ between the three callers below."""
+    differ between the three callers below.
+
+    conf_ema_range (optional [start, end]): overrides config.yaml's
+    pico.conf_ema_range for PartialLoss.set_conf_ema_m -- used by the
+    conf_ema sweep (CONF_EMA_SWEEP_RUNNERS); [0, 0] degenerates the EMA
+    confidence update into a hard overwrite (PRODEN-like)."""
     pico_cfg = raw_cfg['pico']
     pico_args = _pico_args(C, epochs, pico_cfg)
     pico_args['prot_start'] = pico_cfg.get('prot_start_fixed', 1)
+    if conf_ema_range is not None:
+        pico_args['conf_ema_range'] = list(conf_ema_range)
     model = PiCOModel(pico_args).to(device)
     cls_loss = PartialLoss(init_conf)
     cont_loss = SupConLoss()
@@ -708,11 +723,24 @@ BIASED_RAND_SWEEP_RUNNERS = _build_biased_rand_sweep_runners()
 # ─── Parametrized biased-init sweep #3: true_weight x n, random pool drawn ─
 #     from ALL other classes (not just the sample's own candidate set)
 #
-# PRODEN-only (unlike the two families above): requested specifically for a
-# PRODEN true_weight=20% sweep over n=4/9/14/19 at C=20 k=5, where k-1=4
-# other candidates was too small a pool for n>4 -- see
+# Originally PRODEN-only (requested for a PRODEN true_weight=20% sweep over
+# n=4/9/14/19 at C=20 k=5, where k-1=4 other candidates was too small a
+# pool for n>4); the PiCO-Fixed counterpart was added 2026-09-15 so the
+# conf_ema sweep below can run the same n-sweep on both algorithms -- see
 # src/pll_init.py.biased_random_all_init / BIAS_RAND_ALL_WEIGHTS /
 # BIAS_RAND_ALL_N_VALUES. Same factory pattern as BIASED_RAND_SWEEP_RUNNERS.
+
+
+def _make_pico_fixed_biased_rand_all_runner(true_weight: float, n: int):
+    from src.pll_init import biased_rand_all_variant_name, biased_random_all_init
+    algorithm = biased_rand_all_variant_name('PiCO-Fixed', true_weight, n)
+
+    def _runner(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
+        init_conf = biased_random_all_init(orig_targets, C, true_weight, n).to(device)
+        return _run_pico_fixed_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                                        device, tag, report_every, algorithm, init_conf)
+
+    return algorithm, _runner
 
 
 def _make_proden_biased_rand_all_runner(true_weight: float, n: int):
@@ -732,12 +760,87 @@ def _build_biased_rand_all_sweep_runners() -> dict:
     runners = {}
     for w in BIAS_RAND_ALL_WEIGHTS:
         for n in BIAS_RAND_ALL_N_VALUES:
+            name, fn = _make_pico_fixed_biased_rand_all_runner(w, n)
+            runners[name] = fn
             name, fn = _make_proden_biased_rand_all_runner(w, n)
             runners[name] = fn
     return runners
 
 
 BIASED_RAND_ALL_SWEEP_RUNNERS = _build_biased_rand_all_sweep_runners()
+
+
+# ─── conf_ema_m sweep (2026-09-15): {init variant} x {PiCO-Fixed, PRODEN} ──
+#     x CONF_EMA_SCALES
+#
+# Re-runs the TC-PLS W sweep and the TC-n-PLS n sweep on BOTH algorithms
+# under five confidence-update EMA momentum levels, from PiCO's original
+# schedule (scale 1.0) down to a hard overwrite every update (scale 0.0 ==
+# original PRODEN) -- see src/pll_init.py CONF_EMA_SCALES / ema_variant_name
+# and the orchestrator scripts/run_ema_sweep.py. The EMA scale is part of the
+# algorithm name (e.g. 'PRODEN-BiasedCand-W20-EMA050') so every level is its
+# own resumable results.csv row. The actual [start, end] range is computed
+# at run time from config.yaml's pico.conf_ema_range so it follows config.
+
+
+def _conf_ema_init_specs() -> list:
+    """(name_fn(base) -> un-suffixed name, pico_init_fn(pl_ds, orig_targets, C)
+    -> init_conf, proden_kwargs) for every init variant, in the same order
+    as src.pll_init.conf_ema_sweep_base_names."""
+    from src.pll_init import (BIAS_RAND_ALL_N_VALUES, BIAS_RAND_ALL_WEIGHTS, BIAS_WEIGHTS,
+                              biased_candidates_init, biased_rand_all_variant_name,
+                              biased_random_all_init, biased_variant_name, candidate_masked_init)
+    specs = [(lambda base: base,
+              lambda pl_ds, orig, C: candidate_masked_init(pl_ds.targets, C),
+              dict(init_mode='candidate_masked'))]
+    for w in BIAS_WEIGHTS:
+        specs.append((lambda base, w=w: biased_variant_name(base, 'cand', w),
+                      lambda pl_ds, orig, C, w=w: biased_candidates_init(pl_ds.targets, orig, C, w),
+                      dict(init_mode='biased_candidates', true_weight=w)))
+    for w in BIAS_RAND_ALL_WEIGHTS:
+        for n in BIAS_RAND_ALL_N_VALUES:
+            specs.append((lambda base, w=w, n=n: biased_rand_all_variant_name(base, w, n),
+                          lambda pl_ds, orig, C, w=w, n=n: biased_random_all_init(orig, C, w, n),
+                          dict(init_mode='biased_random_all', true_weight=w, wf=n)))
+    return specs
+
+
+def _make_conf_ema_runner(base: str, name_fn, pico_init_fn, proden_kwargs: dict, scale: float):
+    from src.pll_init import ema_variant_name, scaled_conf_ema_range
+    algorithm = ema_variant_name(name_fn(base), scale)
+
+    def _runner(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
+        conf_ema_range = scaled_conf_ema_range(raw_cfg['pico']['conf_ema_range'], scale)
+        if base == 'PiCO-Fixed':
+            init_conf = pico_init_fn(pl_ds, orig_targets, C).to(device)
+            return _run_pico_fixed_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                                            device, tag, report_every, algorithm, init_conf,
+                                            conf_ema_range=conf_ema_range)
+        return _run_proden_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                                    device, tag, report_every, algorithm, conf_ema_range=conf_ema_range,
+                                    **proden_kwargs)
+
+    return algorithm, _runner
+
+
+def _build_conf_ema_sweep_runners() -> dict:
+    from src.pll_init import CONF_EMA_SCALES, CONF_EMA_SWEEP_BASES, conf_ema_sweep_base_names
+    runners = {}
+    for name_fn, pico_init_fn, proden_kwargs in _conf_ema_init_specs():
+        for base in CONF_EMA_SWEEP_BASES:
+            for scale in CONF_EMA_SCALES:
+                name, fn = _make_conf_ema_runner(base, name_fn, pico_init_fn, proden_kwargs, scale)
+                runners[name] = fn
+    # Guard: the name-only enumeration used by hparams.py / run_ema_sweep.py
+    # must produce exactly the names registered here.
+    from src.pll_init import ema_variant_name
+    expected = {ema_variant_name(bn, s) for base in CONF_EMA_SWEEP_BASES
+                for bn in conf_ema_sweep_base_names(base) for s in CONF_EMA_SCALES}
+    assert set(runners) == expected, 'conf_ema sweep name enumeration out of sync'
+    return runners
+
+
+CONF_EMA_SWEEP_RUNNERS = _build_conf_ema_sweep_runners()
 
 
 def run_pico_mcl(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):

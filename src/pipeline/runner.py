@@ -35,6 +35,10 @@ from src.pll_init import (BIAS_RAND_WEIGHTS as _BIAS_RAND_WEIGHTS,  # noqa: E402
 IMAGE_ONLY_ALGORITHMS |= {_biased_variant_name('PiCO-Fixed', s, w) for s in ('cand', 'all') for w in _BIAS_WEIGHTS}
 IMAGE_ONLY_ALGORITHMS |= {_biased_rand_variant_name('PiCO-Fixed', w, wf)
                            for w in _BIAS_RAND_WEIGHTS for wf in _BIAS_RAND_WF_VALUES}
+# Every other PiCO-Fixed-* variant (BiasedRandAll, the conf_ema sweep's
+# '-EMA*' names, ...) is a dual-encoder PiCO too -- catch them all by prefix
+# so a new PiCO-Fixed family can't silently be run on a non-image dataset.
+IMAGE_ONLY_ALGORITHMS |= {n for n in ALGORITHMS if n.startswith('PiCO-Fixed-')}
 
 
 def _set_seed(seed: int) -> None:

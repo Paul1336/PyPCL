@@ -63,10 +63,16 @@ def _build_registry() -> dict:
     for name, fn in r.BIASED_RAND_SWEEP_RUNNERS.items():
         registry[name] = AlgorithmSpec(name, 'PLL', fn)
 
-    # Parametrized biased-init sweep #3 (PRODEN-BiasedRandAll-W*-N*, random
-    # pool drawn from ALL classes rather than just the candidate set, PRODEN
-    # only, PLL) -- see runners.BIASED_RAND_ALL_SWEEP_RUNNERS.
+    # Parametrized biased-init sweep #3 ({PiCO-Fixed,PRODEN}-BiasedRandAll-W*-N*,
+    # random pool drawn from ALL classes rather than just the candidate set,
+    # PLL) -- see runners.BIASED_RAND_ALL_SWEEP_RUNNERS.
     for name, fn in r.BIASED_RAND_ALL_SWEEP_RUNNERS.items():
+        registry[name] = AlgorithmSpec(name, 'PLL', fn)
+
+    # conf_ema_m sweep (every init variant above x {PiCO-Fixed, PRODEN} x
+    # five EMA momentum levels, '...-EMA100' .. '...-EMA000', PLL) -- see
+    # runners.CONF_EMA_SWEEP_RUNNERS and scripts/run_ema_sweep.py.
+    for name, fn in r.CONF_EMA_SWEEP_RUNNERS.items():
         registry[name] = AlgorithmSpec(name, 'PLL', fn)
 
     return registry

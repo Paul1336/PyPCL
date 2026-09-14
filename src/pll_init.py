@@ -287,3 +287,52 @@ BIAS_RAND_ALL_N_VALUES = [4, 9, 14, 19]
 def biased_rand_all_variant_name(base: str, true_weight: float, n: int) -> str:
     """base: 'PiCO-Fixed' | 'PRODEN'."""
     return f'{base}-BiasedRandAll-{weight_tag(true_weight)}-N{n}'
+
+
+# ─── conf_ema_m sweep (2026-09-15) ─────────────────────────────────────────
+# Five levels of the confidence-update EMA momentum, applied identically to
+# PiCO-Fixed and PRODEN so their init-sensitivity profiles can be compared
+# under the SAME update rule. Each level scales PiCO's whole per-epoch
+# schedule config.yaml pico.conf_ema_range = [start, end] by a factor:
+#   1.00 -> [0.95, 0.80]  original PiCO (PRODEN gets PiCO-like memory)
+#   0.75 -> [0.71, 0.60]
+#   0.50 -> [0.475, 0.40]
+#   0.25 -> [0.24, 0.20]
+#   0.00 -> [0.00, 0.00]  hard overwrite every update == original PRODEN
+# (see src/proden_loss.py ProdenLoss.set_conf_ema_m / src/pico/utils_loss.py
+# PartialLoss.set_conf_ema_m, and runners.CONF_EMA_SWEEP_RUNNERS).
+CONF_EMA_SCALES = [1.0, 0.75, 0.5, 0.25, 0.0]
+
+
+def ema_tag(scale: float) -> str:
+    """'EMA100' / 'EMA075' / 'EMA050' / 'EMA025' / 'EMA000' -- the scale as a
+    zero-padded percentage, so names sort in sweep order."""
+    return f'EMA{round(scale * 100):03d}'
+
+
+def ema_variant_name(base_name: str, scale: float) -> str:
+    """Appends the conf_ema scale tag to any existing algorithm name, e.g.
+    'PiCO-Fixed-BiasedCand-W20' -> 'PiCO-Fixed-BiasedCand-W20-EMA050'."""
+    return f'{base_name}-{ema_tag(scale)}'
+
+
+def scaled_conf_ema_range(base_range, scale: float) -> list:
+    """[start, end] * scale, e.g. ([0.95, 0.8], 0.5) -> [0.475, 0.4]."""
+    return [float(v) * scale for v in base_range]
+
+
+CONF_EMA_SWEEP_BASES = ('PiCO-Fixed', 'PRODEN')
+
+
+def conf_ema_sweep_base_names(base: str) -> list:
+    """Every init variant the conf_ema sweep covers for one base algorithm,
+    as the UN-suffixed algorithm names (ema_variant_name is applied on top):
+    the unbiased baseline, every TC-PLS weight (BiasedCand-W*), and every
+    TC-n-PLS-from-all-classes (BiasedRandAll-W*-N*) combination. Shared by
+    runners.CONF_EMA_SWEEP_RUNNERS, hparams.py and scripts/run_ema_sweep.py
+    so the three can never disagree on which names exist."""
+    names = [base]
+    names += [biased_variant_name(base, 'cand', w) for w in BIAS_WEIGHTS]
+    names += [biased_rand_all_variant_name(base, w, n)
+              for w in BIAS_RAND_ALL_WEIGHTS for n in BIAS_RAND_ALL_N_VALUES]
+    return names

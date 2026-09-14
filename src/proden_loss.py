@@ -54,8 +54,17 @@ class ProdenLoss(nn.Module):
 
     def __init__(self, partial_targets: list, num_classes: int,
                  init_mode: str = 'candidate_masked', orig_targets=None, true_weight: float = None,
-                 wf: int = None):
+                 wf: int = None, conf_ema_range=None):
         super().__init__()
+        # conf_ema_range: optional [start, end] EMA momentum schedule for the
+        # confidence update, mirroring PiCO's PartialLoss.set_conf_ema_m
+        # (linear from start at epoch 0 to end at the last epoch). None (the
+        # default) keeps the original PRODEN behaviour: conf_ema_m stays 0.0,
+        # i.e. every batch hard-overwrites conf with the renormalized softmax
+        # -- see forward() and the 2026-09-15 conf_ema sweep in
+        # src/pipeline/algorithms/runners.py (CONF_EMA_SWEEP_RUNNERS).
+        self.conf_ema_range = list(conf_ema_range) if conf_ema_range is not None else None
+        self.conf_ema_m = 0.0
         if init_mode == 'candidate_masked':
             conf = candidate_masked_init(partial_targets, num_classes)
         elif init_mode == 'uniform_all':
@@ -86,6 +95,16 @@ class ProdenLoss(nn.Module):
             raise ValueError(f'Unknown init_mode {init_mode!r}')
         self.register_buffer('conf', conf)   # [N, C], lives on same device as model
 
+    def set_conf_ema_m(self, epoch: int, epochs: int):
+        """Same linear schedule as PiCO's PartialLoss.set_conf_ema_m. No-op
+        (conf_ema_m stays 0.0 == original hard overwrite) when the loss was
+        constructed without conf_ema_range."""
+        if self.conf_ema_range is None:
+            self.conf_ema_m = 0.0
+            return
+        start, end = self.conf_ema_range
+        self.conf_ema_m = 1. * epoch / epochs * (end - start) + start
+
     def forward(self, outputs: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         """
         outputs:  [B, C] logits
@@ -97,12 +116,17 @@ class ProdenLoss(nn.Module):
         log_probs = F.log_softmax(outputs, dim=1)         # [B, C]
         loss = -(conf * log_probs).sum(dim=1).mean()
 
-        # Update: renormalise current softmax within candidate mask
+        # Update: renormalise current softmax within candidate mask, then
+        # blend into the stored conf with EMA momentum conf_ema_m. With the
+        # default conf_ema_m == 0 this is exactly the original PRODEN
+        # hard overwrite (conf <- new_conf); conf_ema_m > 0 keeps a
+        # PiCO-style memory of the previous confidence instead.
         with torch.no_grad():
             candidate_mask = (conf > 0).float()           # [B, C]
             new_conf = candidate_mask * torch.softmax(outputs, dim=1)
             new_conf = new_conf / new_conf.sum(dim=1, keepdim=True).clamp(min=1e-8)
-            self.conf[indices] = new_conf
+            m = self.conf_ema_m
+            self.conf[indices] = m * conf + (1.0 - m) * new_conf if m > 0 else new_conf
 
         return loss
 

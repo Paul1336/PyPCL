@@ -60,12 +60,23 @@ for _w in BIAS_RAND_WEIGHTS:
 # Parametrized biased-init sweep #3 (see src/pll_init.py.BIAS_RAND_ALL_WEIGHTS
 # / BIAS_RAND_ALL_N_VALUES / biased_rand_all_variant_name and
 # src/pipeline/algorithms/runners.py's BIASED_RAND_ALL_SWEEP_RUNNERS).
-# PRODEN only.
 from src.pll_init import BIAS_RAND_ALL_N_VALUES, BIAS_RAND_ALL_WEIGHTS, biased_rand_all_variant_name  # noqa: E402
 
 for _w in BIAS_RAND_ALL_WEIGHTS:
     for _n in BIAS_RAND_ALL_N_VALUES:
+        ALGO_HPARAMS[biased_rand_all_variant_name('PiCO-Fixed', _w, _n)] = _ADAM
         ALGO_HPARAMS[biased_rand_all_variant_name('PRODEN', _w, _n)] = _SGD
+
+# conf_ema_m sweep (see src/pll_init.py CONF_EMA_SCALES / ema_variant_name /
+# conf_ema_sweep_base_names and runners.py's CONF_EMA_SWEEP_RUNNERS) -- same
+# optimizer as each variant's base algorithm.
+from src.pll_init import (CONF_EMA_SCALES, CONF_EMA_SWEEP_BASES,  # noqa: E402
+                           conf_ema_sweep_base_names, ema_variant_name)
+
+for _base in CONF_EMA_SWEEP_BASES:
+    for _bn in conf_ema_sweep_base_names(_base):
+        for _s in CONF_EMA_SCALES:
+            ALGO_HPARAMS[ema_variant_name(_bn, _s)] = _ADAM if _base == 'PiCO-Fixed' else _SGD
 
 
 def make_optimizer(model, hparams: dict):
