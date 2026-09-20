@@ -37,6 +37,10 @@ class PipelineConfig:
     knn_eval: bool
     knn_eval_k: int
     knn_temperature: float
+    biasvariance: bool
+    biasvariance_log_every: int
+    biasvariance_m_resamples: int
+    biasvariance_eval_size: int
     raw: dict = field(default_factory=dict)   # full config.yaml (pico/comco/solar blocks)
 
 
@@ -73,5 +77,9 @@ def load_config(args) -> PipelineConfig:
         knn_eval=getattr(args, 'knn_eval', False),
         knn_eval_k=getattr(args, 'knn_eval_k', 20),
         knn_temperature=getattr(args, 'knn_temperature', 0.07),
+        biasvariance=getattr(args, 'biasvariance', False),
+        biasvariance_log_every=getattr(args, 'biasvariance_log_every', 20),
+        biasvariance_m_resamples=getattr(args, 'biasvariance_m_resamples', 50),
+        biasvariance_eval_size=getattr(args, 'biasvariance_eval_size', 256),
         raw=raw,
     )

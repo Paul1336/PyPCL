@@ -45,7 +45,7 @@ from src.proden_loss import ProdenLoss
 from src.scl_loss import SCL_NL
 from src.wu_loss import WuPLLLoss
 
-from src.pipeline import detail
+from src.pipeline import biasvariance, detail
 
 from .hparams import make_optimizer
 
@@ -570,6 +570,11 @@ def _run_pico_fixed_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, b
             'ablation -- detail.train_pico_epoch_fixed_with_selection_stats always uses the native '
             'prototype-sourced hard update. Run the AB sweep without --detail.')
 
+    bv_on = detail.biasvariance_enabled(raw_cfg)
+    if bv_on:
+        eval_size = detail.biasvariance_cfg(raw_cfg).get('eval_size', 256)
+        bv_images, bv_labels, bv_index = biasvariance.build_fixed_eval_batch(pl_ds, orig_targets, eval_size, device)
+
     chunk_t0 = time.perf_counter()
     for ep in range(epochs):
         cls_loss.set_conf_ema_m(ep, pico_args)
@@ -586,6 +591,9 @@ def _run_pico_fixed_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, b
         detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
         detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
         detail.maybe_log_concentration(raw_cfg, model, pl_ds, device, C, ep + 1, algorithm)
+        if bv_on:
+            detail.maybe_log_biasvariance(raw_cfg, model, cls_loss, cont_loss, algorithm,
+                                           bv_images, bv_labels, bv_index, C, ep + 1, device)
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             elapsed = time.perf_counter() - chunk_t0
             _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
@@ -709,6 +717,11 @@ def _run_pico_weighted_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg
     cont_loss = SupConLoss()
     opt = make_optimizer(model, hparams)
 
+    bv_on = detail.biasvariance_enabled(raw_cfg)
+    if bv_on:
+        eval_size = detail.biasvariance_cfg(raw_cfg).get('eval_size', 256)
+        bv_images, bv_labels, bv_index = biasvariance.build_fixed_eval_batch(pl_ds, orig_targets, eval_size, device)
+
     chunk_t0 = time.perf_counter()
     for ep in range(epochs):
         cls_loss.set_conf_ema_m(ep, pico_args)
@@ -716,6 +729,9 @@ def _run_pico_weighted_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg
         detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
         detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
         detail.maybe_log_concentration(raw_cfg, model, pl_ds, device, C, ep + 1, algorithm)
+        if bv_on:
+            detail.maybe_log_biasvariance(raw_cfg, model, cls_loss, cont_loss, algorithm,
+                                           bv_images, bv_labels, bv_index, C, ep + 1, device)
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             elapsed = time.perf_counter() - chunk_t0
             _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
@@ -1006,11 +1022,19 @@ def run_pico_mcl_fixed(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_
     cont_loss = SupConLoss()
     opt = make_optimizer(model, hparams)
 
+    bv_on = detail.biasvariance_enabled(raw_cfg)
+    if bv_on:
+        eval_size = detail.biasvariance_cfg(raw_cfg).get('eval_size', 256)
+        bv_images, bv_labels, bv_index = biasvariance.build_fixed_eval_batch(pl_ds, orig_targets, eval_size, device)
+
     chunk_t0 = time.perf_counter()
     for ep in range(epochs):
         train_pico_mcl_epoch_fixed(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
         detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-MCL-Fixed')
         detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-MCL-Fixed')
+        if bv_on:
+            detail.maybe_log_biasvariance(raw_cfg, model, cls_loss, cont_loss, 'PiCO-MCL-Fixed',
+                                           bv_images, bv_labels, bv_index, C, ep + 1, device)
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             elapsed = time.perf_counter() - chunk_t0
             _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
@@ -1176,6 +1200,11 @@ def run_comco_fixed(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_siz
 
     detail_on = detail.is_enabled(raw_cfg)
 
+    bv_on = detail.biasvariance_enabled(raw_cfg)
+    if bv_on:
+        eval_size = detail.biasvariance_cfg(raw_cfg).get('eval_size', 256)
+        bv_images, bv_labels, bv_index = biasvariance.build_fixed_eval_batch(pl_ds, orig_targets, eval_size, device)
+
     chunk_t0 = time.perf_counter()
     for ep in range(epochs):
         if detail_on:
@@ -1187,6 +1216,9 @@ def run_comco_fixed(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_siz
         detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'ComCo-Fixed')
         detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'ComCo-Fixed')
         detail.maybe_log_concentration(raw_cfg, model, pl_ds, device, C, ep + 1, 'ComCo-Fixed')
+        if bv_on:
+            detail.maybe_log_biasvariance(raw_cfg, model, cls_loss, cont_loss, 'ComCo-Fixed',
+                                           bv_images, bv_labels, bv_index, C, ep + 1, device)
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             elapsed = time.perf_counter() - chunk_t0
             _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))

@@ -127,6 +127,21 @@ def _add_run_parser(sub):
     p.add_argument('--knn_eval_k', type=int, default=20, help='Number of neighbors for --knn_eval.')
     p.add_argument('--knn_temperature', type=float, default=0.07,
                     help='Softmax temperature for the --knn_eval weighted vote.')
+    p.add_argument('--biasvariance', action='store_true',
+                    help='Every --biasvariance_log_every epochs, freeze the current model/loss '
+                         'state and measure the cls (and, for PiCO/ComCo family, contrastive) '
+                         'loss gradient Bias^2/Variance/MSE against M resampled candidate-label '
+                         'draws on a fixed eval batch (SCL-NL paper Section 4 style), written to '
+                         'results/<run_name>/detail/<algorithm>/C{C}_k{k}/biasvariance.csv. '
+                         'Unlike other --detail diagnostics, this runs for every --seeds value '
+                         '(not just one designated seed), since measuring variance across '
+                         'independently-trained-per-seed models is the point.')
+    p.add_argument('--biasvariance_log_every', type=int, default=20)
+    p.add_argument('--biasvariance_m_resamples', type=int, default=50,
+                    help='Number of counterfactual candidate-label resamples per checkpoint.')
+    p.add_argument('--biasvariance_eval_size', type=int, default=256,
+                    help='Fixed eval-batch size (first N samples of the cell\'s train set, reused '
+                         'across every checkpoint/epoch for comparability).')
 
 
 def _add_merge_parser(sub):

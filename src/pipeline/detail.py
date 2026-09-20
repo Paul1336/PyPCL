@@ -211,6 +211,37 @@ def maybe_log_checkpoint(raw_cfg, model, test_loader, device, C, epoch, algorith
     log_per_class_checkpoint(model, test_loader, device, C, epoch, cell_dir(raw_cfg, algorithm, C), predict=predict)
 
 
+def biasvariance_cfg(raw_cfg: dict) -> dict:
+    return _detail_cfg(raw_cfg).get('biasvariance') or {}
+
+
+def biasvariance_enabled(raw_cfg: dict) -> bool:
+    return bool(biasvariance_cfg(raw_cfg).get('enabled'))
+
+
+def maybe_log_biasvariance(raw_cfg, model, cls_loss_fn, cont_loss_fn, algorithm,
+                            eval_images, eval_true_labels, eval_index, C, epoch, device):
+    """No-op unless --biasvariance is enabled and `epoch` lands on a
+    --biasvariance_log_every boundary. Deliberately NOT gated by
+    _seed_matches (unlike every other diagnostic in this module) -- the
+    whole point of this one is to measure variance across the real,
+    independently-trained-per-seed model states, so it must run for every
+    seed in --seeds, not just one designated seed. Output rows carry an
+    explicit `seed` column instead (src/pipeline/biasvariance.py:FIELDS)."""
+    bv = biasvariance_cfg(raw_cfg)
+    if not bv.get('enabled'):
+        return
+    log_every = bv.get('log_every', 20)
+    if epoch % log_every != 0:
+        return
+    from . import biasvariance
+    biasvariance.log_biasvariance_checkpoint(
+        model, cls_loss_fn, cont_loss_fn, algorithm, eval_images, eval_true_labels, eval_index,
+        'cifar100-subset', C, raw_cfg.get('_current_k', 0), epoch,
+        raw_cfg.get('_current_seed'), cell_dir(raw_cfg, algorithm, C),
+        bv.get('m_resamples', 50), device)
+
+
 # ─── shared: deterministic full-train-set forward pass ─────────────────────
 # Used by both (4) concentration logging and (6) kNN eval below. Unlike
 # algorithms.runners._IndexedDataset (RandomCrop+Flip train_transform), this

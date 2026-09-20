@@ -109,6 +109,9 @@ def run(cfg: PipelineConfig):
         'tsne': cfg.tsne, 'tsne_every': cfg.tsne_every, 'tsne_max_points': cfg.tsne_max_points,
         'concentration': cfg.concentration, 'concentration_log_every': cfg.concentration_log_every,
         'knn_eval': cfg.knn_eval, 'knn_eval_k': cfg.knn_eval_k, 'knn_temperature': cfg.knn_temperature,
+        'biasvariance': cfg.biasvariance, 'biasvariance_log_every': cfg.biasvariance_log_every,
+        'biasvariance_m_resamples': cfg.biasvariance_m_resamples,
+        'biasvariance_eval_size': cfg.biasvariance_eval_size,
     })
 
     # Stashed in raw_cfg (like '_dataset_spec' below) rather than added to
@@ -130,6 +133,12 @@ def run(cfg: PipelineConfig):
             'enabled': cfg.knn_eval,
             'k': cfg.knn_eval_k,
             'temperature': cfg.knn_temperature,
+        },
+        'biasvariance': {
+            'enabled': cfg.biasvariance,
+            'log_every': cfg.biasvariance_log_every,
+            'm_resamples': cfg.biasvariance_m_resamples,
+            'eval_size': cfg.biasvariance_eval_size,
         },
         # With --seeds sweeping multiple seeds per cell, running the (fairly
         # expensive) diagnostic instrumentation for every seed would both
