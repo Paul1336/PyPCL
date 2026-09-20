@@ -29,7 +29,7 @@ from src.data_utils import SoLarDataset
 from src.engine import (evaluate_model, train_algorithm, train_comco_epoch,
                          train_pico_epoch, train_pico_mclloss_epoch,
                          train_pico_moco_epoch, train_pico_sc_epoch, train_solar)
-from src.fixed_pico_engine import train_pico_epoch_fixed
+from src.fixed_pico_engine import train_pico_epoch_fixed, train_pico_weighted_epoch
 from src.oracle_pico_engine import train_pico_oracle_add_graded_epoch, train_pico_oracle_graded_epoch
 from src.mcl_losses import MCL_LOG
 from src.fixed_mcl_losses import FixedMCLLog
@@ -39,6 +39,7 @@ from src.op_loss import OPLoss, OPWLoss
 from src.pico.mcl_cls_loss import PiCOMCLLoss
 from src.pico.model import PiCOModel, PiCOOracleModel
 from src.pico.utils_loss import PartialLoss, SupConLoss
+from src.pico.weighted_cls_loss import PiCOWeightedClsLoss
 from src.pico_cls_loss import PiCOCLSLoss
 from src.proden_loss import ProdenLoss
 from src.scl_loss import SCL_NL
@@ -683,6 +684,74 @@ def _build_biased_sweep_runners() -> dict:
 
 
 BIASED_SWEEP_RUNNERS = _build_biased_sweep_runners()
+
+
+# ─── PiCO-weighted-cls-loss: alpha * PiCO-Fixed's PartialLoss + ──────────
+#     (1 - alpha) * PiCOMCLLoss ────────────────────────────────────────────
+#
+# Same warm-up config/init as PiCO-Fixed (paper-faithful: L_cont omitted
+# entirely during warm-up, candidate-masked initial confidence), only the
+# cls loss is swapped for a PiCOWeightedClsLoss blending PartialLoss and
+# PiCOMCLLoss by alpha. See src/pico/weighted_cls_loss.py and
+# src/fixed_pico_engine.py's train_pico_weighted_epoch. Registered as a
+# parametrized sweep over src/pll_init.py's ALPHA_VALUES, same pattern as
+# BIASED_SWEEP_RUNNERS above.
+
+
+def _run_pico_weighted_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                                device, tag, report_every, algorithm: str, alpha: float):
+    pico_cfg = raw_cfg['pico']
+    pico_args = _pico_args(C, epochs, pico_cfg)
+    pico_args['prot_start'] = pico_cfg.get('prot_start_fixed', 1)
+    init_conf = _candidate_masked_init_conf(pl_ds, C, device)
+    model = PiCOModel(pico_args).to(device)
+    cls_loss = PiCOWeightedClsLoss(init_conf, alpha)
+    cont_loss = SupConLoss()
+    opt = make_optimizer(model, hparams)
+
+    chunk_t0 = time.perf_counter()
+    for ep in range(epochs):
+        cls_loss.set_conf_ema_m(ep, pico_args)
+        train_pico_weighted_epoch(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
+        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
+        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
+        detail.maybe_log_concentration(raw_cfg, model, pl_ds, device, C, ep + 1, algorithm)
+        if (ep + 1) % report_every == 0 or ep + 1 == epochs:
+            elapsed = time.perf_counter() - chunk_t0
+            _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
+            chunk_t0 = time.perf_counter()
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    detail.maybe_run_knn_eval(raw_cfg, model, pl_ds, orig_targets, loaders['test'], device, C, epochs, algorithm)
+    acc = evaluate_model(model, loaders['test'], device)
+    del model, cls_loss, cont_loss, opt, init_conf
+    gc.collect()
+    torch.cuda.empty_cache()
+    return acc
+
+
+def _make_pico_weighted_runner(alpha: float):
+    from src.pll_init import pico_weighted_variant_name
+    algorithm = pico_weighted_variant_name(alpha)
+
+    def _runner(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
+        return _run_pico_weighted_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                                           device, tag, report_every, algorithm, alpha)
+
+    return algorithm, _runner
+
+
+def _build_pico_weighted_sweep_runners() -> dict:
+    from src.pll_init import ALPHA_VALUES
+    runners = {}
+    for a in ALPHA_VALUES:
+        name, fn = _make_pico_weighted_runner(a)
+        runners[name] = fn
+    return runners
+
+
+PICO_WEIGHTED_SWEEP_RUNNERS = _build_pico_weighted_sweep_runners()
 
 
 # ─── Parametrized biased-init sweep #2: true_weight x wf (how many other ──

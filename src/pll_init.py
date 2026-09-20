@@ -382,3 +382,15 @@ def conf_ema_sweep_base_names(base: str) -> list:
     names += [biased_rand_all_variant_name(base, w, n)
               for w in BIAS_RAND_ALL_WEIGHTS for n in BIAS_RAND_ALL_N_VALUES]
     return names
+
+
+# The alpha values swept by the PiCO-weighted-cls-loss experiment family --
+# see src/pipeline/algorithms/runners.py's PICO_WEIGHTED_SWEEP_RUNNERS and
+# src/pipeline/algorithms/hparams.py. alpha weights PiCO-Fixed's PartialLoss
+# term; (1 - alpha) weights PiCOMCLLoss's term.
+ALPHA_VALUES = (0.3, 0.5, 0.7)
+
+
+def pico_weighted_variant_name(alpha: float) -> str:
+    """e.g. 0.3 -> 'PiCO-Weighted-A030'."""
+    return f'PiCO-Weighted-A{round(alpha * 100):03d}'

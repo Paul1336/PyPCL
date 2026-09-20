@@ -87,3 +87,44 @@ def train_pico_epoch_fixed(pico_args, model, loader, loss_fn, loss_cont_fn, opti
         total_loss += loss.item()
         progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
     return total_loss / len(loader)
+
+
+def train_pico_weighted_epoch(pico_args, model, loader, loss_fn, loss_cont_fn, optimizer, epoch, device):
+    """Single training epoch for PiCO-weighted-cls-loss: identical to
+    train_pico_epoch_fixed's paper-faithful warm-up (L_cont omitted entirely
+    during warm-up), except loss_fn is a PiCOWeightedClsLoss
+    (src/pico/weighted_cls_loss.py) -- alpha * PartialLoss + (1-alpha) *
+    PiCOMCLLoss -- which needs both `index` (for PartialLoss's confidence
+    buffer) and `partial_Y` (for PiCOMCLLoss) rather than just one or the
+    other."""
+    model.train()
+    total_loss = 0
+    start_upd_prot = epoch >= pico_args['prot_start']
+
+    progress_bar = tqdm(loader, desc=f"PiCO-Weighted Epoch {epoch + 1}/{pico_args['epochs']}")
+    for (images_w, images_s, partial_Y, true_labels, index) in progress_bar:
+        images_w, images_s, partial_Y, index = (
+            images_w.to(device), images_s.to(device), partial_Y.to(device), index.to(device))
+
+        cls_out, features, pseudo_target_cont, score_prot = model(images_w, images_s, partial_Y, pico_args)
+        batch_size = cls_out.shape[0]
+
+        if start_upd_prot:
+            loss_fn.confidence_update(temp_un_conf=score_prot.detach(), batch_index=index, batchY=partial_Y)
+
+        loss_cls = loss_fn(cls_out, index, partial_Y)
+
+        if start_upd_prot:
+            mask = torch.eq(pseudo_target_cont[:batch_size].unsqueeze(1), pseudo_target_cont.unsqueeze(0)).float()
+            loss_cont = loss_cont_fn(features=features, mask=mask, batch_size=batch_size)
+            loss = loss_cls + pico_args['loss_weight'] * loss_cont
+        else:
+            loss = loss_cls
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
+    return total_loss / len(loader)

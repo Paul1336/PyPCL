@@ -47,6 +47,14 @@ for _w in BIAS_WEIGHTS:
         ALGO_HPARAMS[biased_variant_name('PiCO-Fixed', _strategy, _w)] = _ADAM
         ALGO_HPARAMS[biased_variant_name('PRODEN', _strategy, _w)] = _SGD
 
+# Parametrized PiCO-weighted-cls-loss sweep (see src/pll_init.py.ALPHA_VALUES
+# / pico_weighted_variant_name and
+# src/pipeline/algorithms/runners.py's PICO_WEIGHTED_SWEEP_RUNNERS).
+from src.pll_init import ALPHA_VALUES, pico_weighted_variant_name  # noqa: E402
+
+for _a in ALPHA_VALUES:
+    ALGO_HPARAMS[pico_weighted_variant_name(_a)] = _ADAM
+
 # Parametrized biased-init sweep #2 (see src/pll_init.py.BIAS_RAND_WEIGHTS /
 # BIAS_RAND_WF_VALUES / biased_rand_variant_name and
 # src/pipeline/algorithms/runners.py's BIASED_RAND_SWEEP_RUNNERS).
