@@ -87,3 +87,45 @@ def train_pico_epoch_fixed(pico_args, model, loader, loss_fn, loss_cont_fn, opti
         total_loss += loss.item()
         progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
     return total_loss / len(loader)
+
+
+def train_pico_mcl_epoch_fixed(pico_args, model, loader, loss_fn, loss_cont_fn, optimizer, epoch, device):
+    """Single training epoch for PiCO-MCL-Fixed: same paper-faithful warm-up
+    fix as train_pico_epoch_fixed (L_cont omitted entirely during warm-up,
+    governed by prot_start_fixed), applied to PiCO-MCL's cls loss
+    (PiCOMCLLoss, src/pico/mcl_cls_loss.py) instead of PartialLoss.
+
+    PiCOMCLLoss is stateless -- forward(outputs, partial_Y), no confidence
+    buffer -- so unlike train_pico_epoch_fixed there is no
+    confidence_update call to gate."""
+    model.train()
+    total_loss = 0
+    start_upd_prot = epoch >= pico_args['prot_start']
+
+    progress_bar = tqdm(loader, desc=f"PiCO-MCL-Fixed Epoch {epoch + 1}/{pico_args['epochs']}")
+    for (images_w, images_s, partial_Y, true_labels, index) in progress_bar:
+        images_w = images_w.to(device)
+        images_s = images_s.to(device)
+        partial_Y = partial_Y.to(device)
+
+        cls_out, features, pseudo_target_cont, score_prot = model(images_w, images_s, partial_Y, pico_args)
+        batch_size = cls_out.shape[0]
+
+        loss_cls = loss_fn(cls_out, partial_Y)
+
+        if start_upd_prot:
+            mask = torch.eq(pseudo_target_cont[:batch_size].unsqueeze(1), pseudo_target_cont.unsqueeze(0)).float()
+            loss_cont = loss_cont_fn(features=features, mask=mask, batch_size=batch_size)
+            loss = loss_cls + pico_args['loss_weight'] * loss_cont
+        else:
+            # Warm-up: L_cont omitted entirely (paper Appendix B.1), same fix
+            # as train_pico_epoch_fixed.
+            loss = loss_cls
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
+    return total_loss / len(loader)

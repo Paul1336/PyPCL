@@ -29,7 +29,7 @@ from src.data_utils import SoLarDataset
 from src.engine import (evaluate_model, train_algorithm, train_comco_epoch,
                          train_pico_epoch, train_pico_mclloss_epoch,
                          train_pico_moco_epoch, train_pico_sc_epoch, train_solar)
-from src.fixed_pico_engine import train_pico_epoch_fixed
+from src.fixed_pico_engine import train_pico_epoch_fixed, train_pico_mcl_epoch_fixed
 from src.oracle_pico_engine import train_pico_oracle_add_graded_epoch, train_pico_oracle_graded_epoch
 from src.mcl_losses import MCL_LOG
 from src.fixed_mcl_losses import FixedMCLLog
@@ -908,6 +908,40 @@ def run_pico_mcl(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, 
         train_pico_mclloss_epoch(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
         detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-MCL')
         detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-MCL')
+        if (ep + 1) % report_every == 0 or ep + 1 == epochs:
+            elapsed = time.perf_counter() - chunk_t0
+            _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
+            chunk_t0 = time.perf_counter()
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    acc = evaluate_model(model, loaders['test'], device)
+    del model, cls_loss, cont_loss, opt
+    gc.collect()
+    torch.cuda.empty_cache()
+    return acc
+
+
+def run_pico_mcl_fixed(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
+    """PiCO-MCL with PiCO-Fixed's paper-faithful warm-up fix (L_cont omitted
+    entirely during warm-up, governed by prot_start_fixed) instead of
+    PiCO-MCL's original warm-up (which keeps L_cont active throughout, same
+    as plain PiCO -- see train_pico_mclloss_epoch). PiCOMCLLoss itself is
+    stateless, so there is no confidence-buffer/init-conf to fix (unlike
+    run_pico_fixed vs. run_pico); only the warm-up scheduling changes."""
+    pico_cfg = raw_cfg['pico']
+    pico_args = _pico_args(C, epochs, pico_cfg)
+    pico_args['prot_start'] = pico_cfg.get('prot_start_fixed', 1)
+    model = PiCOModel(pico_args).to(device)
+    cls_loss = PiCOMCLLoss()
+    cont_loss = SupConLoss()
+    opt = make_optimizer(model, hparams)
+
+    chunk_t0 = time.perf_counter()
+    for ep in range(epochs):
+        train_pico_mcl_epoch_fixed(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
+        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-MCL-Fixed')
+        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-MCL-Fixed')
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             elapsed = time.perf_counter() - chunk_t0
             _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
