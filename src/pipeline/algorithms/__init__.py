@@ -40,6 +40,7 @@ def _build_registry() -> dict:
         'PiCO-Fixed-BiasedInit':  AlgorithmSpec('PiCO-Fixed-BiasedInit',  'PLL', r.run_pico_fixed_biased_init),
         'PiCO-MOCO': AlgorithmSpec('PiCO-MOCO', 'PLL', r.run_pico_moco),
         'PiCO-MCL': AlgorithmSpec('PiCO-MCL', 'PLL', r.run_pico_mcl),
+        'PiCO-MCL-Fixed': AlgorithmSpec('PiCO-MCL-Fixed', 'PLL', r.run_pico_mcl_fixed),
         'PiCO-SC':  AlgorithmSpec('PiCO-SC',  'PLL', r.run_pico_sc),
         'PiCO-CLS': AlgorithmSpec('PiCO-CLS', 'PLL', r.run_pico_cls),
         'SoLar':    AlgorithmSpec('SoLar',    'PLL', r.run_solar),
