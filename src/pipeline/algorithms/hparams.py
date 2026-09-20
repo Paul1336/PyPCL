@@ -30,6 +30,7 @@ ALGO_HPARAMS = {
     'PiCO-Fixed-BiasedInit':  _ADAM,
     'PiCO-MOCO': _ADAM,
     'PiCO-MCL': _ADAM,
+    'PiCO-MCL-Fixed': _ADAM,
     'PiCO-SC':  _ADAM,
     'PiCO-CLS': _ADAM,
     'ComCo':    _ADAM,
