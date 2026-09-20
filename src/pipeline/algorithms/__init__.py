@@ -58,6 +58,12 @@ def _build_registry() -> dict:
     for name, fn in r.BIASED_SWEEP_RUNNERS.items():
         registry[name] = AlgorithmSpec(name, 'PLL', fn)
 
+    # Parametrized PiCO-weighted-cls-loss sweep (alpha * PiCO-Fixed's
+    # PartialLoss + (1-alpha) * PiCOMCLLoss, PLL) -- see
+    # runners.PICO_WEIGHTED_SWEEP_RUNNERS and src/pll_init.py's ALPHA_VALUES.
+    for name, fn in r.PICO_WEIGHTED_SWEEP_RUNNERS.items():
+        registry[name] = AlgorithmSpec(name, 'PLL', fn)
+
     # Parametrized biased-init sweep #2 (PiCO-Fixed-BiasedRand-W*-Wf* /
     # PRODEN-BiasedRand-W*-Wf*, both PLL) -- see runners.BIASED_RAND_SWEEP_RUNNERS.
     for name, fn in r.BIASED_RAND_SWEEP_RUNNERS.items():
