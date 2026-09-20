@@ -1,37 +1,47 @@
 #!/usr/bin/env python
-"""conf_ema_m sweep orchestrator.
+"""Confidence-update-MECHANISM sweep orchestrator (2026-09-16).
 
-Re-runs the two init-sensitivity experiments from the 11/25 slides on BOTH
-PiCO-Fixed and PRODEN, under five confidence-update EMA momentum levels
-(config.yaml pico.conf_ema_range x {1, 0.75, 0.5, 0.25, 0} -- see
-src/pll_init.py CONF_EMA_SCALES; scale 1 == original PiCO, scale 0 == hard
-overwrite every update == original PRODEN):
+Follow-up to scripts/run_ema_sweep.py: that sweep matched the EMA momentum
+*coefficient* between PiCO-Fixed and PRODEN, but PiCO-Fixed's W/N
+init-sensitivity curves did not converge toward PRODEN's -- so this isolates
+two further, EMA-coefficient-independent differences in PiCO-Fixed's
+confidence update (see src/pico/utils_loss.py PartialLoss.confidence_update,
+src/fixed_pico_engine.py train_pico_epoch_fixed, and src/pll_init.py's
+AB_VARIANT_SOURCE_HARD docstring for the full rationale):
 
-  exp 'w' (slide 63, TC-PLS W sweep):   C=20, k in {10,15,19},
-        init in {unbiased baseline (drop with --no_baseline), TC-PLS W in {5.2,10,20}%}
-        (trimmed 2026-09-15 from k in {5,10,12,15,19} x W in {4.5,5.2,6.6,8.3,10,20}
-        to keep the 5-EMA-level x 2-algorithm x 3-seed sweep tractable)
-  exp 'n' (slide 64, TC-n-PLS n sweep): C=20, k=5, W=20%,
-        n in {4,9,14,19} wrong classes drawn from ALL other classes
+  Factor A (conf_source): 'prototype' (native) -- confidence driven by
+      score_prot (embedding-vs-class-prototype similarity) -- vs
+      'classifier' (A') -- confidence instead reuses the classifier's own
+      candidate-masked softmax, the same kind of signal PRODEN's own update
+      uses.
+  Factor B (conf_hard): True (native) -- update target is one-hotted before
+      EMA-blending -- vs False (B') -- the full masked/renormalized
+      distribution is blended in instead (PRODEN-style soft update).
 
-Every (exp, base, init, k, scale, seed) is one training cell, run as its own
-`scripts/run_pipeline.py run --algo <name> ...` subprocess so the existing
-resume / shard / merge / report machinery is reused unchanged. Cells are
-handed out dynamically to the given GPUs (a free GPU always takes the next
-pending cell), ordered SEED-MAJOR: every cell of the first seed finishes
-before the second seed starts, so a complete single-seed picture is available
-early -- heavier PiCO cells are queued before PRODEN cells within a seed.
+Re-runs the SAME two init-sensitivity experiments as run_ema_sweep.py
+  exp 'w' (TC-PLS W sweep):   C=20, k in {10,15,19}, W in {baseline,5.2,10,20}%
+  exp 'n' (TC-n-PLS n sweep): C=20, k=5,  W=20%, n in {4,9,14,19}
+on the three NEW mechanism combinations (A'+B, A+B', A'+B' -- see
+AB_SWEEP_BASES below), at three EMA levels only (highest/middle/lowest of
+the original five: EMA100, EMA050, EMA000, per user request). The fourth
+combination, A+B (native PiCO-Fixed), is NOT retrained here -- it's exactly
+'PiCO-Fixed-...-EMA100/050/000' from run_ema_sweep.py's own run
+(ema_sweep_0915), already fully recorded; pull it in as a fourth reference
+column at report/plot time via `--reference_run ema_sweep_0915`.
+
+Cells are handed out dynamically to the given GPUs, SEED-MAJOR (see
+scripts/run_ema_sweep.py's docstring) -- identical scheduling/resume/shard
+machinery, just against a different cell list.
 
     # launch (resumable: already-recorded cells are skipped)
-    python scripts/run_ema_sweep.py run --run_name ema_sweep_0915 --gpus 0 1 2 3
+    python scripts/run_ab_sweep.py run --run_name ab_sweep_0915 --gpus 0 1 2 3
     # progress, any time, from another terminal
-    python scripts/run_ema_sweep.py status --run_name ema_sweep_0915
-    # partial results so far (pivot: rows = exp/k/base/init, cols = EMA level)
-    python scripts/run_ema_sweep.py report --run_name ema_sweep_0915
+    python scripts/run_ab_sweep.py status --run_name ab_sweep_0915
+    # partial results so far (pivot: rows = exp/k/init, cols = AB-variant x EMA)
+    python scripts/run_ab_sweep.py report --run_name ab_sweep_0915
 
-Results: results/<run_name>/ (shards/, results.csv, ema_sweep_progress.json,
-ema_sweep_report.csv, detail/ for the first seed). Per-cell logs:
-logs/<run_name>/<algorithm>__C20_k<k>_s<seed>.log
+Results: results/<run_name>/ (shards/, results.csv, ab_sweep_progress.json,
+ab_sweep_report.csv). Per-cell logs: logs/<run_name>/<algorithm>__C20_k<k>_s<seed>.log
 """
 
 import argparse
@@ -48,36 +58,34 @@ from datetime import datetime
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-os.chdir(ROOT)  # results/ and logs/ are repo-relative, same as run_pipeline.py
+os.chdir(ROOT)
 
 from src.pipeline import results as results_mod  # noqa: E402
 from src.pipeline.algorithms import ALL_ALGORITHM_NAMES  # noqa: E402
-from src.pll_init import (BIAS_RAND_ALL_N_VALUES, CONF_EMA_SCALES, CONF_EMA_SWEEP_BASES,  # noqa: E402
-                           biased_rand_all_variant_name, biased_variant_name, ema_tag,
-                           ema_variant_name, weight_pct_str)
+from src.pll_init import (AB_SWEEP_BASES, AB_SWEEP_SCALES, biased_rand_all_variant_name,  # noqa: E402
+                           biased_variant_name, ema_tag, ema_variant_name, weight_pct_str)
 
 DATASET = 'cifar100-subset'
 C = 20
 EXP_W_K_VALUES = [10, 15, 19]
-EXP_W_WEIGHTS = [0.052, 0.10, 0.20]   # trimmed subset of slide 63's TC-PLS sweep (see docstring)
+EXP_W_WEIGHTS = [0.052, 0.10, 0.20]
 EXP_N_K_VALUES = [5, 10, 15, 19]  # extended 2026-09-17 to match exp 'w''s k grid, per user request
 EXP_N_WEIGHT = 0.20
-EXP_N_VALUES = list(BIAS_RAND_ALL_N_VALUES)                # [4, 9, 14, 19], slide 64
+EXP_N_VALUES = [4, 9, 14, 19]
 EXPERIMENTS = ('w', 'n')
+REFERENCE_BASE = 'PiCO-Fixed'   # A+B, the native combo -- pulled from --reference_run, never trained here
 
-PROGRESS_FILE = 'ema_sweep_progress.json'
-REPORT_FILE = 'ema_sweep_report.csv'
+PROGRESS_FILE = 'ab_sweep_progress.json'
+REPORT_FILE = 'ab_sweep_report.csv'
 
 
 # ─── cell enumeration ──────────────────────────────────────────────────────
 
 
-def build_cells(seeds, experiments=EXPERIMENTS, bases=CONF_EMA_SWEEP_BASES, scales=CONF_EMA_SCALES,
-                include_baseline=True):
-    """Seed-major list of cells; within a seed, PiCO-Fixed (heavy) before
-    PRODEN (light) so the longest jobs start first. include_baseline adds the
-    unbiased (candidate-masked) init to exp 'w' -- the dashed reference lines
-    on slide 63."""
+def build_cells(seeds, experiments=EXPERIMENTS, bases=AB_SWEEP_BASES, scales=AB_SWEEP_SCALES,
+                 include_baseline=True):
+    """Seed-major list of cells; within a seed, exp 'w' (heavier, k up to 19)
+    before exp 'n'."""
     cells = []
     for seed in seeds:
         for base in bases:
@@ -126,9 +134,9 @@ def load_done(results_dir):
 
 
 def read_rows(results_dir):
-    """key -> shard row (last write wins), tolerating a torn row that a
-    worker is mid-append on -- mirrors results.merge_shards without writing
-    results.csv, so this never races with the workers' own merges."""
+    """key -> shard row (last write wins), tolerating a torn row a worker is
+    mid-append on -- mirrors results.merge_shards without writing
+    results.csv."""
     rows = {}
     for path in sorted(glob.glob(os.path.join(results_dir, 'shards', 'worker*.csv'))):
         if not os.path.isfile(path):
@@ -177,8 +185,8 @@ def cmd_run(args):
     n_slots = len(args.gpus) * args.slots_per_gpu
     print(f'run_name={run_name}  cells={len(cells)}  already done={n_done}  pending={n_pending_total}'
           + (f'  (launching only the first {len(pending)}: --limit)' if args.limit is not None else '')
-          + f'\ngpus={args.gpus} x{args.slots_per_gpu} slot(s)  seeds={args.seeds}  epochs={args.epochs}  '
-          f'detail={"first seed only" if args.detail else "off"}', flush=True)
+          + f'\ngpus={args.gpus} x{args.slots_per_gpu} slot(s)  seeds={args.seeds}  epochs={args.epochs}',
+          flush=True)
     _print_breakdown(cells, done)
 
     if args.dry_run:
@@ -196,7 +204,7 @@ def cmd_run(args):
              for i, g in enumerate(gpu for gpu in args.gpus for _ in range(args.slots_per_gpu))]
     retries = {}
     failed = []
-    finished = []   # (cell, duration_s)
+    finished = []
     session_t0 = time.time()
     last_print = 0.0
 
@@ -209,10 +217,6 @@ def cmd_run(args):
                '--epochs', str(args.epochs), '--batch_size', str(args.batch_size),
                '--report_every', str(args.report_every),
                '--gpu_id', str(slot['idx']), '--num_gpus', str(n_slots)]
-        # --detail output paths aren't seed-scoped (see runner.py's
-        # diagnostics_seed), so only the sweep's first seed gets it.
-        if args.detail and seed == args.seeds[0]:
-            cmd.append('--detail')
         env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(slot['gpu']), PYTHONUNBUFFERED='1')
         logf = open(log_path, 'a')
         logf.write(f'\n===== {datetime.now().isoformat()}  {" ".join(cmd)}\n')
@@ -241,19 +245,13 @@ def cmd_run(args):
         slot.update(proc=None, cell=None, t0=None, logf=None, log=None)
 
     def est_seconds(cell, shard_rows):
-        """Mean duration of already-finished cells of the same base (this
-        session first, else the training_time_s recorded in the shards)."""
         same = [d for c, d in finished if c['base'] == cell['base']]
         if not same:
             same = [r['training_time_s'] + 45 for key, r in shard_rows.items()
                     if key[3].startswith(cell['base']) and r['training_time_s'] > 0]
         if same:
             return statistics.mean(same)
-        # No history yet: a rough per-200-epoch guess (PiCO ~15 min, PRODEN
-        # ~3 min on one GPU) scaled to --epochs, plus ~45 s of data loading
-        # and CUDA start-up per cell. Replaced by real timings as cells finish.
-        per_200 = 900.0 if cell['base'] == 'PiCO-Fixed' else 180.0
-        return per_200 * args.epochs / 200.0 + 45.0
+        return 900.0 * args.epochs / 200.0 + 45.0   # all bases here are PiCO-Fixed-derived (~15min/200ep)
 
     def write_progress():
         shard_rows = read_rows(results_dir)
@@ -277,8 +275,6 @@ def cmd_run(args):
         os.replace(tmp, os.path.join(results_dir, PROGRESS_FILE))
         return prog
 
-    # `kill <pid>` (SIGTERM, e.g. from another SSH session) should behave like
-    # Ctrl-C: stop the children too, instead of orphaning the training runs.
     import signal
 
     def _sigterm(signum, frame):
@@ -328,19 +324,20 @@ def cmd_run(args):
 def _finish_up(results_dir, args):
     out = results_mod.merge_shards(results_dir)
     print(f'Merged -> {out}')
-    _report(args.run_name, args.seeds, args.experiments, args.bases, not args.no_baseline, out_path=None)
+    _report(args.run_name, args.seeds, args.experiments, args.bases, not args.no_baseline,
+            args.reference_run, out_path=None)
 
 
 def _print_breakdown(cells, done):
     seeds = sorted({c['seed'] for c in cells})
     groups = sorted({(c['exp'], c['base']) for c in cells})
-    head = f"{'seed':>6}  " + '  '.join(f"{exp}/{base:<10}" for exp, base in groups) + '     total'
+    head = f"{'seed':>6}  " + '  '.join(f"{exp}/{base:<28}" for exp, base in groups) + '     total'
     print(head)
     for seed in seeds:
         parts = []
         for exp, base in groups:
             sub = [c for c in cells if c['seed'] == seed and c['exp'] == exp and c['base'] == base]
-            parts.append(f"{sum(c['key'] in done for c in sub):>4}/{len(sub):<7}")
+            parts.append(f"{sum(c['key'] in done for c in sub):>4}/{len(sub):<25}")
         sub = [c for c in cells if c['seed'] == seed]
         print(f"{seed:>6}  " + '  '.join(parts) + f"   {sum(c['key'] in done for c in sub):>4}/{len(sub)}")
 
@@ -357,7 +354,7 @@ def cmd_status(args):
 
     path = os.path.join(results_dir, PROGRESS_FILE)
     if not os.path.isfile(path):
-        print('\n(no ema_sweep_progress.json yet -- the `run` orchestrator has not started for this run_name)')
+        print('\n(no ab_sweep_progress.json yet -- the `run` orchestrator has not started for this run_name)')
         return
     with open(path) as f:
         prog = json.load(f)
@@ -375,21 +372,43 @@ def cmd_status(args):
 # ─── report ────────────────────────────────────────────────────────────────
 
 
-def _report(run_name, seeds, experiments, bases, include_baseline, out_path):
+def _report(run_name, seeds, experiments, bases, include_baseline, reference_run, out_path):
     results_dir = results_dir_of(run_name)
     rows = read_rows(results_dir)
     cells = build_cells(seeds, experiments, bases, include_baseline=include_baseline)
 
-    # (exp, k, base, init, ema) -> list of accuracies over seeds
+    # Fold in the A+B (native PiCO-Fixed) reference cells from a separate
+    # run (e.g. ema_sweep_0915), read the SAME way (shards, tolerant of
+    # in-progress writes) -- as an extra pseudo-base column, EMA100/050/000
+    # only (matching AB_SWEEP_SCALES).
+    ref_rows = {}
+    if reference_run:
+        ref_rows = read_rows(results_dir_of(reference_run))
+        for seed in seeds:
+            for k in EXP_W_K_VALUES:
+                for w in ([None] if include_baseline else []) + EXP_W_WEIGHTS:
+                    base_name = REFERENCE_BASE if w is None else biased_variant_name(REFERENCE_BASE, 'cand', w)
+                    init = 'baseline' if w is None else f'W{weight_pct_str(w)}'
+                    for scale in AB_SWEEP_SCALES:
+                        cells.append(_cell('w', seed, REFERENCE_BASE, init, k, scale, base_name))
+            for k in EXP_N_K_VALUES:
+                for n in EXP_N_VALUES:
+                    base_name = biased_rand_all_variant_name(REFERENCE_BASE, EXP_N_WEIGHT, n)
+                    init = f'W{weight_pct_str(EXP_N_WEIGHT)}-N{n}'
+                    for scale in AB_SWEEP_SCALES:
+                        cells.append(_cell('n', seed, REFERENCE_BASE, init, k, scale, base_name))
+
     accs = {}
     for c in cells:
-        r = rows.get(c['key'])
+        r = (ref_rows if c['base'] == REFERENCE_BASE else rows).get(c['key'])
         if r is not None:
             accs.setdefault((c['exp'], c['k'], c['base'], c['init'], c['ema']), []).append(r['final_accuracy'])
 
-    emas = [ema_tag(s) for s in CONF_EMA_SCALES]
+    emas = [ema_tag(s) for s in AB_SWEEP_SCALES]
+    all_bases = list(bases) + ([REFERENCE_BASE] if reference_run else [])
     groups = sorted({(c['exp'], c['k'], c['base'], c['init']) for c in cells},
-                    key=lambda g: (g[0], g[1], g[2], _init_sort_key(g[3])))
+                    key=lambda g: (g[0], g[1], all_bases.index(g[2]) if g[2] in all_bases else 99,
+                                   _init_sort_key(g[3])))
 
     def fmt(vals):
         if not vals:
@@ -398,12 +417,13 @@ def _report(run_name, seeds, experiments, bases, include_baseline, out_path):
         return f'{m:.2f}' + (f'±{statistics.stdev(vals):.2f}' if len(vals) > 1 else '') + f' ({len(vals)})'
 
     col_w = 16
-    print(f"\n{'exp':<4}{'k':>3}  {'base':<11}{'init':<10}" + ''.join(f'{e:>{col_w}}' for e in emas))
+    print(f"\n{'exp':<4}{'k':>3}  {'base':<28}{'init':<10}" + ''.join(f'{e:>{col_w}}' for e in emas))
     for exp, k, base, init in groups:
-        print(f'{exp:<4}{k:>3}  {base:<11}{init:<10}' +
+        print(f'{exp:<4}{k:>3}  {base:<28}{init:<10}' +
               ''.join(f"{fmt(accs.get((exp, k, base, init, e), [])):>{col_w}}" for e in emas))
+    ref_note = f'; "{REFERENCE_BASE}" rows pulled from results/{reference_run}' if reference_run else ''
     print(f"\n(cell = mean±std over seeds (n); {sum(len(v) for v in accs.values())} of "
-          f"{len(cells)} cells recorded; EMA100 = original PiCO schedule, EMA000 = hard overwrite)")
+          f"{len(cells)} cells recorded{ref_note})")
 
     out_path = out_path or os.path.join(results_dir, REPORT_FILE)
     os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
@@ -421,7 +441,6 @@ def _report(run_name, seeds, experiments, bases, include_baseline, out_path):
 
 
 def _init_sort_key(init):
-    # baseline first, then W ascending, then N ascending
     if init == 'baseline':
         return (0, 0.0)
     if '-N' in init:
@@ -430,54 +449,50 @@ def _init_sort_key(init):
 
 
 def cmd_report(args):
-    _report(args.run_name, args.seeds, args.experiments, args.bases, not args.no_baseline, args.out)
-
-
-# ─── CLI ───────────────────────────────────────────────────────────────────
-
-
-def _add_common(p):
-    p.add_argument('--run_name', required=True)
-    p.add_argument('--seeds', nargs='+', type=int, default=[42, 43, 44],
-                   help='Run order is seed-major: all cells of the first seed, then the second, ...')
-    p.add_argument('--experiments', nargs='+', choices=list(EXPERIMENTS), default=list(EXPERIMENTS),
-                   help="'w' = slide-63 TC-PLS W sweep, 'n' = slide-64 TC-n-PLS n sweep")
-    p.add_argument('--bases', nargs='+', choices=list(CONF_EMA_SWEEP_BASES), default=list(CONF_EMA_SWEEP_BASES))
-    p.add_argument('--no_baseline', action='store_true',
-                   help="Drop the unbiased-init reference cells from exp 'w' (only the TC-PLS W values)")
+    _report(args.run_name, args.seeds, args.experiments, args.bases, not args.no_baseline,
+            args.reference_run, args.out)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest='command', required=True)
 
+    def add_common(p):
+        p.add_argument('--run_name', required=True)
+        p.add_argument('--seeds', nargs='+', type=int, default=[42, 43, 44])
+        p.add_argument('--experiments', nargs='+', choices=list(EXPERIMENTS), default=list(EXPERIMENTS))
+        p.add_argument('--bases', nargs='+', choices=list(AB_SWEEP_BASES), default=list(AB_SWEEP_BASES))
+        p.add_argument('--no_baseline', action='store_true',
+                       help="Drop the unbiased-init reference cells from exp 'w'")
+        p.add_argument('--reference_run', default='ema_sweep_0915',
+                       help="Run to pull the A+B (native PiCO-Fixed) reference column from at report time "
+                            "(pass '' to disable)")
+
     p = sub.add_parser('run', help='Launch/resume the sweep across the given GPUs')
-    _add_common(p)
-    p.add_argument('--gpus', nargs='+', type=int, required=True, help='Physical GPU ids, e.g. --gpus 0 1 2 3')
-    p.add_argument('--slots_per_gpu', type=int, default=1,
-                   help='Concurrent cells per GPU (PRODEN cells are light; PiCO cells are not)')
+    add_common(p)
+    p.add_argument('--gpus', nargs='+', type=int, required=True)
+    p.add_argument('--slots_per_gpu', type=int, default=1)
     p.add_argument('--epochs', type=int, default=200)
     p.add_argument('--batch_size', type=int, default=512)
     p.add_argument('--report_every', type=int, default=10)
-    p.add_argument('--detail', action='store_true',
-                   help="Pass `run --detail` (per-batch TP/FP/TN/FN etc.) for the FIRST seed's cells")
-    p.add_argument('--retries', type=int, default=1, help='Re-queue a failed cell this many times')
-    p.add_argument('--poll', type=int, default=60, help='Seconds between progress lines')
-    p.add_argument('--dry_run', action='store_true', help='List the plan and exit without launching')
-    p.add_argument('--limit', type=int, default=None,
-                   help='Only launch the first N pending cells (smoke test / partial batch), then stop')
+    p.add_argument('--retries', type=int, default=1)
+    p.add_argument('--poll', type=int, default=60)
+    p.add_argument('--dry_run', action='store_true')
+    p.add_argument('--limit', type=int, default=None)
     p.set_defaults(fn=cmd_run)
 
     p = sub.add_parser('status', help='Progress table + running/failed cells (read-only)')
-    _add_common(p)
+    add_common(p)
     p.set_defaults(fn=cmd_status)
 
     p = sub.add_parser('report', help='Partial-results pivot table (rows exp/k/base/init, cols EMA level)')
-    _add_common(p)
-    p.add_argument('--out', default=None, help=f'CSV path (default results/<run_name>/{REPORT_FILE})')
+    add_common(p)
+    p.add_argument('--out', default=None)
     p.set_defaults(fn=cmd_report)
 
     args = ap.parse_args()
+    if getattr(args, 'reference_run', None) == '':
+        args.reference_run = None
     args.fn(args)
 
 

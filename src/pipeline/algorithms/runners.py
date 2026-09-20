@@ -534,7 +534,7 @@ def _biased_oracle_init_conf(pl_ds, orig_targets, C: int, device) -> torch.Tenso
 
 def _run_pico_fixed_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
                              device, tag, report_every, algorithm: str, init_conf: torch.Tensor,
-                             conf_ema_range=None):
+                             conf_ema_range=None, conf_source: str = 'prototype', conf_hard: bool = True):
     """Shared body for PiCO-Fixed and its confidence-init ablations
     (PiCO-Fixed-UniformInit, PiCO-Fixed-BiasedInit): identical warm-up config
     (prot_start_fixed, L_cont omitted entirely during warm-up per
@@ -545,7 +545,13 @@ def _run_pico_fixed_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, b
     conf_ema_range (optional [start, end]): overrides config.yaml's
     pico.conf_ema_range for PartialLoss.set_conf_ema_m -- used by the
     conf_ema sweep (CONF_EMA_SWEEP_RUNNERS); [0, 0] degenerates the EMA
-    confidence update into a hard overwrite (PRODEN-like)."""
+    confidence update into a hard overwrite (PRODEN-like).
+
+    conf_source / conf_hard: forwarded to train_pico_epoch_fixed -- Factor A
+    / Factor B of the 2026-09-15 confidence-update-mechanism ablation (see
+    scripts/run_ab_sweep.py, AB_SWEEP_RUNNERS below). Both default to
+    PiCO-Fixed's native behaviour (prototype-sourced, hard one-hot), so
+    every existing caller is unaffected."""
     pico_cfg = raw_cfg['pico']
     pico_args = _pico_args(C, epochs, pico_cfg)
     pico_args['prot_start'] = pico_cfg.get('prot_start_fixed', 1)
@@ -557,6 +563,11 @@ def _run_pico_fixed_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, b
     opt = make_optimizer(model, hparams)
 
     detail_on = detail.is_enabled(raw_cfg)
+    if detail_on and (conf_source != 'prototype' or not conf_hard):
+        raise NotImplementedError(
+            '--detail (per-batch selection stats) is not wired up for the conf_source/conf_hard '
+            'ablation -- detail.train_pico_epoch_fixed_with_selection_stats always uses the native '
+            'prototype-sourced hard update. Run the AB sweep without --detail.')
 
     chunk_t0 = time.perf_counter()
     for ep in range(epochs):
@@ -569,7 +580,8 @@ def _run_pico_fixed_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, b
                 pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device,
                 raw_cfg, algorithm, C)
         else:
-            train_pico_epoch_fixed(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
+            train_pico_epoch_fixed(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device,
+                                    conf_source=conf_source, conf_hard=conf_hard)
         detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
         detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
         detail.maybe_log_concentration(raw_cfg, model, pl_ds, device, C, ep + 1, algorithm)
@@ -841,6 +853,46 @@ def _build_conf_ema_sweep_runners() -> dict:
 
 
 CONF_EMA_SWEEP_RUNNERS = _build_conf_ema_sweep_runners()
+
+
+# ─── confidence-update-mechanism sweep (2026-09-16): Factor A x Factor B ──
+# See src/pll_init.py's AB_VARIANT_SOURCE_HARD / AB_SWEEP_BASES / AB_SWEEP_SCALES
+# docstring for the full rationale. Reuses _conf_ema_init_specs() (same
+# biased-init variants as the conf_ema sweep) -- only the base's
+# conf_source/conf_hard and the EMA scale list differ.
+
+
+def _make_ab_runner(base: str, name_fn, pico_init_fn, scale: float):
+    from src.pll_init import AB_VARIANT_SOURCE_HARD, ema_variant_name, scaled_conf_ema_range
+    algorithm = ema_variant_name(name_fn(base), scale)
+    conf_source, conf_hard = AB_VARIANT_SOURCE_HARD[base]
+
+    def _runner(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
+        conf_ema_range = scaled_conf_ema_range(raw_cfg['pico']['conf_ema_range'], scale)
+        init_conf = pico_init_fn(pl_ds, orig_targets, C).to(device)
+        return _run_pico_fixed_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                                        device, tag, report_every, algorithm, init_conf,
+                                        conf_ema_range=conf_ema_range, conf_source=conf_source,
+                                        conf_hard=conf_hard)
+
+    return algorithm, _runner
+
+
+def _build_ab_sweep_runners() -> dict:
+    from src.pll_init import AB_SWEEP_BASES, AB_SWEEP_SCALES, conf_ema_sweep_base_names, ema_variant_name
+    runners = {}
+    for name_fn, pico_init_fn, _proden_kwargs in _conf_ema_init_specs():
+        for base in AB_SWEEP_BASES:
+            for scale in AB_SWEEP_SCALES:
+                name, fn = _make_ab_runner(base, name_fn, pico_init_fn, scale)
+                runners[name] = fn
+    expected = {ema_variant_name(bn, s) for base in AB_SWEEP_BASES
+                for bn in conf_ema_sweep_base_names(base) for s in AB_SWEEP_SCALES}
+    assert set(runners) == expected, 'AB sweep name enumeration out of sync'
+    return runners
+
+
+AB_SWEEP_RUNNERS = _build_ab_sweep_runners()
 
 
 def run_pico_mcl(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):

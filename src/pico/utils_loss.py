@@ -32,13 +32,28 @@ class PartialLoss(nn.Module):
         average_loss = -((final_outputs).sum(dim=1)).mean()
         return average_loss
 
-    def confidence_update(self, temp_un_conf, batch_index, batchY):
-        """Updates sample confidences using EMA."""
+    def confidence_update(self, temp_un_conf, batch_index, batchY, hard: bool = True):
+        """Updates sample confidences using EMA.
+
+        hard=True (default, paper Eq. 6): one-hots the argmax of
+        (temp_un_conf * batchY) before EMA-blending it into confidence --
+        Factor B ('B', hard) of the 2026-09-15 confidence-update-mechanism
+        ablation (see scripts/run_ab_sweep.py). hard=False ('B'') keeps the
+        full masked/renormalized distribution instead of collapsing it to
+        one class -- structurally the same kind of update ProdenLoss.forward
+        does (src/proden_loss.py), just still driven by whatever
+        temp_un_conf the caller passed in (prototype similarity or
+        classifier softmax -- see Factor A / train_pico_epoch_fixed's
+        conf_source)."""
         with torch.no_grad():
-            _, prot_pred = (temp_un_conf * batchY).max(dim=1)
-            pseudo_label = F.one_hot(prot_pred, batchY.shape[1]).float().to(temp_un_conf.device).detach()
+            masked = temp_un_conf * batchY
+            if hard:
+                _, prot_pred = masked.max(dim=1)
+                new_target = F.one_hot(prot_pred, batchY.shape[1]).float().to(temp_un_conf.device).detach()
+            else:
+                new_target = masked / masked.sum(dim=1, keepdim=True).clamp(min=1e-8)
             self.confidence[batch_index, :] = self.conf_ema_m * self.confidence[batch_index, :] \
-                                             + (1 - self.conf_ema_m) * pseudo_label
+                                             + (1 - self.conf_ema_m) * new_target
 
 class SupConLoss(nn.Module):
     """Supervised Contrastive Learning loss."""

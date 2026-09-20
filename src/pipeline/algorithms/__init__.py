@@ -75,6 +75,14 @@ def _build_registry() -> dict:
     for name, fn in r.CONF_EMA_SWEEP_RUNNERS.items():
         registry[name] = AlgorithmSpec(name, 'PLL', fn)
 
+    # confidence-update-mechanism sweep (Factor A: prototype- vs
+    # classifier-sourced confidence update, Factor B: hard one-hot vs soft
+    # distribution -- every init variant above x {SrcSoftmax, SoftUpdate,
+    # SrcSoftmax-SoftUpdate} x {EMA100, EMA050, EMA000}, PLL) -- see
+    # runners.AB_SWEEP_RUNNERS and scripts/run_ab_sweep.py.
+    for name, fn in r.AB_SWEEP_RUNNERS.items():
+        registry[name] = AlgorithmSpec(name, 'PLL', fn)
+
     return registry
 
 

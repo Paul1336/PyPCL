@@ -27,11 +27,33 @@ import torch
 from tqdm import tqdm
 
 
-def train_pico_epoch_fixed(pico_args, model, loader, loss_fn, loss_cont_fn, optimizer, epoch, device):
-    """Runs a single training epoch for the PiCO model, paper-faithful warm-up."""
+def train_pico_epoch_fixed(pico_args, model, loader, loss_fn, loss_cont_fn, optimizer, epoch, device,
+                            conf_source: str = 'prototype', conf_hard: bool = True):
+    """Runs a single training epoch for the PiCO model, paper-faithful warm-up.
+
+    conf_source ('prototype' | 'classifier'): which quantity feeds
+    loss_fn.confidence_update as temp_un_conf. 'prototype' (default, paper
+    Eq. 6) is score_prot -- similarity between the sample's contrastive
+    embedding and the per-class prototype vectors, i.e. a signal one hop
+    removed from the classifier, filtered through the (separately,
+    proto_m-EMA'd) prototype memory. 'classifier' instead reuses
+    softmax(cls_out) -- the SAME kind of candidate-masked classifier signal
+    that already drives pseudo_target_cont / prototype assignment below
+    (see predicted_scores/pseudo_labels_b in src/pico/model.py's forward),
+    now also driving the confidence buffer. This is Factor A ('A'') of the
+    2026-09-15 confidence-update-mechanism ablation -- see
+    scripts/run_ab_sweep.py and docs discussion; it does NOT disconnect the
+    contrastive/representation-learning branch (L_cont still trains the
+    shared backbone and pseudo_target_cont still gates the SupCon mask
+    below), it only stops routing the *confidence buffer* through the
+    prototype-similarity readout.
+
+    conf_hard: forwarded to PartialLoss.confidence_update -- Factor B."""
     model.train()
     total_loss = 0
     start_upd_prot = epoch >= pico_args['prot_start']
+    if conf_source not in ('prototype', 'classifier'):
+        raise ValueError(f"conf_source must be 'prototype' or 'classifier', got {conf_source!r}")
 
     progress_bar = tqdm(loader, desc=f"PiCO-Fixed Epoch {epoch + 1}/{pico_args['epochs']}")
     for (images_w, images_s, partial_Y, true_labels, index) in progress_bar:
@@ -42,7 +64,8 @@ def train_pico_epoch_fixed(pico_args, model, loader, loss_fn, loss_cont_fn, opti
         batch_size = cls_out.shape[0]
 
         if start_upd_prot:
-            loss_fn.confidence_update(temp_un_conf=score_prot.detach(), batch_index=index, batchY=partial_Y)
+            temp_un_conf = (torch.softmax(cls_out, dim=1) if conf_source == 'classifier' else score_prot).detach()
+            loss_fn.confidence_update(temp_un_conf=temp_un_conf, batch_index=index, batchY=partial_Y, hard=conf_hard)
 
         loss_cls = loss_fn(cls_out, index)
 

@@ -78,6 +78,17 @@ for _base in CONF_EMA_SWEEP_BASES:
         for _s in CONF_EMA_SCALES:
             ALGO_HPARAMS[ema_variant_name(_bn, _s)] = _ADAM if _base == 'PiCO-Fixed' else _SGD
 
+# confidence-update-mechanism sweep (Factor A x Factor B, see
+# src/pll_init.py AB_VARIANT_SOURCE_HARD / AB_SWEEP_BASES / AB_SWEEP_SCALES
+# and src/pipeline/algorithms/runners.py's AB_SWEEP_RUNNERS) -- all bases
+# are PiCO-Fixed variants, so all use _ADAM.
+from src.pll_init import AB_SWEEP_BASES, AB_SWEEP_SCALES  # noqa: E402
+
+for _base in AB_SWEEP_BASES:
+    for _bn in conf_ema_sweep_base_names(_base):
+        for _s in AB_SWEEP_SCALES:
+            ALGO_HPARAMS[ema_variant_name(_bn, _s)] = _ADAM
+
 
 def make_optimizer(model, hparams: dict):
     import torch.optim as optim

@@ -324,6 +324,52 @@ def scaled_conf_ema_range(base_range, scale: float) -> list:
 CONF_EMA_SWEEP_BASES = ('PiCO-Fixed', 'PRODEN')
 
 
+# ─── confidence-update-MECHANISM sweep (2026-09-16): Factor A x Factor B ──
+#
+# Follow-up to the conf_ema sweep above: matching the EMA *coefficient*
+# between PiCO-Fixed and PRODEN (CONF_EMA_SWEEP_RUNNERS) did not make
+# PiCO-Fixed's init-sensitivity (W/N sweep) curves converge toward PRODEN's,
+# so this isolates two further, EMA-independent differences in *what* PiCO's
+# confidence update actually does each step (see src/pico/utils_loss.py
+# PartialLoss.confidence_update, src/fixed_pico_engine.py
+# train_pico_epoch_fixed):
+#
+#   Factor A (conf_source): 'prototype' (native, paper Eq. 6) -- confidence
+#       is driven by score_prot, i.e. embedding-vs-class-prototype cosine
+#       similarity, one hop removed from the classifier and filtered
+#       through the separately-EMA'd (proto_m=0.99, untouched here)
+#       prototype memory -- vs 'classifier' (A') -- confidence instead
+#       reuses softmax(cls_out) masked to candidates, the SAME kind of
+#       signal PRODEN's own update uses. Note: A' does NOT disconnect the
+#       contrastive/representation-learning branch -- L_cont still trains
+#       the shared backbone and the SupCon positive-pair mask is unaffected
+#       (it was already classifier-sourced, see pseudo_target_cont in
+#       src/pico/model.py's forward) -- it only stops routing the
+#       confidence buffer specifically through prototype similarity.
+#   Factor B (conf_hard): True (native, paper Eq. 6) -- the update target is
+#       one-hotted (argmax over the masked conf_source) before EMA-blending
+#       into confidence -- vs False (B') -- the full masked/renormalized
+#       distribution is blended in instead, structurally the same shape of
+#       update ProdenLoss.forward does.
+#
+# Four combinations per (base biased-init variant, EMA scale): A+B (native
+# PiCO-Fixed -- already fully covered by CONF_EMA_SWEEP_RUNNERS/the
+# ema_sweep_0915 results, not re-trained here), A'+B, A+B', A'+B'.
+AB_VARIANT_SOURCE_HARD = {
+    'PiCO-Fixed':                       ('prototype', True),    # A + B  (native; reuse ema_sweep_0915)
+    'PiCO-Fixed-SrcSoftmax':            ('classifier', True),   # A'+ B
+    'PiCO-Fixed-SoftUpdate':            ('prototype', False),   # A + B'
+    'PiCO-Fixed-SrcSoftmax-SoftUpdate': ('classifier', False),  # A'+ B'
+}
+# Bases this ablation actually trains new cells for (excludes 'PiCO-Fixed'
+# itself -- see above). scripts/run_ab_sweep.py builds cells from this list.
+AB_SWEEP_BASES = ('PiCO-Fixed-SrcSoftmax', 'PiCO-Fixed-SoftUpdate', 'PiCO-Fixed-SrcSoftmax-SoftUpdate')
+# Per user request: only the highest/middle/lowest of CONF_EMA_SCALES (not
+# all five) -- still lets ema_sweep_0915's own EMA100/EMA050/EMA000 rows for
+# base 'PiCO-Fixed' be reused directly as the A+B reference column.
+AB_SWEEP_SCALES = [1.0, 0.5, 0.0]
+
+
 def conf_ema_sweep_base_names(base: str) -> list:
     """Every init variant the conf_ema sweep covers for one base algorithm,
     as the UN-suffixed algorithm names (ema_variant_name is applied on top):
