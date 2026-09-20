@@ -388,7 +388,7 @@ def conf_ema_sweep_base_names(base: str) -> list:
 # see src/pipeline/algorithms/runners.py's PICO_WEIGHTED_SWEEP_RUNNERS and
 # src/pipeline/algorithms/hparams.py. alpha weights PiCO-Fixed's PartialLoss
 # term; (1 - alpha) weights PiCOMCLLoss's term.
-ALPHA_VALUES = (0.3, 0.5, 0.7)
+ALPHA_VALUES = (0.0, 0.25, 0.5, 0.75, 1.0)
 
 
 def pico_weighted_variant_name(alpha: float) -> str:
