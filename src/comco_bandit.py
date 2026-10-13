@@ -142,3 +142,34 @@ def draw_batches(loader, n: int) -> list:
         if len(out) == n:
             break
     return out
+
+
+class ContinuousRhoTS:
+    """Continuous rho in [0, 1], paired-lookahead hill climbing.
+
+    Each round: probe a = max(0, rho - delta) and b = min(1, rho + delta)
+    from the same snapshot on the same batches, observe the paired slope
+    (score_b - score_a) / (b - a), keep discounted Gaussian statistics of
+    that slope, Thompson-sample it, and move rho one `step` in the sampled
+    direction. Randomness of the sample is the exploration; a confidently
+    positive/negative slope walks rho steadily toward 1/0."""
+
+    def __init__(self, rho0: float = 0.5, delta: float = 0.15, step: float = 0.05,
+                 gamma: float = 0.9, sigma_floor: float = 0.01):
+        self.rho, self.delta, self.step = rho0, delta, step
+        self.slope = PairedTS(gamma=gamma, sigma_floor=sigma_floor)
+
+    def probe_pair(self):
+        return max(0.0, self.rho - self.delta), min(1.0, self.rho + self.delta)
+
+    def update(self, a: float, b: float, score_a: float, score_b: float):
+        self.slope.update((score_b - score_a) / (b - a))
+
+    def posterior(self):
+        return self.slope.posterior()
+
+    def choose(self) -> float:
+        mu, se = self.slope.posterior()
+        g = random.gauss(mu, se) if not math.isinf(se) else random.gauss(0.0, 1.0)
+        self.rho = min(1.0, max(0.0, self.rho + (self.step if g > 0 else -self.step)))
+        return self.rho

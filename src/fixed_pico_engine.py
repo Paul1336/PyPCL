@@ -170,3 +170,44 @@ def train_pico_mcl_epoch_fixed(pico_args, model, loader, loss_fn, loss_cont_fn, 
         total_loss += loss.item()
         progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
     return total_loss / len(loader)
+
+
+def train_pico_switch_epoch(pico_args, model, loader, loss_fn, loss_cont_fn, optimizer, epoch, device, alpha_fn):
+    """train_pico_weighted_epoch with the cls loss's mixing parameter picked
+    per batch by `alpha_fn(partial_Y) -> float` and passed as `alpha=` (used
+    by the bandit runners: src/unified_loss.py's UnifiedClsLoss takes rho
+    there, PiCOFixedComCoMixClsLoss takes alpha). Same paper-faithful
+    warm-up: L_cont omitted before prot_start; confidence_update runs every
+    batch past warm-up regardless of the chosen alpha."""
+    model.train()
+    total_loss = 0
+    start_upd_prot = epoch >= pico_args['prot_start']
+
+    progress_bar = tqdm(loader, desc=f"PiCO-Switch Epoch {epoch + 1}/{pico_args['epochs']}")
+    for (images_w, images_s, partial_Y, true_labels, index) in progress_bar:
+        images_w, images_s, partial_Y, index = (
+            images_w.to(device), images_s.to(device), partial_Y.to(device), index.to(device))
+
+        cls_out, features, pseudo_target_cont, score_prot = model(images_w, images_s, partial_Y, pico_args)
+        batch_size = cls_out.shape[0]
+
+        if start_upd_prot:
+            loss_fn.confidence_update(temp_un_conf=score_prot.detach(), batch_index=index, batchY=partial_Y)
+
+        alpha = alpha_fn(partial_Y)
+        loss_cls = loss_fn(cls_out, index, partial_Y, alpha=alpha)
+
+        if start_upd_prot:
+            mask = torch.eq(pseudo_target_cont[:batch_size].unsqueeze(1), pseudo_target_cont.unsqueeze(0)).float()
+            loss_cont = loss_cont_fn(features=features, mask=mask, batch_size=batch_size)
+            loss = loss_cls + pico_args['loss_weight'] * loss_cont
+        else:
+            loss = loss_cls
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1), alpha=float(alpha))
+    return total_loss / len(loader)

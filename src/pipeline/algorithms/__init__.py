@@ -83,6 +83,9 @@ def _build_registry() -> dict:
                                                              r.run_comco_weighted_bandit_paired)
     registry['ComCo-Weighted-BanditEpoch'] = AlgorithmSpec('ComCo-Weighted-BanditEpoch', 'CLL',
                                                             r.run_comco_weighted_bandit_epoch)
+    # Unified loss / generic bandit (PiCO and ComCo) -- runners.GENERIC_BANDIT_SPECS.
+    for name, fn in r.GENERIC_BANDIT_RUNNERS.items():
+        registry[name] = AlgorithmSpec(name, 'PLL' if name.startswith('PiCO') else 'CLL', fn)
 
     # cls-loss swap experiment ({PiCO-Fixed, ComCo-Fixed} x every cls loss,
     # 'SwapPiCO-<loss>' / 'SwapComCo-<loss>') -- see runners.SWAP_RUNNERS and

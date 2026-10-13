@@ -1060,6 +1060,152 @@ def run_comco_weighted_bandit_epoch(loaders, pl_ds, orig_targets, C, hparams, ra
                                       device, tag, report_every, 'ComCo-Weighted-BanditEpoch', paired=False)
 
 
+# ─── Unified loss (src/unified_loss.py) + generic bandit, PiCO & ComCo ──────
+# (2026-10-13). One runner for both frameworks and three ways of picking the
+# cls loss's mixing value each epoch:
+#   'fixed'     constant value
+#   'paired01'  PairedTS over {0, 1} (same paired lookahead as BanditPaired)
+#   'cont'      ContinuousRhoTS over [0, 1] (paired lookahead at rho +- delta)
+# loss_kind 'unified' -> value is rho of UnifiedClsLoss (0 = PartialLoss,
+# 1 = original ComCo cls loss); 'mix' -> value is alpha of
+# PartialLoss/ComCo-Fixed(SCL-NL) (the earlier ComCo-Weighted arms). Needs
+# --holdout_frac > 0. Per-epoch trace -> results/<run>/bandit_trace/.
+
+
+def _generic_bandit_setup(framework, loss_kind, pl_ds, C, hparams, raw_cfg, epochs, device):
+    from src.unified_loss import PiCOFixedComCoMixClsLoss, UnifiedClsLoss, UnifiedClsLossComCo
+    from src.fixed_pico_engine import train_pico_switch_epoch
+    pico_cfg = raw_cfg['pico']
+    init_conf = _candidate_masked_init_conf(pl_ds, C, device)
+    if framework == 'ComCo':
+        comco_cfg = raw_cfg['comco']
+        args = {
+            'num_class': C, 'epochs': epochs,
+            'low_dim': comco_cfg['low_dim'], 'moco_queue': comco_cfg['moco_queue'],
+            'moco_m': comco_cfg['moco_m'], 'loss_weight': comco_cfg['loss_weight'],
+            'temperature': comco_cfg['temperature'], 'top_k': comco_cfg['top_k'],
+            'warmup_neg': comco_cfg['warmup_neg'], 'warmup_pos': comco_cfg['warmup_pos'],
+            'proto_m': pico_cfg['proto_m'], 'prot_start': pico_cfg.get('prot_start_fixed', 1),
+            'conf_ema_range': pico_cfg['conf_ema_range'],
+        }
+        model = ComCoWeightedModel(args).to(device)
+        cls_loss = UnifiedClsLossComCo(init_conf) if loss_kind == 'unified' else ComCoWeightedClsLoss(init_conf, 0.0)
+        cont_loss = ComCoContrastiveLoss(temperature=args['temperature'], top_k=args['top_k'])
+        loader_key, epoch_impl = 'comco', train_comco_weighted_switch_epoch
+    elif framework == 'PiCO':
+        args = _pico_args(C, epochs, pico_cfg)
+        args['prot_start'] = pico_cfg.get('prot_start_fixed', 1)
+        model = PiCOModel(args).to(device)
+        cls_loss = UnifiedClsLoss(init_conf) if loss_kind == 'unified' else PiCOFixedComCoMixClsLoss(init_conf)
+        cont_loss = SupConLoss()
+        loader_key, epoch_impl = 'pico', train_pico_switch_epoch
+    else:
+        raise ValueError(framework)
+    opt = make_optimizer(model, hparams)
+
+    def epoch_fn(ep, loader, value):
+        epoch_impl(args, model, loader, cls_loss, cont_loss, opt, ep, device, lambda _y, v=float(value): v)
+
+    return model, cls_loss, cont_loss, opt, args, loader_key, epoch_fn, init_conf
+
+
+def _run_generic_bandit(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag,
+                        report_every, algorithm: str, framework: str, loss_kind: str, mode: str,
+                        fixed_value: float = None):
+    from src import comco_bandit as cb
+    if 'holdout' not in loaders:
+        raise ValueError(f'{algorithm} needs a held-out split: run with --holdout_frac > 0')
+    model, cls_loss, cont_loss, opt, args, loader_key, epoch_fn, init_conf = _generic_bandit_setup(
+        framework, loss_kind, pl_ds, C, hparams, raw_cfg, epochs, device)
+    holdout = loaders['holdout']
+    if mode == 'paired01':
+        bandit = cb.PairedTS(gamma=BANDIT_GAMMA)
+    elif mode == 'cont':
+        bandit = cb.ContinuousRhoTS(gamma=BANDIT_GAMMA)
+    elif mode != 'fixed':
+        raise ValueError(mode)
+
+    trace = []
+    chunk_t0 = time.perf_counter()
+    for ep in range(epochs):
+        cls_loss.set_conf_ema_m(ep, args)
+        rec = {'epoch': ep + 1}
+        if mode == 'fixed':
+            value = fixed_value
+        else:
+            snap = cb.snapshot(model, opt, cls_loss)
+            batches = cb.draw_batches(loaders[loader_key], BANDIT_LOOKAHEAD_BATCHES)
+            probes = (0.0, 1.0) if mode == 'paired01' else bandit.probe_pair()
+            look = []
+            for v in probes:
+                cb.restore(snap, model, opt, cls_loss)
+                epoch_fn(ep, batches, v)
+                look.append(cb.holdout_scores(model, holdout, C, device)['est_soft'])
+            cb.restore(snap, model, opt, cls_loss)
+            del snap, batches
+            if mode == 'paired01':
+                bandit.update(look[1] - look[0])
+                value = float(bandit.choose())
+            else:
+                bandit.update(probes[0], probes[1], look[0], look[1])
+                value = bandit.choose()
+            mu, se = bandit.posterior()
+            rec.update(probes=list(probes), look=look, mu=mu, se=se)
+        epoch_fn(ep, loaders[loader_key], value)
+        scores = cb.holdout_scores(model, holdout, C, device)
+        rec.update(value=value, **scores)
+        if (ep + 1) % 5 == 0 or ep + 1 == epochs:
+            rec['test_acc'] = evaluate_model(model, loaders['test'], device)
+        trace.append(rec)
+        if (ep + 1) % report_every == 0 or ep + 1 == epochs:
+            elapsed = time.perf_counter() - chunk_t0
+            _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
+            recent = trace[-report_every:]
+            print(f'    [bandit] last {len(recent)} ep: mean value={sum(t["value"] for t in recent) / len(recent):.2f}  '
+                  f'holdout est={scores["est_acc"]:.3f} true={scores["true_acc"]:.3f}', flush=True)
+            chunk_t0 = time.perf_counter()
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    acc = evaluate_model(model, loaders['test'], device)
+    out_dir = os.path.join(raw_cfg.get('_results_dir', 'results'), 'bandit_trace')
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, f"{algorithm}_k{raw_cfg.get('_current_k')}"
+                                    f"_seed{raw_cfg.get('_current_seed')}.json"), 'w') as f:
+        json.dump(trace, f)
+    del model, cls_loss, cont_loss, opt, init_conf
+    gc.collect()
+    torch.cuda.empty_cache()
+    return acc
+
+
+# name -> (framework, loss_kind, mode, fixed_value)
+GENERIC_BANDIT_SPECS = {
+    'ComCo-Uni-Fixed0': ('ComCo', 'unified', 'fixed', 0.0),
+    'ComCo-Uni-Fixed1': ('ComCo', 'unified', 'fixed', 1.0),
+    'ComCo-Uni-Bandit01': ('ComCo', 'unified', 'paired01', None),
+    'ComCo-Uni-BanditCont': ('ComCo', 'unified', 'cont', None),
+    'PiCO-Uni-Fixed0': ('PiCO', 'unified', 'fixed', 0.0),
+    'PiCO-Uni-Fixed1': ('PiCO', 'unified', 'fixed', 1.0),
+    'PiCO-Uni-Bandit01': ('PiCO', 'unified', 'paired01', None),
+    'PiCO-Uni-BanditCont': ('PiCO', 'unified', 'cont', None),
+    'PiCO-Mix-A100': ('PiCO', 'mix', 'fixed', 1.0),
+    'PiCO-Mix-BanditPaired': ('PiCO', 'mix', 'paired01', None),
+}
+
+
+def _make_generic_bandit_runner(name, spec):
+    framework, loss_kind, mode, fixed_value = spec
+
+    def _runner(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
+        return _run_generic_bandit(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device,
+                                   tag, report_every, name, framework, loss_kind, mode, fixed_value)
+    return _runner
+
+
+GENERIC_BANDIT_RUNNERS = {n: _make_generic_bandit_runner(n, sp) for n, sp in GENERIC_BANDIT_SPECS.items()}
+
+
 def run_comco_weighted_batchcond(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device,
                                   tag, report_every):
     return _run_comco_weighted_switch_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size,
