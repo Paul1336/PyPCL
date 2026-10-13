@@ -91,6 +91,10 @@ def _add_run_parser(sub):
     p.add_argument('--batching', choices=['random', 'bucketed'], default='random',
                     help="PiCO/ComCo loader batching: 'random' (plain shuffle) or 'bucketed' (each "
                          "batch holds one candidate-set size only; see SizeBucketBatchSampler).")
+    p.add_argument('--holdout_frac', type=float, default=0.0,
+                    help='Hold this fraction of the training set out of every training loader '
+                         '(cifar100-subset only); exposed to runners as loaders["holdout"]. '
+                         'Needed by the ComCo-Weighted-Bandit* algorithms (label-free reward).')
     p.add_argument('--detail', action='store_true',
                     help='Enable per-class-per-epoch-checkpoint diagnostic logging (replaces '
                          'scripts/legacy/run_extended_analysis.py): adds an extra full test-set '

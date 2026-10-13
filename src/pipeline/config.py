@@ -29,6 +29,7 @@ class PipelineConfig:
     only_q: float
     only_bimodal: tuple
     batching: str
+    holdout_frac: float
     detail: bool
     detail_log_every: int
     tsne: bool
@@ -78,6 +79,7 @@ def load_config(args) -> PipelineConfig:
         only_q=getattr(args, 'only_q', None),
         only_bimodal=_parse_bimodal(getattr(args, 'only_bimodal', None)),
         batching=getattr(args, 'batching', 'random'),
+        holdout_frac=getattr(args, 'holdout_frac', 0.0),
         detail=getattr(args, 'detail', False),
         detail_log_every=getattr(args, 'detail_log_every', 10),
         tsne=getattr(args, 'tsne', False),

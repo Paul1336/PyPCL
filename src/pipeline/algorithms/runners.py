@@ -954,6 +954,112 @@ def run_comco_weighted_samplecond(loaders, pl_ds, orig_targets, C, hparams, raw_
                                                'ComCo-Weighted-SampleCond', sample_cond_alpha)
 
 
+# ─── ComCo-Weighted, bandit-chosen hard alpha (2026-10-13) ────────────────
+# See src/comco_bandit.py. Needs --holdout_frac > 0 (label-free reward is
+# computed on loaders['holdout']). Per-epoch trace (arm, paired advantage,
+# posterior, held-out estimated vs true acc, test acc every 5 epochs) goes to
+# results/<run>/bandit_trace/.
+
+BANDIT_LOOKAHEAD_BATCHES = 4
+BANDIT_GAMMA = 0.9
+
+
+def _run_comco_weighted_bandit(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                               device, tag, report_every, algorithm: str, paired: bool):
+    from src import comco_bandit as cb
+    if 'holdout' not in loaders:
+        raise ValueError(f'{algorithm} needs a held-out split: run with --holdout_frac > 0')
+    comco_cfg = raw_cfg['comco']
+    pico_cfg = raw_cfg['pico']
+    comco_args = {
+        'num_class': C,
+        'epochs': epochs,
+        'low_dim': comco_cfg['low_dim'],
+        'moco_queue': comco_cfg['moco_queue'],
+        'moco_m': comco_cfg['moco_m'],
+        'loss_weight': comco_cfg['loss_weight'],
+        'temperature': comco_cfg['temperature'],
+        'top_k': comco_cfg['top_k'],
+        'warmup_neg': comco_cfg['warmup_neg'],
+        'warmup_pos': comco_cfg['warmup_pos'],
+        'proto_m': pico_cfg['proto_m'],
+        'prot_start': pico_cfg.get('prot_start_fixed', 1),
+        'conf_ema_range': pico_cfg['conf_ema_range'],
+    }
+    init_conf = _candidate_masked_init_conf(pl_ds, C, device)
+    model = ComCoWeightedModel(comco_args).to(device)
+    cls_loss = ComCoWeightedClsLoss(init_conf, alpha=0.0)  # alpha overridden every batch by the chosen arm
+    cont_loss = ComCoContrastiveLoss(temperature=comco_args['temperature'], top_k=comco_args['top_k'])
+    opt = make_optimizer(model, hparams)
+    holdout = loaders['holdout']
+    bandit = cb.PairedTS(gamma=BANDIT_GAMMA) if paired else cb.TwoArmTS(gamma=BANDIT_GAMMA)
+
+    trace = []
+    prev_score = cb.holdout_scores(model, holdout, C, device)['est_soft']
+    chunk_t0 = time.perf_counter()
+    for ep in range(epochs):
+        cls_loss.set_conf_ema_m(ep, comco_args)
+        rec = {'epoch': ep + 1}
+        if paired:
+            snap = cb.snapshot(model, opt, cls_loss)
+            batches = cb.draw_batches(loaders['comco'], BANDIT_LOOKAHEAD_BATCHES)
+            look = {}
+            for arm in (0, 1):
+                cb.restore(snap, model, opt, cls_loss)
+                train_comco_weighted_switch_epoch(comco_args, model, batches, cls_loss, cont_loss, opt, ep,
+                                                   device, lambda _y, a=float(arm): a)
+                look[arm] = cb.holdout_scores(model, holdout, C, device)['est_soft']
+            cb.restore(snap, model, opt, cls_loss)
+            del snap, batches
+            bandit.update(look[1] - look[0])
+            mu, se = bandit.posterior()
+            rec.update(look0=look[0], look1=look[1], d=look[1] - look[0], mu=mu, se=se)
+        arm = bandit.choose()
+        train_comco_weighted_switch_epoch(comco_args, model, loaders['comco'], cls_loss, cont_loss, opt, ep,
+                                           device, lambda _y, a=float(arm): a)
+        scores = cb.holdout_scores(model, holdout, C, device)
+        if not paired:
+            bandit.update(arm, scores['est_soft'] - prev_score)
+            rec.update(mu0=bandit.posterior(0)[0], mu1=bandit.posterior(1)[0])
+        prev_score = scores['est_soft']
+        rec.update(arm=arm, **scores)
+        if (ep + 1) % 5 == 0 or ep + 1 == epochs:
+            rec['test_acc'] = evaluate_model(model, loaders['test'], device)
+        trace.append(rec)
+        if (ep + 1) % report_every == 0 or ep + 1 == epochs:
+            elapsed = time.perf_counter() - chunk_t0
+            _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
+            frac1 = sum(t['arm'] for t in trace[-report_every:]) / len(trace[-report_every:])
+            print(f'    [bandit] last {report_every} ep: arm1 frac={frac1:.2f}  '
+                  f'holdout est={scores["est_acc"]:.3f} true={scores["true_acc"]:.3f}', flush=True)
+            chunk_t0 = time.perf_counter()
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    acc = evaluate_model(model, loaders['test'], device)
+    out_dir = os.path.join(raw_cfg.get('_results_dir', 'results'), 'bandit_trace')
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, f"{algorithm}_k{raw_cfg.get('_current_k')}"
+                                    f"_seed{raw_cfg.get('_current_seed')}.json"), 'w') as f:
+        json.dump(trace, f)
+    del model, cls_loss, cont_loss, opt, init_conf
+    gc.collect()
+    torch.cuda.empty_cache()
+    return acc
+
+
+def run_comco_weighted_bandit_paired(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                                     device, tag, report_every):
+    return _run_comco_weighted_bandit(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                                      device, tag, report_every, 'ComCo-Weighted-BanditPaired', paired=True)
+
+
+def run_comco_weighted_bandit_epoch(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                                    device, tag, report_every):
+    return _run_comco_weighted_bandit(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                                      device, tag, report_every, 'ComCo-Weighted-BanditEpoch', paired=False)
+
+
 def run_comco_weighted_batchcond(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device,
                                   tag, report_every):
     return _run_comco_weighted_switch_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size,

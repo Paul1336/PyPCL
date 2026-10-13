@@ -79,6 +79,10 @@ def _build_registry() -> dict:
                                                             r.run_comco_weighted_batchrandom)
     registry['ComCo-Weighted-SampleCond'] = AlgorithmSpec('ComCo-Weighted-SampleCond', 'CLL',
                                                            r.run_comco_weighted_samplecond)
+    registry['ComCo-Weighted-BanditPaired'] = AlgorithmSpec('ComCo-Weighted-BanditPaired', 'CLL',
+                                                             r.run_comco_weighted_bandit_paired)
+    registry['ComCo-Weighted-BanditEpoch'] = AlgorithmSpec('ComCo-Weighted-BanditEpoch', 'CLL',
+                                                            r.run_comco_weighted_bandit_epoch)
 
     # cls-loss swap experiment ({PiCO-Fixed, ComCo-Fixed} x every cls loss,
     # 'SwapPiCO-<loss>' / 'SwapComCo-<loss>') -- see runners.SWAP_RUNNERS and

@@ -14,7 +14,7 @@ from datetime import datetime
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 
 from src.collate import collate_fn
 from src.data_utils import ComparisonDataGenerator, WeaklySupervisedDataset
@@ -384,8 +384,15 @@ def get_subset_dataloaders_full(
     test_info,
     batch_size: int,
     batching: str = 'random',
+    holdout_frac: float = 0.0,
 ):
     """
+    holdout_frac > 0 removes that fraction of the training set from every
+    training loader and returns it as loaders['holdout'] = {'x', 'partial',
+    'y'} (test-transformed images, candidate-set mask, true labels -- the
+    true labels are for diagnostics only). Used by the bandit runners, whose
+    reward is an unbiased label-free accuracy estimate on this split.
+
     batching='bucketed' builds the PiCO/ComCo loaders from a
     SizeBucketBatchSampler (every batch holds samples of one candidate-set
     size only) instead of a plain shuffle -- see that class.
@@ -417,13 +424,26 @@ def get_subset_dataloaders_full(
     cl_dataset = WeaklySupervisedDataset(
         cl_dataset_raw.data, cl_dataset_raw.targets, transform=train_transform
     )
-    pl_loader = DataLoader(pl_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
-    cl_loader = DataLoader(cl_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    n_train = len(pl_dataset_raw.targets)
+    holdout_idx = None
+    train_idx = np.arange(n_train)
+    if holdout_frac > 0:
+        perm = np.random.permutation(n_train)
+        n_hold = int(round(holdout_frac * n_train))
+        holdout_idx, train_idx = np.sort(perm[:n_hold]), np.sort(perm[n_hold:])
 
-    pico_dataset  = PicoDataset(pl_dataset_raw, original_targets)
-    comco_dataset = ComCoDataset(cl_dataset_raw, original_targets)
+    def _train_view(ds):
+        # Subset keeps each sample's GLOBAL index (ComCo/PiCO datasets
+        # return it), so per-sample confidence buffers stay N-sized.
+        return ds if holdout_idx is None else Subset(ds, train_idx.tolist())
+
+    pl_loader = DataLoader(_train_view(pl_dataset), batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    cl_loader = DataLoader(_train_view(cl_dataset), batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+
+    pico_dataset  = _train_view(PicoDataset(pl_dataset_raw, original_targets))
+    comco_dataset = _train_view(ComCoDataset(cl_dataset_raw, original_targets))
     if batching == 'bucketed':
-        sizes = [len(t) for t in pl_dataset_raw.targets]
+        sizes = [len(pl_dataset_raw.targets[i]) for i in train_idx]
         pico_loader  = DataLoader(pico_dataset, batch_sampler=SizeBucketBatchSampler(sizes, batch_size),
                                   collate_fn=pico_collate_fn, pin_memory=True)
         comco_loader = DataLoader(comco_dataset, batch_sampler=SizeBucketBatchSampler(sizes, batch_size),
@@ -440,8 +460,17 @@ def get_subset_dataloaders_full(
     test_dataset = _ArrayTestDataset(test_data, test_targets, transform=test_transform)
     test_loader  = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-    return {
+    loaders = {
         'pl': pl_loader, 'cl': cl_loader,
         'pico': pico_loader, 'comco': comco_loader,
         'test': test_loader,
     }
+    if holdout_idx is not None:
+        C = len(set(original_targets.tolist()))
+        x = torch.tensor(pl_dataset_raw.data[holdout_idx]).permute(0, 3, 1, 2).float() / 255.0
+        x = (x - torch.tensor(_MEAN).view(1, 3, 1, 1)) / torch.tensor(_STD).view(1, 3, 1, 1)
+        partial = torch.zeros(len(holdout_idx), C)
+        for row, i in enumerate(holdout_idx):
+            partial[row, pl_dataset_raw.targets[i]] = 1.0
+        loaders['holdout'] = {'x': x, 'partial': partial, 'y': original_targets[holdout_idx].clone()}
+    return loaders
