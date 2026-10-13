@@ -29,12 +29,14 @@ class ComCoWeightedClsLoss(nn.Module):
         self.alpha = alpha
         self.comco_loss = FixedComCoCLSLoss()
         self.partial_loss = PartialLoss(init_conf)
+        self.frozen = False  # True: confidence_update is a no-op (s-freezing intervention)
 
     def set_conf_ema_m(self, epoch, args):
         self.partial_loss.set_conf_ema_m(epoch, args)
 
     def confidence_update(self, **kwargs):
-        self.partial_loss.confidence_update(**kwargs)
+        if not self.frozen:
+            self.partial_loss.confidence_update(**kwargs)
 
     def forward(self, outputs, index, comp_mask, alpha: float = None):
         """`alpha`, if given, overrides self.alpha for this call only -- used

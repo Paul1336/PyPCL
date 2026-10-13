@@ -1099,6 +1099,15 @@ def _generic_bandit_setup(framework, loss_kind, pl_ds, C, hparams, raw_cfg, epoc
         cls_loss = UnifiedClsLoss(init_conf) if loss_kind == 'unified' else PiCOFixedComCoMixClsLoss(init_conf)
         cont_loss = SupConLoss()
         loader_key, epoch_impl = 'pico', train_pico_switch_epoch
+    elif framework == 'Solo':
+        # no contrastive branch; s updated from the classifier (src/solo_switch.py)
+        from src.solo_switch import SoloModel, train_solo_switch_epoch
+        args = {'num_class': C, 'epochs': epochs, 'prot_start': pico_cfg.get('prot_start_fixed', 1),
+                'conf_ema_range': pico_cfg['conf_ema_range']}
+        model = SoloModel(C, pico_cfg['low_dim']).to(device)
+        cls_loss = UnifiedClsLoss(init_conf) if loss_kind == 'unified' else PiCOFixedComCoMixClsLoss(init_conf)
+        cont_loss = None
+        loader_key, epoch_impl = 'pico', train_solo_switch_epoch
     else:
         raise ValueError(framework)
     opt = make_optimizer(model, hparams)
@@ -1214,10 +1223,21 @@ GENERIC_BANDIT_SPECS = {
 }
 # Switch-cause analysis (2026-10-14): forced switch at epoch T, with and without s frozen before T.
 for _fw in ('PiCO', 'ComCo'):
-    for _T in (25, 50, 100, 150):
-        GENERIC_BANDIT_SPECS[f'{_fw}-Uni-Sched{_T}'] = (_fw, 'unified', 'sched', _T)
-    for _T in (50, 100):
-        GENERIC_BANDIT_SPECS[f'{_fw}-Uni-Sched{_T}-Frozen'] = (_fw, 'unified', 'sched_frozen', _T)
+    for _kind, _tag in (('unified', 'Uni'), ('mix', 'Mix')):
+        for _T in (25, 50, 100, 150):
+            GENERIC_BANDIT_SPECS[f'{_fw}-{_tag}-Sched{_T}'] = (_fw, _kind, 'sched', _T)
+        for _T in (50, 100):
+            GENERIC_BANDIT_SPECS[f'{_fw}-{_tag}-Sched{_T}-Frozen'] = (_fw, _kind, 'sched_frozen', _T)
+# Original {PartialLoss, ComCo-Fixed (SCL-NL)} pair through the generic runner on ComCo too, and the
+# no-contrastive ('Solo') versions of both loss pairs (2026-10-14).
+GENERIC_BANDIT_SPECS['ComCo-Mix-A100'] = ('ComCo', 'mix', 'fixed', 1.0)
+GENERIC_BANDIT_SPECS['ComCo-Mix-BanditPaired'] = ('ComCo', 'mix', 'paired01', None)
+GENERIC_BANDIT_SPECS['Solo-Uni-Fixed0'] = ('Solo', 'unified', 'fixed', 0.0)
+GENERIC_BANDIT_SPECS['Solo-Uni-Fixed1'] = ('Solo', 'unified', 'fixed', 1.0)
+GENERIC_BANDIT_SPECS['Solo-Uni-Bandit01'] = ('Solo', 'unified', 'paired01', None)
+GENERIC_BANDIT_SPECS['Solo-Uni-BanditCont'] = ('Solo', 'unified', 'cont', None)
+GENERIC_BANDIT_SPECS['Solo-Mix-A100'] = ('Solo', 'mix', 'fixed', 1.0)
+GENERIC_BANDIT_SPECS['Solo-Mix-BanditPaired'] = ('Solo', 'mix', 'paired01', None)
 
 
 def _make_generic_bandit_runner(name, spec):
