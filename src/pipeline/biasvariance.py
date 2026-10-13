@@ -37,6 +37,9 @@ from torchvision import transforms
 
 from src.pico.utils_loss import PartialLoss, SupConLoss
 from src.pico.weighted_cls_loss import PiCOWeightedClsLoss
+from src.comco.fixed_utils_loss import FixedComCoCLSLoss
+from src.comco.utils_loss import ComCoContrastiveLoss
+from src.comco.weighted_cls_loss import ComCoWeightedClsLoss
 
 _MEAN = [0.4914, 0.4822, 0.4465]
 _STD = [0.247, 0.2435, 0.2616]
@@ -171,11 +174,12 @@ def _append_row(out_dir: str, row: dict):
 # ─── cls-loss adapters: (logits, partial_Y, comp_mask, index) -> scalar loss ──
 
 
-def _cls_loss_and_grad(algorithm: str, cls_loss_fn, logits: torch.Tensor, partial_Y: torch.Tensor,
+def _cls_loss_and_grad(cls_loss_fn, logits: torch.Tensor, partial_Y: torch.Tensor,
                         comp_mask: torch.Tensor, eval_index: torch.Tensor) -> torch.Tensor:
-    """Runs the REAL cls_loss_fn currently in use for `algorithm` against a
-    resampled (partial_Y, comp_mask) pair, on a fresh leaf cloned from the
-    cached `logits`, and returns the leaf's gradient after backward()."""
+    """Runs the REAL cls_loss_fn currently in use (dispatched by its type)
+    against a resampled (partial_Y, comp_mask) pair, on a fresh leaf cloned
+    from the cached `logits`, and returns the leaf's gradient after
+    backward()."""
     leaf = logits.detach().clone().requires_grad_(True)
 
     if isinstance(cls_loss_fn, PartialLoss):
@@ -199,7 +203,20 @@ def _cls_loss_and_grad(algorithm: str, cls_loss_fn, logits: torch.Tensor, partia
         partial_term = -((logsm * renorm).sum(dim=1)).mean()
         mcl_term = cls_loss_fn.mcl_loss(leaf, partial_Y)
         loss = cls_loss_fn.alpha * partial_term + (1 - cls_loss_fn.alpha) * mcl_term
-    elif algorithm == 'ComCo-Fixed':
+    elif isinstance(cls_loss_fn, ComCoWeightedClsLoss):
+        # ComCo-side mirror of the PiCOWeightedClsLoss branch above: reuse
+        # the wrapped PartialLoss's REAL, EMA-accumulated confidence row
+        # (driven by ComCoWeightedModel's prototype signal, not this
+        # resample), renormalized over the resampled candidate mask, plus
+        # FixedComCoCLSLoss over the resampled complementary mask.
+        real_conf_row = cls_loss_fn.partial_loss.confidence[eval_index, :].detach()
+        masked = real_conf_row * partial_Y
+        renorm = masked / masked.sum(dim=1, keepdim=True).clamp(min=1e-8)
+        logsm = F.log_softmax(leaf, dim=1)
+        partial_term = -((logsm * renorm).sum(dim=1)).mean()
+        comco_term = cls_loss_fn.comco_loss(leaf, comp_mask)
+        loss = cls_loss_fn.alpha * comco_term + (1 - cls_loss_fn.alpha) * partial_term
+    elif isinstance(cls_loss_fn, FixedComCoCLSLoss):
         loss = cls_loss_fn(leaf, comp_mask)
     else:
         # Stateless: PiCOMCLLoss (PiCO-MCL-Fixed).
@@ -245,7 +262,7 @@ def log_biasvariance_checkpoint(model, cls_loss_fn, cont_loss_fn, algorithm: str
     for m in range(m_resamples):
         seed_val = hash((dataset, C, k, epoch, algorithm, m)) & 0xFFFFFFFF
         partial_Y, comp_mask = _resample_batch(eval_true_labels, C, k, seed_val, device)
-        g = _cls_loss_and_grad(algorithm, cls_loss_fn, logits, partial_Y, comp_mask, eval_index)
+        g = _cls_loss_and_grad(cls_loss_fn, logits, partial_Y, comp_mask, eval_index)
         grads.append(g)
     stats = _reduce(grads, oracle_grad)
     _append_row(out_dir, dict(dataset=dataset, C=C, k=k, algorithm=algorithm, seed=seed,
@@ -259,7 +276,9 @@ def log_biasvariance_checkpoint(model, cls_loss_fn, cont_loss_fn, algorithm: str
     oc_grad = oracle_cont_grad(q, k_view, eval_true_labels, pool_true, supcon_ref)
     cont_grads = []
 
-    if algorithm == 'ComCo-Fixed':
+    if isinstance(cont_loss_fn, ComCoContrastiveLoss):
+        # Covers ComCo-Fixed AND ComCo-Weighted-* (same cont loss/architecture
+        # for both -- alpha only touches the cls term, see ComCoWeightedClsLoss).
         pseudo_all = cls_out.argmax(dim=1).detach()
         pool_pseudo = torch.cat([pseudo_all, pseudo_all])
         for m in range(m_resamples):

@@ -65,3 +65,52 @@ class ComCoModel(nn.Module):
         self._dequeue_and_enqueue(k, pseudo_q, comp_mask, args['moco_queue'])
 
         return cls_out, q, all_feats, all_pseudo, all_comp
+
+
+class ComCoWeightedModel(ComCoModel):
+    """ComCo-Weighted: ComCoModel plus a PiCO-style per-class prototype
+    buffer (Eq. 7 EMA, keyed by a CANDIDATE-masked pseudo-label), needed to
+    drive PartialLoss.confidence_update (Eq. 6) inside ComCoWeightedClsLoss
+    (src/comco/weighted_cls_loss.py) -- native ComCo-Fixed has no prototype
+    memory since its own cls loss (FixedComCoCLSLoss) doesn't need one;
+    PartialLoss does.
+
+    ComCo's own unmasked argmax pseudo-label (`pseudo_q`) still drives the
+    queue/contrastive pool exactly as in ComCoModel -- unaffected by this
+    addition. The prototype-assignment pseudo-label is a SEPARATE, candidate-
+    masked quantity (`predicted_scores = softmax(cls_out) * partial_Y`, same
+    construction as PiCOModel.forward), used only to keep the prototypes and
+    score_prot meaningful for PartialLoss.
+    """
+
+    def __init__(self, args):
+        super().__init__(args)
+        self.register_buffer("prototypes", torch.zeros(args['num_class'], args['low_dim']))
+
+    def forward(self, img_q, img_k=None, comp_mask=None, partial_Y=None, args=None, eval_only=False):
+        cls_out, q = self.encoder_q(img_q)
+        if eval_only:
+            return cls_out
+
+        pseudo_q = cls_out.argmax(dim=1)
+
+        predicted_scores = torch.softmax(cls_out, dim=1) * partial_Y
+        _, pseudo_labels_b = torch.max(predicted_scores, dim=1)
+        prototypes = self.prototypes.clone().detach()
+        logits_prot = torch.mm(q, prototypes.t())
+        score_prot = torch.softmax(logits_prot, dim=1)
+        for feat, label in zip(q, pseudo_labels_b):
+            self.prototypes[label] = self.prototypes[label] * args['proto_m'] + (1 - args['proto_m']) * feat
+        self.prototypes = F.normalize(self.prototypes, p=2, dim=1).detach()
+
+        with torch.no_grad():
+            self._momentum_update_key_encoder(args['moco_m'])
+            _, k = self.encoder_k(img_k)
+
+        all_feats = torch.cat([q, k, self.queue.clone().detach()], dim=0)
+        all_pseudo = torch.cat([pseudo_q, pseudo_q, self.queue_pseudo.clone().detach()], dim=0)
+        all_comp = torch.cat([comp_mask, comp_mask, self.queue_comp.clone().detach()], dim=0)
+
+        self._dequeue_and_enqueue(k, pseudo_q, comp_mask, args['moco_queue'])
+
+        return cls_out, q, all_feats, all_pseudo, all_comp, score_prot

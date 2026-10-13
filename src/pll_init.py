@@ -394,3 +394,11 @@ ALPHA_VALUES = (0.0, 0.25, 0.5, 0.75, 1.0)
 def pico_weighted_variant_name(alpha: float) -> str:
     """e.g. 0.3 -> 'PiCO-Weighted-A030'."""
     return f'PiCO-Weighted-A{round(alpha * 100):03d}'
+
+
+# ComCo-side mirror of the sweep above -- see src/comco/weighted_cls_loss.py.
+# alpha weights ComCo-Fixed's OWN cls loss (FixedComCoCLSLoss); (1 - alpha)
+# weights PartialLoss borrowed onto ComCo's architecture.
+def comco_weighted_variant_name(alpha: float) -> str:
+    """e.g. 0.3 -> 'ComCo-Weighted-A030'."""
+    return f'ComCo-Weighted-A{round(alpha * 100):03d}'

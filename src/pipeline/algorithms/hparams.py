@@ -56,6 +56,24 @@ from src.pll_init import ALPHA_VALUES, pico_weighted_variant_name  # noqa: E402
 for _a in ALPHA_VALUES:
     ALGO_HPARAMS[pico_weighted_variant_name(_a)] = _ADAM
 
+# ComCo-side mirror of the sweep above (see src/pll_init.py.comco_weighted_variant_name
+# and src/pipeline/algorithms/runners.py's COMCO_WEIGHTED_SWEEP_RUNNERS).
+from src.pll_init import comco_weighted_variant_name  # noqa: E402
+
+for _a in ALPHA_VALUES:
+    ALGO_HPARAMS[comco_weighted_variant_name(_a)] = _ADAM
+
+ALGO_HPARAMS['ComCo-Weighted-BatchCond'] = _ADAM
+ALGO_HPARAMS['ComCo-Weighted-BatchRandom'] = _ADAM
+
+# cls-loss swap experiment (src/clsloss_swap.py) -- Adam for every loss,
+# including PRODEN/SoLar, so only L_cls differs between cells.
+from src.clsloss_swap import CLS_LOSSES, FRAMEWORKS, swap_algorithm_name  # noqa: E402
+
+for _fw in FRAMEWORKS:
+    for _l in CLS_LOSSES:
+        ALGO_HPARAMS[swap_algorithm_name(_fw, _l)] = _ADAM
+
 # Parametrized biased-init sweep #2 (see src/pll_init.py.BIAS_RAND_WEIGHTS /
 # BIAS_RAND_WF_VALUES / biased_rand_variant_name and
 # src/pipeline/algorithms/runners.py's BIASED_RAND_SWEEP_RUNNERS).

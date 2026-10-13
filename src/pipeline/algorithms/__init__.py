@@ -65,6 +65,25 @@ def _build_registry() -> dict:
     for name, fn in r.PICO_WEIGHTED_SWEEP_RUNNERS.items():
         registry[name] = AlgorithmSpec(name, 'PLL', fn)
 
+    # ComCo-side mirror (alpha * ComCo-Fixed's own cls loss + (1-alpha) *
+    # PartialLoss borrowed onto ComCo's architecture, CLL) -- see
+    # runners.COMCO_WEIGHTED_SWEEP_RUNNERS and src/pll_init.py's ALPHA_VALUES.
+    for name, fn in r.COMCO_WEIGHTED_SWEEP_RUNNERS.items():
+        registry[name] = AlgorithmSpec(name, 'CLL', fn)
+
+    # Per-batch alpha-switching variants (variable-average-k experiment) --
+    # see runners.run_comco_weighted_batchcond / run_comco_weighted_batchrandom.
+    registry['ComCo-Weighted-BatchCond'] = AlgorithmSpec('ComCo-Weighted-BatchCond', 'CLL',
+                                                          r.run_comco_weighted_batchcond)
+    registry['ComCo-Weighted-BatchRandom'] = AlgorithmSpec('ComCo-Weighted-BatchRandom', 'CLL',
+                                                            r.run_comco_weighted_batchrandom)
+
+    # cls-loss swap experiment ({PiCO-Fixed, ComCo-Fixed} x every cls loss,
+    # 'SwapPiCO-<loss>' / 'SwapComCo-<loss>') -- see runners.SWAP_RUNNERS and
+    # src/clsloss_swap.py. Paradigm follows the framework.
+    for name, fn in r.SWAP_RUNNERS.items():
+        registry[name] = AlgorithmSpec(name, 'PLL' if name.startswith('SwapPiCO') else 'CLL', fn)
+
     # Parametrized biased-init sweep #2 (PiCO-Fixed-BiasedRand-W*-Wf* /
     # PRODEN-BiasedRand-W*-Wf*, both PLL) -- see runners.BIASED_RAND_SWEEP_RUNNERS.
     for name, fn in r.BIASED_RAND_SWEEP_RUNNERS.items():

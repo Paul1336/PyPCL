@@ -210,7 +210,18 @@ def run(cfg: PipelineConfig):
                 # can pick the right backbone/transform/output path without
                 # changing every runner's function signature.
                 cfg.raw['_dataset_spec'] = spec
-                cfg.raw['_current_k'] = k
+                # Under --only_q, `k` is q_sentinel_k's negative bookkeeping
+                # value (real k is meaningless when candidate-set size is
+                # drawn per-sample, not fixed) -- kept as-is for results.csv/
+                # resume dedup above, which uses the loop's own `k` directly,
+                # not this. But detail.cell_dir's directory naming and the
+                # bias-variance diagnostic's fixed-size resampler (both keyed
+                # off '_current_k') need a real positive int, so stash the
+                # dataset's actual target MEAN candidate-set size instead --
+                # exactly recoverable from q since generate_variable_pl_cl_datasets
+                # includes each of the C-1 wrong classes independently w.p. q
+                # (mean size = 1 + q*(C-1); round() only guards float noise).
+                cfg.raw['_current_k'] = k if cfg.only_q is None else round(1 + cfg.only_q * (C - 1))
                 cfg.raw['_current_seed'] = seed
 
                 for alg in pending:

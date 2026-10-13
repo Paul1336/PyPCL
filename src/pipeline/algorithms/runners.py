@@ -20,15 +20,18 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 
 from src.collate import solar_collate_fn
-from src.comco.model import ComCoModel
+from src.comco.model import ComCoModel, ComCoWeightedModel
 from src.comco.utils_loss import ComCoCLSLoss, ComCoContrastiveLoss
 from src.comco.fixed_utils_loss import FixedComCoCLSLoss
+from src.comco.weighted_cls_loss import ComCoWeightedClsLoss
 from src.clpl_loss import CLPLSquaredHingeLoss
 from src.cpe_loss import CPELoss
 from src.data_utils import SoLarDataset
 from src.engine import (evaluate_model, train_algorithm, train_comco_epoch,
                          train_pico_epoch, train_pico_mclloss_epoch,
                          train_pico_moco_epoch, train_pico_sc_epoch, train_solar)
+from src.fixed_comco_engine import (batch_cond_alpha, batch_random_alpha, train_comco_weighted_epoch,
+                                     train_comco_weighted_switch_epoch)
 from src.fixed_pico_engine import train_pico_epoch_fixed, train_pico_mcl_epoch_fixed, train_pico_weighted_epoch
 from src.oracle_pico_engine import train_pico_oracle_add_graded_epoch, train_pico_oracle_graded_epoch
 from src.mcl_losses import MCL_LOG
@@ -770,6 +773,178 @@ def _build_pico_weighted_sweep_runners() -> dict:
 PICO_WEIGHTED_SWEEP_RUNNERS = _build_pico_weighted_sweep_runners()
 
 
+# ─── ComCo-weighted-cls-loss: alpha * ComCo-Fixed's own cls loss + ────────
+#     (1 - alpha) * PartialLoss (borrowed onto ComCo's architecture) ───────
+#
+# ComCo-side mirror of PICO_WEIGHTED_SWEEP_RUNNERS above. ComCoWeightedModel
+# adds the per-class prototype buffer PartialLoss needs (native ComCo-Fixed
+# has none); see src/comco/model.py, src/comco/weighted_cls_loss.py,
+# src/fixed_comco_engine.py::train_comco_weighted_epoch. prot_start/proto_m
+# are borrowed from raw_cfg['pico'] (same "Fixed"-family defaults already
+# used by PiCO-Fixed/PiCO-Weighted) rather than duplicated into config.yaml's
+# 'comco' section, since they govern the same PartialLoss/prototype
+# mechanism either way.
+
+
+def _run_comco_weighted_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                                 device, tag, report_every, algorithm: str, alpha: float):
+    comco_cfg = raw_cfg['comco']
+    pico_cfg = raw_cfg['pico']
+    comco_args = {
+        'num_class': C,
+        'epochs': epochs,
+        'low_dim': comco_cfg['low_dim'],
+        'moco_queue': comco_cfg['moco_queue'],
+        'moco_m': comco_cfg['moco_m'],
+        'loss_weight': comco_cfg['loss_weight'],
+        'temperature': comco_cfg['temperature'],
+        'top_k': comco_cfg['top_k'],
+        'warmup_neg': comco_cfg['warmup_neg'],
+        'warmup_pos': comco_cfg['warmup_pos'],
+        'proto_m': pico_cfg['proto_m'],
+        'prot_start': pico_cfg.get('prot_start_fixed', 1),
+        'conf_ema_range': pico_cfg['conf_ema_range'],
+    }
+    init_conf = _candidate_masked_init_conf(pl_ds, C, device)
+    model = ComCoWeightedModel(comco_args).to(device)
+    cls_loss = ComCoWeightedClsLoss(init_conf, alpha)
+    cont_loss = ComCoContrastiveLoss(temperature=comco_args['temperature'], top_k=comco_args['top_k'])
+    opt = make_optimizer(model, hparams)
+
+    bv_on = detail.biasvariance_enabled(raw_cfg)
+    if bv_on:
+        eval_size = detail.biasvariance_cfg(raw_cfg).get('eval_size', 256)
+        bv_images, bv_labels, bv_index = biasvariance.build_fixed_eval_batch(pl_ds, orig_targets, eval_size, device)
+
+    chunk_t0 = time.perf_counter()
+    for ep in range(epochs):
+        cls_loss.set_conf_ema_m(ep, comco_args)
+        train_comco_weighted_epoch(comco_args, model, loaders['comco'], cls_loss, cont_loss, opt, ep, device)
+        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
+        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
+        detail.maybe_log_concentration(raw_cfg, model, pl_ds, device, C, ep + 1, algorithm)
+        if bv_on:
+            detail.maybe_log_biasvariance(raw_cfg, model, cls_loss, cont_loss, algorithm,
+                                           bv_images, bv_labels, bv_index, C, ep + 1, device)
+        if (ep + 1) % report_every == 0 or ep + 1 == epochs:
+            elapsed = time.perf_counter() - chunk_t0
+            _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
+            chunk_t0 = time.perf_counter()
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    detail.maybe_run_knn_eval(raw_cfg, model, pl_ds, orig_targets, loaders['test'], device, C, epochs, algorithm)
+    acc = evaluate_model(model, loaders['test'], device)
+    del model, cls_loss, cont_loss, opt, init_conf
+    gc.collect()
+    torch.cuda.empty_cache()
+    return acc
+
+
+def _make_comco_weighted_runner(alpha: float):
+    from src.pll_init import comco_weighted_variant_name
+    algorithm = comco_weighted_variant_name(alpha)
+
+    def _runner(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
+        return _run_comco_weighted_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                                            device, tag, report_every, algorithm, alpha)
+
+    return algorithm, _runner
+
+
+def _build_comco_weighted_sweep_runners() -> dict:
+    from src.pll_init import ALPHA_VALUES
+    runners = {}
+    for a in ALPHA_VALUES:
+        name, fn = _make_comco_weighted_runner(a)
+        runners[name] = fn
+    return runners
+
+
+COMCO_WEIGHTED_SWEEP_RUNNERS = _build_comco_weighted_sweep_runners()
+
+
+# ─── ComCo-Weighted, per-batch alpha switching (variable-average-k experiment) ──
+#
+# Same architecture/losses as _run_comco_weighted_variant above, except alpha
+# is picked fresh each batch by alpha_fn instead of held fixed for the whole
+# run -- see train_comco_weighted_switch_epoch / batch_cond_alpha /
+# batch_random_alpha (src/fixed_comco_engine.py). Meant to be trained under
+# --only_q (variable per-sample candidate-set size, see src/pll_init.py's
+# only_q derivation for a target mean k), where a batch's own realized
+# average candidate-set size fluctuates around the dataset's target mean.
+
+
+def _run_comco_weighted_switch_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                                        device, tag, report_every, algorithm: str, alpha_fn):
+    comco_cfg = raw_cfg['comco']
+    pico_cfg = raw_cfg['pico']
+    comco_args = {
+        'num_class': C,
+        'epochs': epochs,
+        'low_dim': comco_cfg['low_dim'],
+        'moco_queue': comco_cfg['moco_queue'],
+        'moco_m': comco_cfg['moco_m'],
+        'loss_weight': comco_cfg['loss_weight'],
+        'temperature': comco_cfg['temperature'],
+        'top_k': comco_cfg['top_k'],
+        'warmup_neg': comco_cfg['warmup_neg'],
+        'warmup_pos': comco_cfg['warmup_pos'],
+        'proto_m': pico_cfg['proto_m'],
+        'prot_start': pico_cfg.get('prot_start_fixed', 1),
+        'conf_ema_range': pico_cfg['conf_ema_range'],
+    }
+    init_conf = _candidate_masked_init_conf(pl_ds, C, device)
+    model = ComCoWeightedModel(comco_args).to(device)
+    cls_loss = ComCoWeightedClsLoss(init_conf, alpha=0.0)  # placeholder; alpha_fn overrides every batch
+    cont_loss = ComCoContrastiveLoss(temperature=comco_args['temperature'], top_k=comco_args['top_k'])
+    opt = make_optimizer(model, hparams)
+
+    bv_on = detail.biasvariance_enabled(raw_cfg)
+    if bv_on:
+        eval_size = detail.biasvariance_cfg(raw_cfg).get('eval_size', 256)
+        bv_images, bv_labels, bv_index = biasvariance.build_fixed_eval_batch(pl_ds, orig_targets, eval_size, device)
+
+    chunk_t0 = time.perf_counter()
+    for ep in range(epochs):
+        cls_loss.set_conf_ema_m(ep, comco_args)
+        train_comco_weighted_switch_epoch(comco_args, model, loaders['comco'], cls_loss, cont_loss, opt, ep,
+                                           device, alpha_fn)
+        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
+        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
+        detail.maybe_log_concentration(raw_cfg, model, pl_ds, device, C, ep + 1, algorithm)
+        if bv_on:
+            detail.maybe_log_biasvariance(raw_cfg, model, cls_loss, cont_loss, algorithm,
+                                           bv_images, bv_labels, bv_index, C, ep + 1, device)
+        if (ep + 1) % report_every == 0 or ep + 1 == epochs:
+            elapsed = time.perf_counter() - chunk_t0
+            _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
+            chunk_t0 = time.perf_counter()
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    detail.maybe_run_knn_eval(raw_cfg, model, pl_ds, orig_targets, loaders['test'], device, C, epochs, algorithm)
+    acc = evaluate_model(model, loaders['test'], device)
+    del model, cls_loss, cont_loss, opt, init_conf
+    gc.collect()
+    torch.cuda.empty_cache()
+    return acc
+
+
+def run_comco_weighted_batchcond(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device,
+                                  tag, report_every):
+    return _run_comco_weighted_switch_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size,
+                                               epochs, device, tag, report_every,
+                                               'ComCo-Weighted-BatchCond', batch_cond_alpha)
+
+
+def run_comco_weighted_batchrandom(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device,
+                                    tag, report_every):
+    return _run_comco_weighted_switch_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size,
+                                               epochs, device, tag, report_every,
+                                               'ComCo-Weighted-BatchRandom', batch_random_alpha)
+
+
 # ─── Parametrized biased-init sweep #2: true_weight x wf (how many other ──
 #     candidates the remainder is spread across, chosen at random)
 #
@@ -1260,3 +1435,88 @@ def run_solar(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epo
     gc.collect()
     torch.cuda.empty_cache()
     return final_acc
+
+
+# ─── cls-loss swap experiment: {PiCO-Fixed, ComCo-Fixed} x every cls loss ──
+#
+# Architecture/warm-up/contrastive loss are held at PiCO-Fixed (PiCOModel,
+# prot_start_fixed, SupCon, L_cont omitted during warm-up) or ComCo-Fixed
+# (ComCoWeightedModel -- ComCoModel plus a prototype buffer that only matters
+# for PiCOPartial -- and ComCoContrastiveLoss); only L_cls changes. See
+# src/clsloss_swap.py and scripts/run_clsloss_swap.py.
+
+
+def _run_swap_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                      device, tag, report_every, framework: str, loss_name: str):
+    from src.clsloss_swap import (build_cls_loss, train_comco_swap_epoch, train_pico_swap_epoch)
+    pico_cfg = raw_cfg['pico']
+    if framework == 'PiCO':
+        fw_args = _pico_args(C, epochs, pico_cfg)
+        fw_args['prot_start'] = pico_cfg.get('prot_start_fixed', 1)
+        model = PiCOModel(fw_args).to(device)
+        cont_loss = SupConLoss()
+        loader, epoch_fn = loaders['pico'], train_pico_swap_epoch
+    else:
+        comco_cfg = raw_cfg['comco']
+        fw_args = {
+            'num_class': C, 'epochs': epochs,
+            'low_dim': comco_cfg['low_dim'], 'moco_queue': comco_cfg['moco_queue'],
+            'moco_m': comco_cfg['moco_m'], 'loss_weight': comco_cfg['loss_weight'],
+            'temperature': comco_cfg['temperature'], 'top_k': comco_cfg['top_k'],
+            'warmup_neg': comco_cfg['warmup_neg'], 'warmup_pos': comco_cfg['warmup_pos'],
+            'proto_m': pico_cfg['proto_m'], 'prot_start': pico_cfg.get('prot_start_fixed', 1),
+            'conf_ema_range': pico_cfg['conf_ema_range'],
+        }
+        model = ComCoWeightedModel(fw_args).to(device)
+        cont_loss = ComCoContrastiveLoss(temperature=fw_args['temperature'], top_k=fw_args['top_k'])
+        loader, epoch_fn = loaders['comco'], train_comco_swap_epoch
+    init_conf = _candidate_masked_init_conf(pl_ds, C, device)
+    cls_loss = build_cls_loss(loss_name, init_conf, C, raw_cfg['solar'], batch_size)
+    opt = make_optimizer(model, hparams)
+
+    # --biasvariance: per-epoch cls-loss dynamics + gradient bias/variance,
+    # identical to the solo cells (src/clsloss_solo.py), every seed.
+    diag = None
+    if detail.biasvariance_enabled(raw_cfg):
+        from src.clsloss_solo import CellDiagnostics
+        bv = detail.biasvariance_cfg(raw_cfg)
+        diag = CellDiagnostics(loss_name, pl_ds, orig_targets, loaders['test'], C, raw_cfg.get('_current_k', 0),
+                               raw_cfg.get('_current_seed'), detail.cell_dir(raw_cfg, f'Swap{framework}-{loss_name}', C),
+                               device, bv.get('log_every', 20), bv.get('m_resamples', 50), bv.get('eval_size', 256))
+
+    chunk_t0 = time.perf_counter()
+    for ep in range(epochs):
+        tl = epoch_fn(fw_args, model, loader, cls_loss, cont_loss, opt, ep, device)
+        if diag is not None:
+            row = diag.after_epoch(model.encoder_q, cls_loss, ep + 1, tl)
+            if (ep + 1) % report_every == 0 or ep + 1 == epochs:
+                print(f"  [diag] ep {ep + 1}  test {row['test_acc']:.2f}  train {row['train_true_acc']:.2f}  "
+                      f"disamb {row['disamb_acc']:.2f}  S {row['cand_mass']:.3f}  H {row['cand_entropy']:.3f}  "
+                      f"best {diag.best_acc:.2f}@{diag.best_ep}", flush=True)
+        if (ep + 1) % report_every == 0 or ep + 1 == epochs:
+            elapsed = time.perf_counter() - chunk_t0
+            _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
+            chunk_t0 = time.perf_counter()
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    acc = evaluate_model(model, loaders['test'], device)
+    del model, cls_loss, cont_loss, opt, init_conf
+    gc.collect()
+    torch.cuda.empty_cache()
+    return acc
+
+
+def _make_swap_runner(framework: str, loss_name: str):
+    def _runner(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
+        return _run_swap_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
+                                 device, tag, report_every, framework, loss_name)
+    return _runner
+
+
+def _build_swap_runners() -> dict:
+    from src.clsloss_swap import CLS_LOSSES, FRAMEWORKS, swap_algorithm_name
+    return {swap_algorithm_name(fw, l): _make_swap_runner(fw, l) for fw in FRAMEWORKS for l in CLS_LOSSES}
+
+
+SWAP_RUNNERS = _build_swap_runners()
