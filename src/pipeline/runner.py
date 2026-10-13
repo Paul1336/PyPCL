@@ -114,6 +114,7 @@ def run(cfg: PipelineConfig):
         'biasvariance_eval_size': cfg.biasvariance_eval_size,
         'only_q': cfg.only_q, 'only_bimodal': cfg.only_bimodal, 'batching': cfg.batching,
         'holdout_frac': cfg.holdout_frac,
+        'switch_diag': cfg.switch_diag,
     })
 
     # Stashed in raw_cfg (like '_dataset_spec' below) rather than added to
@@ -231,6 +232,7 @@ def run(cfg: PipelineConfig):
                     k_lo, k_hi, p_lo = cfg.only_bimodal
                     cfg.raw['_current_k'] = round(p_lo * k_lo + (1 - p_lo) * k_hi)
                 cfg.raw['_results_dir'] = cfg.results_dir
+                cfg.raw['_switch_diag'] = cfg.switch_diag
                 cfg.raw['_current_seed'] = seed
 
                 for alg in pending:

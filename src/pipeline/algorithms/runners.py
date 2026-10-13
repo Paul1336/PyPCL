@@ -1106,7 +1106,14 @@ def _generic_bandit_setup(framework, loss_kind, pl_ds, C, hparams, raw_cfg, epoc
     def epoch_fn(ep, loader, value):
         epoch_impl(args, model, loader, cls_loss, cont_loss, opt, ep, device, lambda _y, v=float(value): v)
 
-    return model, cls_loss, cont_loss, opt, args, loader_key, epoch_fn, init_conf
+    if framework == 'ComCo':
+        def loss_at(logits, index, cand, value):
+            return cls_loss(logits, index, 1.0 - cand, alpha=value)
+    else:
+        def loss_at(logits, index, cand, value):
+            return cls_loss(logits, index, cand, alpha=value)
+
+    return model, cls_loss, cont_loss, opt, args, loader_key, epoch_fn, init_conf, loss_at
 
 
 def _run_generic_bandit(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag,
@@ -1115,14 +1122,18 @@ def _run_generic_bandit(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch
     from src import comco_bandit as cb
     if 'holdout' not in loaders:
         raise ValueError(f'{algorithm} needs a held-out split: run with --holdout_frac > 0')
-    model, cls_loss, cont_loss, opt, args, loader_key, epoch_fn, init_conf = _generic_bandit_setup(
+    model, cls_loss, cont_loss, opt, args, loader_key, epoch_fn, init_conf, loss_at = _generic_bandit_setup(
         framework, loss_kind, pl_ds, C, hparams, raw_cfg, epochs, device)
     holdout = loaders['holdout']
+    diag = None
+    if raw_cfg.get('_switch_diag'):
+        from src.switch_diag import SwitchDiag
+        diag = SwitchDiag(pl_ds, orig_targets, loaders['train_idx'], C, device)
     if mode == 'paired01':
         bandit = cb.PairedTS(gamma=BANDIT_GAMMA)
     elif mode == 'cont':
         bandit = cb.ContinuousRhoTS(gamma=BANDIT_GAMMA)
-    elif mode != 'fixed':
+    elif mode not in ('fixed', 'sched', 'sched_frozen'):
         raise ValueError(mode)
 
     trace = []
@@ -1132,6 +1143,12 @@ def _run_generic_bandit(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch
         rec = {'epoch': ep + 1}
         if mode == 'fixed':
             value = fixed_value
+        elif mode in ('sched', 'sched_frozen'):
+            # fixed_value = switch epoch T: rho=1 for ep < T, then rho=0. sched_frozen also
+            # stops s (the confidence) from being updated while rho=1.
+            value = 1.0 if ep < fixed_value else 0.0
+            if mode == 'sched_frozen':
+                cls_loss.frozen = ep < fixed_value
         else:
             snap = cb.snapshot(model, opt, cls_loss)
             batches = cb.draw_batches(loaders[loader_key], BANDIT_LOOKAHEAD_BATCHES)
@@ -1154,6 +1171,9 @@ def _run_generic_bandit(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch
         epoch_fn(ep, loaders[loader_key], value)
         scores = cb.holdout_scores(model, holdout, C, device)
         rec.update(value=value, **scores)
+        if diag is not None:
+            rec.update(diag.state(model, cls_loss))
+            rec.update(diag.grads(model, loss_at))
         if (ep + 1) % 5 == 0 or ep + 1 == epochs:
             rec['test_acc'] = evaluate_model(model, loaders['test'], device)
         trace.append(rec)
@@ -1192,6 +1212,12 @@ GENERIC_BANDIT_SPECS = {
     'PiCO-Mix-A100': ('PiCO', 'mix', 'fixed', 1.0),
     'PiCO-Mix-BanditPaired': ('PiCO', 'mix', 'paired01', None),
 }
+# Switch-cause analysis (2026-10-14): forced switch at epoch T, with and without s frozen before T.
+for _fw in ('PiCO', 'ComCo'):
+    for _T in (25, 50, 100, 150):
+        GENERIC_BANDIT_SPECS[f'{_fw}-Uni-Sched{_T}'] = (_fw, 'unified', 'sched', _T)
+    for _T in (50, 100):
+        GENERIC_BANDIT_SPECS[f'{_fw}-Uni-Sched{_T}-Frozen'] = (_fw, 'unified', 'sched_frozen', _T)
 
 
 def _make_generic_bandit_runner(name, spec):

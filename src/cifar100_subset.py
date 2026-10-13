@@ -473,4 +473,5 @@ def get_subset_dataloaders_full(
         for row, i in enumerate(holdout_idx):
             partial[row, pl_dataset_raw.targets[i]] = 1.0
         loaders['holdout'] = {'x': x, 'partial': partial, 'y': original_targets[holdout_idx].clone()}
+        loaders['train_idx'] = train_idx
     return loaders

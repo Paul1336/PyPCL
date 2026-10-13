@@ -35,12 +35,14 @@ class UnifiedClsLoss(nn.Module):
         self.rho = rho
         self.comco_scale = comco_scale
         self.partial_loss = PartialLoss(init_conf)
+        self.frozen = False  # True: confidence_update is a no-op (s-freezing intervention)
 
     def set_conf_ema_m(self, epoch, args):
         self.partial_loss.set_conf_ema_m(epoch, args)
 
     def confidence_update(self, **kwargs):
-        self.partial_loss.confidence_update(**kwargs)
+        if not self.frozen:
+            self.partial_loss.confidence_update(**kwargs)
 
     def forward(self, outputs, index, partial_Y, alpha: float = None):
         rho = self.rho if alpha is None else float(alpha)

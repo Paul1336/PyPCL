@@ -72,6 +72,9 @@ for _name in ('ComCo-Uni-Fixed0', 'ComCo-Uni-Fixed1', 'ComCo-Uni-Bandit01', 'Com
               'PiCO-Uni-Fixed0', 'PiCO-Uni-Fixed1', 'PiCO-Uni-Bandit01', 'PiCO-Uni-BanditCont',
               'PiCO-Mix-A100', 'PiCO-Mix-BanditPaired'):
     ALGO_HPARAMS[_name] = _ADAM
+for _fw in ('PiCO', 'ComCo'):
+    for _suffix in ('Sched25', 'Sched50', 'Sched100', 'Sched150', 'Sched50-Frozen', 'Sched100-Frozen'):
+        ALGO_HPARAMS[f'{_fw}-Uni-{_suffix}'] = _ADAM
 
 # cls-loss swap experiment (src/clsloss_swap.py) -- Adam for every loss,
 # including PRODEN/SoLar, so only L_cls differs between cells.
