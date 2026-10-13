@@ -112,6 +112,7 @@ def run(cfg: PipelineConfig):
         'biasvariance': cfg.biasvariance, 'biasvariance_log_every': cfg.biasvariance_log_every,
         'biasvariance_m_resamples': cfg.biasvariance_m_resamples,
         'biasvariance_eval_size': cfg.biasvariance_eval_size,
+        'only_q': cfg.only_q, 'only_bimodal': cfg.only_bimodal, 'batching': cfg.batching,
     })
 
     # Stashed in raw_cfg (like '_dataset_spec' below) rather than added to
@@ -168,7 +169,9 @@ def run(cfg: PipelineConfig):
         # dataset whose generation isn't k-sized at all (sweeps_k=False, e.g.
         # cifar100-h's paper-faithful q-based generation). Both use a single
         # placeholder k=1 "cell" instead of the normal k-schedule.
-        if cfg.only_q is not None:
+        if cfg.only_bimodal is not None:
+            k_values = [data.bimodal_sentinel_k(*cfg.only_bimodal)]
+        elif cfg.only_q is not None:
             # --only_q replaces the whole k-schedule with one placeholder
             # cell. Real k is always a positive int in [1, C-1]; the negative
             # sentinel can never collide with a genuine k-based cell's dedup
@@ -202,7 +205,7 @@ def run(cfg: PipelineConfig):
                 _set_seed(seed)
                 loaders, pl_ds, orig_targets = data.load_experiment_data(
                     C, k, cfg.data_dir, seed, cfg.log_dir, cfg.batch_size, dataset=cfg.dataset,
-                    q=cfg.only_q)
+                    q=cfg.only_q, bimodal=cfg.only_bimodal, batching=cfg.batching)
 
                 # Stash the DatasetSpec (and, for --detail, the current k/seed)
                 # in the raw config dict every runner already receives, so
@@ -222,6 +225,10 @@ def run(cfg: PipelineConfig):
                 # includes each of the C-1 wrong classes independently w.p. q
                 # (mean size = 1 + q*(C-1); round() only guards float noise).
                 cfg.raw['_current_k'] = k if cfg.only_q is None else round(1 + cfg.only_q * (C - 1))
+                if cfg.only_bimodal is not None:
+                    k_lo, k_hi, p_lo = cfg.only_bimodal
+                    cfg.raw['_current_k'] = round(p_lo * k_lo + (1 - p_lo) * k_hi)
+                cfg.raw['_results_dir'] = cfg.results_dir
                 cfg.raw['_current_seed'] = seed
 
                 for alg in pending:

@@ -85,6 +85,12 @@ def _add_run_parser(sub):
                          'whole k-schedule with a single cell. Mutually exclusive with --only_k. '
                          'Only supported for --dataset cifar100-subset, mnist, fashion-mnist, '
                          'kmnist, and cifar10 so far (DatasetSpec.supports_q).')
+    p.add_argument('--only_bimodal', nargs=3, default=None, metavar=('K_LO', 'K_HI', 'P_LO'),
+                    help='Bimodal candidate-set sizes: each sample gets K_LO candidates w.p. P_LO, else '
+                         'K_HI. Replaces the k-schedule with one cell (cifar100-subset only).')
+    p.add_argument('--batching', choices=['random', 'bucketed'], default='random',
+                    help="PiCO/ComCo loader batching: 'random' (plain shuffle) or 'bucketed' (each "
+                         "batch holds one candidate-set size only; see SizeBucketBatchSampler).")
     p.add_argument('--detail', action='store_true',
                     help='Enable per-class-per-epoch-checkpoint diagnostic logging (replaces '
                          'scripts/legacy/run_extended_analysis.py): adds an extra full test-set '

@@ -65,6 +65,7 @@ for _a in ALPHA_VALUES:
 
 ALGO_HPARAMS['ComCo-Weighted-BatchCond'] = _ADAM
 ALGO_HPARAMS['ComCo-Weighted-BatchRandom'] = _ADAM
+ALGO_HPARAMS['ComCo-Weighted-SampleCond'] = _ADAM
 
 # cls-loss swap experiment (src/clsloss_swap.py) -- Adam for every loss,
 # including PRODEN/SoLar, so only L_cls differs between cells.

@@ -17,6 +17,7 @@ design.
 """
 
 import random
+import torch
 
 from tqdm import tqdm
 
@@ -78,6 +79,13 @@ def batch_cond_alpha(partial_Y, threshold: float = BATCH_COND_THRESHOLD) -> floa
     return 1.0 if avg_size > threshold else 0.0
 
 
+def sample_cond_alpha(partial_Y, threshold: float = BATCH_COND_THRESHOLD):
+    """Per-sample version of batch_cond_alpha: a [B] tensor, 1.0 for samples
+    whose OWN candidate-set size is above `threshold` (ComCo-Fixed loss),
+    else 0.0 (PartialLoss). Independent of how batches are composed."""
+    return (partial_Y.sum(dim=1) > threshold).float()
+
+
 def batch_random_alpha(partial_Y) -> float:
     """alpha in {0.0, 1.0}, independent 50/50 coin flip each batch --
     `partial_Y` is unused, kept only so this has the same signature as
@@ -87,7 +95,7 @@ def batch_random_alpha(partial_Y) -> float:
 
 
 def train_comco_weighted_switch_epoch(comco_args, model, loader, cls_loss_fn, cont_loss_fn, optimizer, epoch,
-                                       device, alpha_fn):
+                                       device, alpha_fn, alpha_trace: list = None):
     """Same as train_comco_weighted_epoch, except `cls_loss_fn`'s alpha is
     picked fresh each batch by `alpha_fn(partial_Y_batch) -> float in {0, 1}`
     (see batch_cond_alpha/batch_random_alpha above) instead of using the
@@ -118,6 +126,9 @@ def train_comco_weighted_switch_epoch(comco_args, model, loader, cls_loss_fn, co
             cls_loss_fn.confidence_update(temp_un_conf=score_prot.detach(), batch_index=index, batchY=partial_Y)
 
         alpha = alpha_fn(partial_Y)
+        alpha_mean = float(alpha.mean()) if torch.is_tensor(alpha) else float(alpha)
+        if alpha_trace is not None:
+            alpha_trace.append(alpha_mean)
         loss_cls = cls_loss_fn(cls_out, index, comp_mask, alpha=alpha)
         loss_cont = cont_loss_fn(q, all_feats, all_pseudo, all_comp, pseudo_q, warmup_pos, warmup_neg)
         loss = loss_cls + comco_args['loss_weight'] * loss_cont
@@ -127,5 +138,5 @@ def train_comco_weighted_switch_epoch(comco_args, model, loader, cls_loss_fn, co
         optimizer.step()
 
         total_loss += loss.item()
-        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1), alpha=alpha)
+        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1), alpha=alpha_mean)
     return total_loss / len(loader)

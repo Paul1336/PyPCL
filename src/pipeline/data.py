@@ -28,8 +28,17 @@ def q_sentinel_k(q: float) -> int:
     return -round(q * 1000)
 
 
+def bimodal_sentinel_k(k_lo: int, k_hi: int, p_lo: float) -> int:
+    """--only_bimodal's results.csv `k` value, same idea as q_sentinel_k:
+    negative and far outside q_sentinel_k's [-1000, 0] range, so neither can
+    collide with each other or with a real k. Decodes as
+    -(1_000_000 + k_lo*10_000 + k_hi*100 + round(100*p_lo))."""
+    return -(1_000_000 + k_lo * 10_000 + k_hi * 100 + round(p_lo * 100))
+
+
 def load_experiment_data(C: int, k: int, data_dir: str, seed: int, log_dir: str, batch_size: int,
-                          dataset: str = 'cifar100-subset', q: float = None):
+                          dataset: str = 'cifar100-subset', q: float = None, bimodal: tuple = None,
+                          batching: str = 'random'):
     """Returns (loaders, pl_dataset_raw, original_targets) for one (C, k) cell.
 
     `loaders` contains 'pl', 'cl', 'test' DataLoaders always, plus 'pico'/
@@ -46,9 +55,10 @@ def load_experiment_data(C: int, k: int, data_dir: str, seed: int, log_dir: str,
     if dataset == 'cifar100-subset':
         pl_ds, cl_ds, orig_targets, test_info, _ = prepare_cifar100_subset(
             total_classes=C, n_partial_labels=k,
-            data_dir=data_dir, seed=seed, log_dir=log_dir, q=q,
+            data_dir=data_dir, seed=seed, log_dir=log_dir, q=q, bimodal=bimodal,
         )
-        loaders = get_subset_dataloaders_full(pl_ds, cl_ds, orig_targets, test_info, batch_size)
+        loaders = get_subset_dataloaders_full(pl_ds, cl_ds, orig_targets, test_info, batch_size,
+                                              batching=batching)
         return loaders, pl_ds, orig_targets
 
     from src.pipeline.datasets import DATASETS
@@ -56,6 +66,8 @@ def load_experiment_data(C: int, k: int, data_dir: str, seed: int, log_dir: str,
         raise ValueError(f"Unknown --dataset '{dataset}'. Available: "
                           f"cifar100-subset, {', '.join(sorted(DATASETS.keys()))}")
     spec = DATASETS[dataset]
+    if bimodal is not None or batching != 'random':
+        raise ValueError("--only_bimodal / --batching are only wired up for cifar100-subset")
     bs = spec.batch_size_override or batch_size
     if q is not None:
         if not spec.supports_q:

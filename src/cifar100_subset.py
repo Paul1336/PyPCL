@@ -140,6 +140,7 @@ def prepare_cifar100_subset(
     hierarchical: bool = False,
     hierarchical_q: float = None,
     q: float = None,
+    bimodal: tuple = None,
 ):
     """
     Loads CIFAR-100, selects `total_classes` classes, generates PL labels
@@ -188,7 +189,7 @@ def prepare_cifar100_subset(
         test_info:        (test_data: np.ndarray, test_targets: list[int]).
         log_info:         dict with selection metadata.
     """
-    if hierarchical_q is None and q is None and not (1 <= n_partial_labels <= total_classes - 1):
+    if hierarchical_q is None and q is None and bimodal is None and not (1 <= n_partial_labels <= total_classes - 1):
         raise ValueError(
             f"n_partial_labels must be in [1, {total_classes - 1}], got {n_partial_labels}"
         )
@@ -221,7 +222,10 @@ def prepare_cifar100_subset(
     )
     generator = ComparisonDataGenerator(subset_ds, noise_type='clean', eta=0.0)
 
-    if hierarchical_q is not None:
+    if bimodal is not None:
+        # (k_lo, k_hi, p_lo) -- see ComparisonDataGenerator.generate_pl_dataset_bimodal.
+        pl_dataset_raw = generator.generate_pl_dataset_bimodal(*bimodal)
+    elif hierarchical_q is not None:
         remapped_coarse = [_CIFAR100_FINE_TO_COARSE[orig] for orig in selected_indices]
         pl_dataset_raw = generator.generate_pl_dataset_hierarchical_variable(
             q=hierarchical_q, class_coarse=remapped_coarse)
@@ -254,7 +258,7 @@ def prepare_cifar100_subset(
     original_targets = generator.original_targets  # torch.Tensor, remapped
 
     # --- Log selection ---
-    is_probabilistic = hierarchical_q is not None or q is not None
+    is_probabilistic = hierarchical_q is not None or q is not None or bimodal is not None
     log_info = {
         "selected_class_indices":  selected_indices,
         "selected_class_names":    selected_class_names,
@@ -262,6 +266,7 @@ def prepare_cifar100_subset(
         "n_partial_labels":        n_partial_labels if not is_probabilistic else None,
         "hierarchical_q":          hierarchical_q,
         "q":                       q,
+        "bimodal":                 list(bimodal) if bimodal is not None else None,
         "n_complementary_labels":  (total_classes - n_partial_labels) if not is_probabilistic else None,
         "seed":                    seed,
         "n_train":                 len(train_targets),
@@ -269,7 +274,9 @@ def prepare_cifar100_subset(
         "timestamp":               datetime.now().isoformat(),
     }
     os.makedirs(log_dir, exist_ok=True)
-    if hierarchical_q is not None:
+    if bimodal is not None:
+        log_suffix = f"bimodal{bimodal[0]}-{bimodal[1]}-p{bimodal[2]}"
+    elif hierarchical_q is not None:
         log_suffix = f"hq{hierarchical_q}"
     elif q is not None:
         log_suffix = f"q{q}"
@@ -340,14 +347,49 @@ def get_subset_dataloaders(
     return {'pl': pl_loader, 'cl': cl_loader, 'test': test_loader}
 
 
+class SizeBucketBatchSampler:
+    """Batches that each contain samples of a single candidate-set size.
+
+    Every epoch: shuffle within each size group, cut it into full batches
+    (drop_last per group, so MoCo's queue_size % batch_size still holds),
+    then shuffle the order of all batches. Under a bimodal-k dataset this
+    makes a batch's average set size equal to one of the two modes instead
+    of concentrating at the overall mean -- what the BatchCond alpha switch
+    needs in order to actually switch."""
+
+    def __init__(self, sizes, batch_size: int):
+        self.batch_size = batch_size
+        groups = {}
+        for i, s in enumerate(sizes):
+            groups.setdefault(s, []).append(i)
+        self.groups = [np.array(g) for g in groups.values()]
+
+    def __iter__(self):
+        batches = []
+        for g in self.groups:
+            perm = g[np.random.permutation(len(g))]
+            n_full = len(perm) // self.batch_size
+            batches += [perm[i * self.batch_size:(i + 1) * self.batch_size].tolist() for i in range(n_full)]
+        for j in np.random.permutation(len(batches)):
+            yield batches[j]
+
+    def __len__(self):
+        return sum(len(g) // self.batch_size for g in self.groups)
+
+
 def get_subset_dataloaders_full(
     pl_dataset_raw,
     cl_dataset_raw,
     original_targets,
     test_info,
     batch_size: int,
+    batching: str = 'random',
 ):
     """
+    batching='bucketed' builds the PiCO/ComCo loaders from a
+    SizeBucketBatchSampler (every batch holds samples of one candidate-set
+    size only) instead of a plain shuffle -- see that class.
+
     Builds all 5 DataLoaders needed for PiCO and ComCo:
     'pl', 'cl', 'pico', 'comco', 'test'.
 
@@ -379,12 +421,20 @@ def get_subset_dataloaders_full(
     cl_loader = DataLoader(cl_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
 
     pico_dataset  = PicoDataset(pl_dataset_raw, original_targets)
-    pico_loader   = DataLoader(pico_dataset,  batch_size=batch_size, shuffle=True,
-                               drop_last=True, collate_fn=pico_collate_fn, pin_memory=True)
-
     comco_dataset = ComCoDataset(cl_dataset_raw, original_targets)
-    comco_loader  = DataLoader(comco_dataset, batch_size=batch_size, shuffle=True,
-                               drop_last=True, collate_fn=comco_collate_fn, pin_memory=True)
+    if batching == 'bucketed':
+        sizes = [len(t) for t in pl_dataset_raw.targets]
+        pico_loader  = DataLoader(pico_dataset, batch_sampler=SizeBucketBatchSampler(sizes, batch_size),
+                                  collate_fn=pico_collate_fn, pin_memory=True)
+        comco_loader = DataLoader(comco_dataset, batch_sampler=SizeBucketBatchSampler(sizes, batch_size),
+                                  collate_fn=comco_collate_fn, pin_memory=True)
+    elif batching == 'random':
+        pico_loader  = DataLoader(pico_dataset,  batch_size=batch_size, shuffle=True,
+                                  drop_last=True, collate_fn=pico_collate_fn, pin_memory=True)
+        comco_loader = DataLoader(comco_dataset, batch_size=batch_size, shuffle=True,
+                                  drop_last=True, collate_fn=comco_collate_fn, pin_memory=True)
+    else:
+        raise ValueError(f"unknown batching '{batching}' (random | bucketed)")
 
     test_data, test_targets = test_info
     test_dataset = _ArrayTestDataset(test_data, test_targets, transform=test_transform)

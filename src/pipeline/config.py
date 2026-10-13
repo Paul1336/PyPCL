@@ -27,6 +27,8 @@ class PipelineConfig:
     only_c: int
     only_k: list
     only_q: float
+    only_bimodal: tuple
+    batching: str
     detail: bool
     detail_log_every: int
     tsne: bool
@@ -42,6 +44,13 @@ class PipelineConfig:
     biasvariance_m_resamples: int
     biasvariance_eval_size: int
     raw: dict = field(default_factory=dict)   # full config.yaml (pico/comco/solar blocks)
+
+
+def _parse_bimodal(v):
+    """--only_bimodal K_LO K_HI P_LO -> (int, int, float), or None."""
+    if v is None:
+        return None
+    return int(v[0]), int(v[1]), float(v[2])
 
 
 def load_config(args) -> PipelineConfig:
@@ -67,6 +76,8 @@ def load_config(args) -> PipelineConfig:
         only_c=args.only_c,
         only_k=args.only_k,
         only_q=getattr(args, 'only_q', None),
+        only_bimodal=_parse_bimodal(getattr(args, 'only_bimodal', None)),
+        batching=getattr(args, 'batching', 'random'),
         detail=getattr(args, 'detail', False),
         detail_log_every=getattr(args, 'detail_log_every', 10),
         tsne=getattr(args, 'tsne', False),

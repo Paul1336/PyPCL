@@ -77,6 +77,8 @@ def _build_registry() -> dict:
                                                           r.run_comco_weighted_batchcond)
     registry['ComCo-Weighted-BatchRandom'] = AlgorithmSpec('ComCo-Weighted-BatchRandom', 'CLL',
                                                             r.run_comco_weighted_batchrandom)
+    registry['ComCo-Weighted-SampleCond'] = AlgorithmSpec('ComCo-Weighted-SampleCond', 'CLL',
+                                                           r.run_comco_weighted_samplecond)
 
     # cls-loss swap experiment ({PiCO-Fixed, ComCo-Fixed} x every cls loss,
     # 'SwapPiCO-<loss>' / 'SwapComCo-<loss>') -- see runners.SWAP_RUNNERS and

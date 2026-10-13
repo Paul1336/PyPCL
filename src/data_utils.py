@@ -71,6 +71,26 @@ class ComparisonDataGenerator:
             new_targets.append(torch.tensor(candidate_set))
         return WeaklySupervisedDataset(original_data, new_targets)
 
+    def generate_pl_dataset_bimodal(self, k_lo: int, k_hi: int, p_lo: float):
+        """Bimodal candidate-set sizes: each sample independently gets k_lo
+        candidates w.p. p_lo, else k_hi (true label + uniformly drawn false
+        labels, same as generate_pl_dataset). Used by the bimodal-k
+        BatchCond validation (--only_bimodal), where per-sample set size has
+        to vary a lot -- unlike --only_q, whose sizes concentrate tightly
+        around 1 + q(C-1)."""
+        if not (1 < k_lo <= self.num_classes and 1 < k_hi <= self.num_classes and 0 < p_lo < 1):
+            raise ValueError(f"bad bimodal spec k_lo={k_lo} k_hi={k_hi} p_lo={p_lo}")
+        new_targets = []
+        for _, true_label in tqdm(self.dataset, desc="Processing PL (bimodal)"):
+            k = k_lo if np.random.rand() < p_lo else k_hi
+            incorrect_labels = np.delete(self.all_labels, true_label)
+            additional_candidates = np.random.choice(incorrect_labels, size=k - 1, replace=False)
+            candidate_set = np.append(additional_candidates, true_label)
+            candidate_set = self._apply_noise(candidate_set, true_label)
+            candidate_set.sort()
+            new_targets.append(torch.tensor(candidate_set))
+        return WeaklySupervisedDataset(self.dataset.data, new_targets)
+
     def generate_pl_dataset_hierarchical(self, k: int, class_coarse):
         """Like generate_pl_dataset, but candidate labels are drawn
         preferentially from the same coarse superclass as the true label

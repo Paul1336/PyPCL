@@ -11,6 +11,8 @@ Every run_* function shares one signature (see algorithms/__init__.py):
 """
 
 import gc
+import json
+import os
 import time
 from types import SimpleNamespace
 
@@ -30,7 +32,7 @@ from src.data_utils import SoLarDataset
 from src.engine import (evaluate_model, train_algorithm, train_comco_epoch,
                          train_pico_epoch, train_pico_mclloss_epoch,
                          train_pico_moco_epoch, train_pico_sc_epoch, train_solar)
-from src.fixed_comco_engine import (batch_cond_alpha, batch_random_alpha, train_comco_weighted_epoch,
+from src.fixed_comco_engine import (batch_cond_alpha, batch_random_alpha, sample_cond_alpha, train_comco_weighted_epoch,
                                      train_comco_weighted_switch_epoch)
 from src.fixed_pico_engine import train_pico_epoch_fixed, train_pico_mcl_epoch_fixed, train_pico_weighted_epoch
 from src.oracle_pico_engine import train_pico_oracle_add_graded_epoch, train_pico_oracle_graded_epoch
@@ -905,11 +907,13 @@ def _run_comco_weighted_switch_variant(loaders, pl_ds, orig_targets, C, hparams,
         eval_size = detail.biasvariance_cfg(raw_cfg).get('eval_size', 256)
         bv_images, bv_labels, bv_index = biasvariance.build_fixed_eval_batch(pl_ds, orig_targets, eval_size, device)
 
+    alpha_per_epoch = []  # [epoch][batch] realized mean alpha -- did the switch actually switch?
     chunk_t0 = time.perf_counter()
     for ep in range(epochs):
         cls_loss.set_conf_ema_m(ep, comco_args)
+        alpha_per_epoch.append([])
         train_comco_weighted_switch_epoch(comco_args, model, loaders['comco'], cls_loss, cont_loss, opt, ep,
-                                           device, alpha_fn)
+                                           device, alpha_fn, alpha_trace=alpha_per_epoch[-1])
         detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
         detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
         detail.maybe_log_concentration(raw_cfg, model, pl_ds, device, C, ep + 1, algorithm)
@@ -925,10 +929,29 @@ def _run_comco_weighted_switch_variant(loaders, pl_ds, orig_targets, C, hparams,
 
     detail.maybe_run_knn_eval(raw_cfg, model, pl_ds, orig_targets, loaders['test'], device, C, epochs, algorithm)
     acc = evaluate_model(model, loaders['test'], device)
+    _save_alpha_trace(raw_cfg, algorithm, alpha_per_epoch)
     del model, cls_loss, cont_loss, opt, init_conf
     gc.collect()
     torch.cuda.empty_cache()
     return acc
+
+
+def _save_alpha_trace(raw_cfg, algorithm, alpha_per_epoch):
+    """results/<run>/alpha_trace/<algorithm>_C{C}_k{k}_seed{seed}.json -- per
+    epoch, per batch, the realized mean alpha the switch picked."""
+    out_dir = os.path.join(raw_cfg.get('_results_dir', 'results'), 'alpha_trace')
+    os.makedirs(out_dir, exist_ok=True)
+    fname = (f"{algorithm}_k{raw_cfg.get('_current_k')}"
+             f"_seed{raw_cfg.get('_current_seed')}.json")
+    with open(os.path.join(out_dir, fname), 'w') as f:
+        json.dump(alpha_per_epoch, f)
+
+
+def run_comco_weighted_samplecond(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device,
+                                   tag, report_every):
+    return _run_comco_weighted_switch_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size,
+                                               epochs, device, tag, report_every,
+                                               'ComCo-Weighted-SampleCond', sample_cond_alpha)
 
 
 def run_comco_weighted_batchcond(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device,

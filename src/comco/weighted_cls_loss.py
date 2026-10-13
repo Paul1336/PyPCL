@@ -1,4 +1,6 @@
+import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .fixed_utils_loss import FixedComCoCLSLoss
 from src.pico.utils_loss import PartialLoss
@@ -41,5 +43,14 @@ class ComCoWeightedClsLoss(nn.Module):
         pick alpha in {0.0, 1.0} fresh each batch instead of using one fixed
         value for the whole run."""
         a = self.alpha if alpha is None else alpha
+        if torch.is_tensor(a):
+            # Per-sample alpha [B] (SampleCond): blend the two losses sample
+            # by sample, then average. Same per-sample terms as
+            # FixedComCoCLSLoss / PartialLoss's own forward, before their .mean().
+            probs = F.softmax(outputs, dim=1)
+            m = comp_mask.sum(dim=1).clamp(min=1.0)
+            comco_ps = (-torch.log1p(-probs.clamp(max=1.0 - 1e-7)) * comp_mask).sum(dim=1) / m
+            partial_ps = -(F.log_softmax(outputs, dim=1) * self.partial_loss.confidence[index, :]).sum(dim=1)
+            return (a * comco_ps + (1 - a) * partial_ps).mean()
         return (a * self.comco_loss(outputs, comp_mask)
                 + (1 - a) * self.partial_loss(outputs, index))
