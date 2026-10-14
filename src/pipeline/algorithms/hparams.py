@@ -81,7 +81,7 @@ for _name in ('ComCo-Mix-A100', 'ComCo-Mix-BanditPaired', 'Solo-Uni-Fixed0', 'So
               'PiCO-Uni-BanditLong', 'ComCo-Uni-BanditLong', 'PiCO-Uni-SFlip', 'ComCo-Uni-SFlip',
               'PiCO-Uni-Plateau', 'ComCo-Uni-Plateau',
               'Hybrid-Bandit01', 'Hybrid-BanditLong', 'Hybrid-Plateau', 'Hybrid-FixedPiCO', 'Hybrid-FixedComCo',
-              'Hybrid-Sched150'):
+              'Hybrid-Sched150', 'Hybrid-Mix-Bandit01', 'Hybrid-Mix-FixedComCo', 'Hybrid-Mix-FixedPiCO'):
     ALGO_HPARAMS[_name] = _ADAM
 
 # cls-loss swap experiment (src/clsloss_swap.py) -- Adam for every loss,

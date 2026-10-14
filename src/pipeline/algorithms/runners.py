@@ -1101,7 +1101,8 @@ def _generic_bandit_setup(framework, loss_kind, pl_ds, C, hparams, raw_cfg, epoc
         cont_loss = SupConLoss()
         loader_key, epoch_impl = 'pico', train_pico_switch_epoch
     elif framework == 'Hybrid':
-        # PiCO+PartialLoss (value 0) <-> ComCo+MCL-LOG (value 1), shared encoder; src/hybrid_switch.py
+        # PiCO+PartialLoss (value 0) <-> ComCo + its cls loss (value 1), shared encoder; src/hybrid_switch.py.
+        # loss_kind 'unified': ComCo arm uses MCL-LOG (rho=1); 'mix': ComCo arm uses SCL-NL (ComCo-Fixed).
         from src.hybrid_switch import ComCoBatchView, ComCoLossView, HybridModel
         comco_cfg = raw_cfg['comco']
         pico_args = _pico_args(C, epochs, pico_cfg)
@@ -1116,7 +1117,7 @@ def _generic_bandit_setup(framework, loss_kind, pl_ds, C, hparams, raw_cfg, epoc
             'conf_ema_range': pico_cfg['conf_ema_range'],
         }
         model = HybridModel(pico_args, comco_args).to(device)
-        cls_loss = UnifiedClsLoss(init_conf)
+        cls_loss = UnifiedClsLoss(init_conf) if loss_kind == 'unified' else PiCOFixedComCoMixClsLoss(init_conf)
         comco_view = ComCoLossView(cls_loss)
         pico_cont = SupConLoss()
         comco_cont = ComCoContrastiveLoss(temperature=comco_args['temperature'], top_k=comco_args['top_k'])
@@ -1327,6 +1328,10 @@ GENERIC_BANDIT_SPECS['Hybrid-Plateau'] = ('Hybrid', 'unified', 'plateau', 0.01)
 GENERIC_BANDIT_SPECS['Hybrid-FixedPiCO'] = ('Hybrid', 'unified', 'fixed', 0.0)
 GENERIC_BANDIT_SPECS['Hybrid-FixedComCo'] = ('Hybrid', 'unified', 'fixed', 1.0)
 GENERIC_BANDIT_SPECS['Hybrid-Sched150'] = ('Hybrid', 'unified', 'sched', 150)
+# Same framework switch, but the ComCo arm uses SCL-NL (ComCo-Fixed) instead of MCL-LOG (2026-10-15).
+GENERIC_BANDIT_SPECS['Hybrid-Mix-Bandit01'] = ('Hybrid', 'mix', 'paired01', None)
+GENERIC_BANDIT_SPECS['Hybrid-Mix-FixedComCo'] = ('Hybrid', 'mix', 'fixed', 1.0)
+GENERIC_BANDIT_SPECS['Hybrid-Mix-FixedPiCO'] = ('Hybrid', 'mix', 'fixed', 0.0)
 GENERIC_BANDIT_SPECS['ComCo-Mix-A100'] = ('ComCo', 'mix', 'fixed', 1.0)
 GENERIC_BANDIT_SPECS['ComCo-Mix-BanditPaired'] = ('ComCo', 'mix', 'paired01', None)
 GENERIC_BANDIT_SPECS['Solo-Uni-Fixed0'] = ('Solo', 'unified', 'fixed', 0.0)
