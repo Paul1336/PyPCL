@@ -961,6 +961,7 @@ def run_comco_weighted_samplecond(loaders, pl_ds, orig_targets, C, hparams, raw_
 # results/<run>/bandit_trace/.
 
 BANDIT_LOOKAHEAD_BATCHES = 4
+LONG_DECIDE_EVERY = 5  # 'paired01_long': decision interval (epochs); lookahead = one full epoch per arm
 BANDIT_GAMMA = 0.9
 
 
@@ -1142,6 +1143,14 @@ def _run_generic_bandit(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch
         bandit = cb.PairedTS(gamma=BANDIT_GAMMA)
     elif mode == 'cont':
         bandit = cb.ContinuousRhoTS(gamma=BANDIT_GAMMA)
+    elif mode == 'paired01_long':
+        bandit = cb.PairedTS(gamma=BANDIT_GAMMA)
+        value = 1.0
+    elif mode == 'plateau':
+        est_hist, switched, value = [], False, 1.0
+    elif mode == 'sflip':
+        train_idx_t = torch.as_tensor(loaders['train_idx'], device=device).long()
+        prev_arg, calm, switched, value = None, 0, False, 1.0
     elif mode not in ('fixed', 'sched', 'sched_frozen'):
         raise ValueError(mode)
 
@@ -1158,6 +1167,23 @@ def _run_generic_bandit(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch
             value = 1.0 if ep < fixed_value else 0.0
             if mode == 'sched_frozen':
                 cls_loss.frozen = ep < fixed_value
+        elif mode in ('sflip', 'plateau'):
+            pass  # value decided at the end of the previous epoch
+        elif mode == 'paired01_long':
+            if ep % LONG_DECIDE_EVERY == 0:
+                snap = cb.snapshot(model, opt, cls_loss)
+                batches = cb.draw_batches(loaders[loader_key], len(loaders[loader_key]))
+                look = []
+                for v in (0.0, 1.0):
+                    cb.restore(snap, model, opt, cls_loss)
+                    epoch_fn(ep, batches, v)
+                    look.append(cb.holdout_scores(model, holdout, C, device)['est_soft'])
+                cb.restore(snap, model, opt, cls_loss)
+                del snap, batches
+                bandit.update(look[1] - look[0])
+                value = float(bandit.choose())
+                mu, se = bandit.posterior()
+                rec.update(probes=[0.0, 1.0], look=look, mu=mu, se=se)
         else:
             snap = cb.snapshot(model, opt, cls_loss)
             batches = cb.draw_batches(loaders[loader_key], BANDIT_LOOKAHEAD_BATCHES)
@@ -1180,6 +1206,29 @@ def _run_generic_bandit(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch
         epoch_fn(ep, loaders[loader_key], value)
         scores = cb.holdout_scores(model, holdout, C, device)
         rec.update(value=value, **scores)
+        if mode == 'plateau':
+            est_hist.append(scores['est_soft'])
+            i = len(est_hist) - 1
+            if not switched and i >= 30:
+                ma = lambda j: sum(est_hist[max(0, j - 9):j + 1]) / len(est_hist[max(0, j - 9):j + 1])
+                gain = ma(i) - ma(i - 20)
+                rec['plateau_gain'] = round(gain, 5)
+                if gain < fixed_value:
+                    switched = True
+                    rec['switched_at'] = ep + 1
+            value = 0.0 if switched else 1.0
+        if mode == 'sflip':
+            with torch.no_grad():
+                cur_arg = cls_loss.partial_loss.confidence[train_idx_t].argmax(dim=1)
+            if prev_arg is not None:
+                flip = (cur_arg != prev_arg).float().mean().item()
+                rec['s_flip'] = round(flip, 5)
+                calm = calm + 1 if (ep >= 10 and flip < fixed_value) else 0
+                if not switched and calm >= 3:
+                    switched = True
+                    rec['switched_at'] = ep + 1
+            prev_arg = cur_arg
+            value = 0.0 if switched else 1.0
         if diag is not None:
             rec.update(diag.state(model, cls_loss))
             rec.update(diag.grads(model, loss_at))
@@ -1230,6 +1279,10 @@ for _fw in ('PiCO', 'ComCo'):
             GENERIC_BANDIT_SPECS[f'{_fw}-{_tag}-Sched{_T}-Frozen'] = (_fw, _kind, 'sched_frozen', _T)
 # Original {PartialLoss, ComCo-Fixed (SCL-NL)} pair through the generic runner on ComCo too, and the
 # no-contrastive ('Solo') versions of both loss pairs (2026-10-14).
+for _fw in ('PiCO', 'ComCo'):  # small-k fixes (2026-10-14)
+    GENERIC_BANDIT_SPECS[f'{_fw}-Uni-BanditLong'] = (_fw, 'unified', 'paired01_long', None)
+    GENERIC_BANDIT_SPECS[f'{_fw}-Uni-SFlip'] = (_fw, 'unified', 'sflip', 0.02)
+    GENERIC_BANDIT_SPECS[f'{_fw}-Uni-Plateau'] = (_fw, 'unified', 'plateau', 0.01)
 GENERIC_BANDIT_SPECS['ComCo-Mix-A100'] = ('ComCo', 'mix', 'fixed', 1.0)
 GENERIC_BANDIT_SPECS['ComCo-Mix-BanditPaired'] = ('ComCo', 'mix', 'paired01', None)
 GENERIC_BANDIT_SPECS['Solo-Uni-Fixed0'] = ('Solo', 'unified', 'fixed', 0.0)

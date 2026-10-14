@@ -77,7 +77,9 @@ for _fw in ('PiCO', 'ComCo'):
         for _suffix in ('Sched25', 'Sched50', 'Sched100', 'Sched150', 'Sched50-Frozen', 'Sched100-Frozen'):
             ALGO_HPARAMS[f'{_fw}-{_tag}-{_suffix}'] = _ADAM
 for _name in ('ComCo-Mix-A100', 'ComCo-Mix-BanditPaired', 'Solo-Uni-Fixed0', 'Solo-Uni-Fixed1', 'Solo-Uni-Bandit01',
-              'Solo-Uni-BanditCont', 'Solo-Mix-A100', 'Solo-Mix-BanditPaired'):
+              'Solo-Uni-BanditCont', 'Solo-Mix-A100', 'Solo-Mix-BanditPaired',
+              'PiCO-Uni-BanditLong', 'ComCo-Uni-BanditLong', 'PiCO-Uni-SFlip', 'ComCo-Uni-SFlip',
+              'PiCO-Uni-Plateau', 'ComCo-Uni-Plateau'):
     ALGO_HPARAMS[_name] = _ADAM
 
 # cls-loss swap experiment (src/clsloss_swap.py) -- Adam for every loss,
