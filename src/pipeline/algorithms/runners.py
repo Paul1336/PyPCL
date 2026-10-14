@@ -1100,6 +1100,43 @@ def _generic_bandit_setup(framework, loss_kind, pl_ds, C, hparams, raw_cfg, epoc
         cls_loss = UnifiedClsLoss(init_conf) if loss_kind == 'unified' else PiCOFixedComCoMixClsLoss(init_conf)
         cont_loss = SupConLoss()
         loader_key, epoch_impl = 'pico', train_pico_switch_epoch
+    elif framework == 'Hybrid':
+        # PiCO+PartialLoss (value 0) <-> ComCo+MCL-LOG (value 1), shared encoder; src/hybrid_switch.py
+        from src.hybrid_switch import ComCoBatchView, ComCoLossView, HybridModel
+        comco_cfg = raw_cfg['comco']
+        pico_args = _pico_args(C, epochs, pico_cfg)
+        pico_args['prot_start'] = pico_cfg.get('prot_start_fixed', 1)
+        comco_args = {
+            'num_class': C, 'epochs': epochs,
+            'low_dim': comco_cfg['low_dim'], 'moco_queue': comco_cfg['moco_queue'],
+            'moco_m': comco_cfg['moco_m'], 'loss_weight': comco_cfg['loss_weight'],
+            'temperature': comco_cfg['temperature'], 'top_k': comco_cfg['top_k'],
+            'warmup_neg': comco_cfg['warmup_neg'], 'warmup_pos': comco_cfg['warmup_pos'],
+            'proto_m': pico_cfg['proto_m'], 'prot_start': pico_cfg.get('prot_start_fixed', 1),
+            'conf_ema_range': pico_cfg['conf_ema_range'],
+        }
+        model = HybridModel(pico_args, comco_args).to(device)
+        cls_loss = UnifiedClsLoss(init_conf)
+        comco_view = ComCoLossView(cls_loss)
+        pico_cont = SupConLoss()
+        comco_cont = ComCoContrastiveLoss(temperature=comco_args['temperature'], top_k=comco_args['top_k'])
+        cont_loss = (pico_cont, comco_cont)
+        opt = make_optimizer(model, hparams)
+
+        def epoch_fn(ep, loader, value):
+            if float(value) < 0.5:
+                train_pico_switch_epoch(pico_args, model.pico, loader, cls_loss, pico_cont, opt, ep, device,
+                                        lambda _y: 0.0)
+                model.sync_prototypes('pico')
+            else:
+                train_comco_weighted_switch_epoch(comco_args, model.comco, ComCoBatchView(loader), comco_view,
+                                                  comco_cont, opt, ep, device, lambda _y: 1.0)
+                model.sync_prototypes('comco')
+
+        def loss_at(logits, index, cand, value):
+            return cls_loss(logits, index, cand, alpha=value)
+
+        return model, cls_loss, cont_loss, opt, pico_args, 'pico', epoch_fn, init_conf, loss_at
     elif framework == 'Solo':
         # no contrastive branch; s updated from the classifier (src/solo_switch.py)
         from src.solo_switch import SoloModel, train_solo_switch_epoch
@@ -1283,6 +1320,13 @@ for _fw in ('PiCO', 'ComCo'):  # small-k fixes (2026-10-14)
     GENERIC_BANDIT_SPECS[f'{_fw}-Uni-BanditLong'] = (_fw, 'unified', 'paired01_long', None)
     GENERIC_BANDIT_SPECS[f'{_fw}-Uni-SFlip'] = (_fw, 'unified', 'sflip', 0.02)
     GENERIC_BANDIT_SPECS[f'{_fw}-Uni-Plateau'] = (_fw, 'unified', 'plateau', 0.01)
+# PiCO+PartialLoss <-> ComCo+MCL-LOG framework switching (2026-10-14); value 0 = PiCO arm, 1 = ComCo arm.
+GENERIC_BANDIT_SPECS['Hybrid-Bandit01'] = ('Hybrid', 'unified', 'paired01', None)
+GENERIC_BANDIT_SPECS['Hybrid-BanditLong'] = ('Hybrid', 'unified', 'paired01_long', None)
+GENERIC_BANDIT_SPECS['Hybrid-Plateau'] = ('Hybrid', 'unified', 'plateau', 0.01)
+GENERIC_BANDIT_SPECS['Hybrid-FixedPiCO'] = ('Hybrid', 'unified', 'fixed', 0.0)
+GENERIC_BANDIT_SPECS['Hybrid-FixedComCo'] = ('Hybrid', 'unified', 'fixed', 1.0)
+GENERIC_BANDIT_SPECS['Hybrid-Sched150'] = ('Hybrid', 'unified', 'sched', 150)
 GENERIC_BANDIT_SPECS['ComCo-Mix-A100'] = ('ComCo', 'mix', 'fixed', 1.0)
 GENERIC_BANDIT_SPECS['ComCo-Mix-BanditPaired'] = ('ComCo', 'mix', 'paired01', None)
 GENERIC_BANDIT_SPECS['Solo-Uni-Fixed0'] = ('Solo', 'unified', 'fixed', 0.0)
