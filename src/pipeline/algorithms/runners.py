@@ -1166,13 +1166,39 @@ def _generic_bandit_setup(framework, loss_kind, pl_ds, C, hparams, raw_cfg, epoc
 
 def _run_generic_bandit(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag,
                         report_every, algorithm: str, framework: str, loss_kind: str, mode: str,
-                        fixed_value: float = None):
+                        fixed_value: float = None, reward: str = 'uniform'):
     from src import comco_bandit as cb
     if 'holdout' not in loaders:
         raise ValueError(f'{algorithm} needs a held-out split: run with --holdout_frac > 0')
     model, cls_loss, cont_loss, opt, args, loader_key, epoch_fn, init_conf, loss_at = _generic_bandit_setup(
         framework, loss_kind, pl_ds, C, hparams, raw_cfg, epochs, device)
     holdout = loaders['holdout']
+    # Lookahead reward (src/bias_aware_reward.py): 'uniform' = the original est_soft; 'rho_em' /
+    # 'rho_oracle' = bias-aware rho correction with label-free / true-label Pi; 'true' = held-out
+    # mean true-class probability (uses labels -- upper bound only). Non-uniform rewards also log
+    # every lookahead arm's old / new / true score so the sign of d can be checked against truth.
+    scorer, reward_info = None, {}
+    if reward != 'uniform':
+        from src import bias_aware_reward as bar
+        tr_idx = loaders['train_idx']
+        tr_partial = torch.zeros(len(tr_idx), C)
+        for row, i in enumerate(tr_idx):
+            tr_partial[row, pl_ds.targets[i]] = 1.0
+        if reward == 'rho_oracle':
+            Pi = bar.oracle_inclusion(tr_partial, torch.as_tensor(orig_targets)[torch.as_tensor(tr_idx)], C)
+        else:
+            Pi, lam, curve = bar.estimate_inclusion_shrunk(tr_partial)
+            reward_info = {'shrink_lambda': lam, 'cv_loglik': curve}
+        scorer = bar.RhoCorrected(holdout['partial'], Pi)
+        scorer.credit = scorer.credit.to(device)
+        print(f'    [reward] {reward} {reward_info.get("shrink_lambda", "")}', flush=True)
+
+    def look_score(m):
+        if scorer is None:
+            return cb.holdout_scores(m, holdout, C, device)['est_soft'], None
+        s = cb.holdout_scores_all(m, holdout, C, device, scorer)
+        key = {'rho_em': 'rho_soft', 'rho_oracle': 'rho_soft', 'true': 'true_soft'}[reward]
+        return s[key], {k: round(v, 5) for k, v in s.items()}
     diag = None
     if raw_cfg.get('_switch_diag'):
         from src.switch_diag import SwitchDiag
@@ -1192,7 +1218,7 @@ def _run_generic_bandit(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch
     elif mode not in ('fixed', 'sched', 'sched_frozen'):
         raise ValueError(mode)
 
-    trace = []
+    trace = [{'epoch': 0, 'reward': reward, **reward_info}] if reward != 'uniform' else []
     chunk_t0 = time.perf_counter()
     for ep in range(epochs):
         cls_loss.set_conf_ema_m(ep, args)
@@ -1211,11 +1237,13 @@ def _run_generic_bandit(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch
             if ep % LONG_DECIDE_EVERY == 0:
                 snap = cb.snapshot(model, opt, cls_loss)
                 batches = cb.draw_batches(loaders[loader_key], len(loaders[loader_key]))
-                look = []
+                look, look_all = [], []
                 for v in (0.0, 1.0):
                     cb.restore(snap, model, opt, cls_loss)
                     epoch_fn(ep, batches, v)
-                    look.append(cb.holdout_scores(model, holdout, C, device)['est_soft'])
+                    sc, sa = look_score(model)
+                    look.append(sc)
+                    look_all.append(sa)
                 cb.restore(snap, model, opt, cls_loss)
                 del snap, batches
                 bandit.update(look[1] - look[0])
@@ -1226,11 +1254,13 @@ def _run_generic_bandit(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch
             snap = cb.snapshot(model, opt, cls_loss)
             batches = cb.draw_batches(loaders[loader_key], BANDIT_LOOKAHEAD_BATCHES)
             probes = (0.0, 1.0) if mode == 'paired01' else bandit.probe_pair()
-            look = []
+            look, look_all = [], []
             for v in probes:
                 cb.restore(snap, model, opt, cls_loss)
                 epoch_fn(ep, batches, v)
-                look.append(cb.holdout_scores(model, holdout, C, device)['est_soft'])
+                sc, sa = look_score(model)
+                look.append(sc)
+                look_all.append(sa)
             cb.restore(snap, model, opt, cls_loss)
             del snap, batches
             if mode == 'paired01':
@@ -1241,6 +1271,8 @@ def _run_generic_bandit(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch
                 value = bandit.choose()
             mu, se = bandit.posterior()
             rec.update(probes=list(probes), look=look, mu=mu, se=se)
+            if scorer is not None:
+                rec['look_all'] = look_all
         epoch_fn(ep, loaders[loader_key], value)
         scores = cb.holdout_scores(model, holdout, C, device)
         rec.update(value=value, **scores)
@@ -1276,7 +1308,7 @@ def _run_generic_bandit(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             elapsed = time.perf_counter() - chunk_t0
             _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
-            recent = trace[-report_every:]
+            recent = [t for t in trace[-report_every:] if 'value' in t]
             print(f'    [bandit] last {len(recent)} ep: mean value={sum(t["value"] for t in recent) / len(recent):.2f}  '
                   f'holdout est={scores["est_acc"]:.3f} true={scores["true_acc"]:.3f}', flush=True)
             chunk_t0 = time.perf_counter()
@@ -1340,6 +1372,12 @@ GENERIC_BANDIT_SPECS['Solo-Uni-Bandit01'] = ('Solo', 'unified', 'paired01', None
 GENERIC_BANDIT_SPECS['Solo-Uni-BanditCont'] = ('Solo', 'unified', 'cont', None)
 GENERIC_BANDIT_SPECS['Solo-Mix-A100'] = ('Solo', 'mix', 'fixed', 1.0)
 GENERIC_BANDIT_SPECS['Solo-Mix-BanditPaired'] = ('Solo', 'mix', 'paired01', None)
+# Bias-aware lookahead reward (2026-10-20, src/bias_aware_reward.py): same bandit as
+# ComCo-Mix-BanditPaired, only the score behind d changes.
+GENERIC_BANDIT_REWARD = {}
+for _suffix, _reward in (('RhoEM', 'rho_em'), ('RhoOracle', 'rho_oracle'), ('TrueAcc', 'true')):
+    GENERIC_BANDIT_SPECS[f'ComCo-Mix-BanditPaired-{_suffix}'] = ('ComCo', 'mix', 'paired01', None)
+    GENERIC_BANDIT_REWARD[f'ComCo-Mix-BanditPaired-{_suffix}'] = _reward
 
 
 def _make_generic_bandit_runner(name, spec):
@@ -1347,7 +1385,8 @@ def _make_generic_bandit_runner(name, spec):
 
     def _runner(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
         return _run_generic_bandit(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device,
-                                   tag, report_every, name, framework, loss_kind, mode, fixed_value)
+                                   tag, report_every, name, framework, loss_kind, mode, fixed_value,
+                                   reward=GENERIC_BANDIT_REWARD.get(name, 'uniform'))
     return _runner
 
 

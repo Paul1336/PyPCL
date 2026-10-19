@@ -59,6 +59,30 @@ def holdout_scores(model, holdout, C, device, chunk: int = 500) -> dict:
             'true_acc': torch.cat(correct).mean().item()}
 
 
+@torch.no_grad()
+def holdout_scores_all(model, holdout, C, device, scorer, chunk: int = 500) -> dict:
+    """holdout_scores plus a bias-aware scorer (src/bias_aware_reward.RhoCorrected) and the
+    true-label soft score, all from one forward pass. Keys: est_soft/est_acc (old uniform
+    correction), rho_soft/rho_acc (scorer), true_soft (mean p of the true class), true_acc."""
+    was_training = model.training
+    model.eval()
+    probs = []
+    for i in range(0, holdout['x'].shape[0], chunk):
+        probs.append(F.softmax(model(holdout['x'][i:i + chunk].to(device), eval_only=True), dim=1))
+    if was_training:
+        model.train()
+    p = torch.cat(probs)
+    partial, y = holdout['partial'].to(device), holdout['y'].to(device)
+    r = (partial.sum(dim=1) - 1) / (C - 1)
+    hit = partial.gather(1, p.argmax(dim=1, keepdim=True)).squeeze(1)
+    rho = scorer.scores(p)
+    return {'est_soft': (((p * partial).sum(dim=1) - r) / (1 - r)).mean().item(),
+            'est_acc': ((hit - r) / (1 - r)).mean().item(),
+            'rho_soft': rho['est_soft'], 'rho_acc': rho['est_acc'],
+            'true_soft': p.gather(1, y.view(-1, 1)).mean().item(),
+            'true_acc': (p.argmax(dim=1) == y).float().mean().item()}
+
+
 class PairedTS:
     """Discounted Gaussian Thompson sampling on the paired advantage
     d = score(arm1) - score(arm0). Picks arm 1 iff a posterior sample of
