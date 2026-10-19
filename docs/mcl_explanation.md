@@ -11,6 +11,12 @@
 > 正確**。Eq. (11) 的一般化 estimator、"By replacing L'_MAE by L_EXP and L_LOG in Eq. (12)" 這句
 > 原文也都逐字核對過。
 
+> **2026-10-19 補充**：ComCo 論文所稱的 **MCL-NL** 就是本論文的 $L_{LOG}=-\log\sum_{j\notin\bar Y}p_j$
+> （ComCo："MCL-NL (Feng et al., 2020) … the extension of SCL-NL … to multi-complementary label
+> scenarios"；Feng 原文沒有 "MCL-NL" 這個名字）。本專案三種係數版本：`MCLLOG`（$(C-1)/k$，無出處）、
+> `MCLLOGFixed`（$2(C-1)/m$，本論文 Eq. 12）、`MCLNL`（不縮放，ComCo 在 MCLL 下的分類損失，
+> 見 `comco_explanation.md` 檔首更正）。三者在固定 k 的 cell 內只差一個常數倍。
+
 **論文來源：** Feng, L., Kaneko, T., Han, B., Niu, G., An, B., & Sugiyama, M. (2020).
 *Learning with Multiple Complementary Labels.* ICML 2020, PMLR 119:3072–3081.
 [PMLR](https://proceedings.mlr.press/v119/feng20a.html)
