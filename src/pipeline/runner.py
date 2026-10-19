@@ -113,7 +113,7 @@ def run(cfg: PipelineConfig):
         'biasvariance_m_resamples': cfg.biasvariance_m_resamples,
         'biasvariance_eval_size': cfg.biasvariance_eval_size,
         'only_q': cfg.only_q, 'only_bimodal': cfg.only_bimodal, 'batching': cfg.batching,
-        'holdout_frac': cfg.holdout_frac,
+        'holdout_frac': cfg.holdout_frac, 'cl_bias': cfg.cl_bias,
         'switch_diag': cfg.switch_diag,
     })
 
@@ -208,7 +208,7 @@ def run(cfg: PipelineConfig):
                 loaders, pl_ds, orig_targets = data.load_experiment_data(
                     C, k, cfg.data_dir, seed, cfg.log_dir, cfg.batch_size, dataset=cfg.dataset,
                     q=cfg.only_q, bimodal=cfg.only_bimodal, batching=cfg.batching,
-                    holdout_frac=cfg.holdout_frac)
+                    holdout_frac=cfg.holdout_frac, cl_bias=cfg.cl_bias)
 
                 # Stash the DatasetSpec (and, for --detail, the current k/seed)
                 # in the raw config dict every runner already receives, so

@@ -30,6 +30,7 @@ class PipelineConfig:
     only_bimodal: tuple
     batching: str
     holdout_frac: float
+    cl_bias: str
     switch_diag: bool
     detail: bool
     detail_log_every: int
@@ -81,6 +82,7 @@ def load_config(args) -> PipelineConfig:
         only_bimodal=_parse_bimodal(getattr(args, 'only_bimodal', None)),
         batching=getattr(args, 'batching', 'random'),
         holdout_frac=getattr(args, 'holdout_frac', 0.0),
+        cl_bias=getattr(args, 'cl_bias', 'uniform'),
         switch_diag=getattr(args, 'switch_diag', False),
         detail=getattr(args, 'detail', False),
         detail_log_every=getattr(args, 'detail_log_every', 10),

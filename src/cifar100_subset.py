@@ -119,6 +119,15 @@ class _ArrayTestDataset(Dataset):
 # Public API
 # ---------------------------------------------------------------------------
 
+# Biased complementary-label settings of Gao & Zhang (ICML 2021, Sec 4.3), also
+# used by ComCo: total selection probability of each of the three label groups.
+CL_BIAS_SETS = {
+    'set1': (0.75, 0.24, 0.01),
+    'set2': (0.66, 0.24, 0.10),
+    'set3': (0.45, 0.30, 0.25),
+}
+
+
 def select_cifar100_classes(total_classes: int, seed: int = 42) -> list:
     """
     Returns a sorted list of `total_classes` class indices (0–99) chosen from
@@ -141,6 +150,7 @@ def prepare_cifar100_subset(
     hierarchical_q: float = None,
     q: float = None,
     bimodal: tuple = None,
+    cl_bias: str = 'uniform',
 ):
     """
     Loads CIFAR-100, selects `total_classes` classes, generates PL labels
@@ -181,6 +191,11 @@ def prepare_cifar100_subset(
                            path. Takes priority over `hierarchical`/`n_partial_labels`
                            if given; mutually exclusive with hierarchical_q (caller's
                            responsibility -- runner.py never sets both).
+        cl_bias:          'uniform' (default, unchanged behaviour) or one of
+                           CL_BIAS_SETS ('set1'/'set2'/'set3'): biased
+                           complementary-label generation of ComCo / Gao & Zhang
+                           2021 (see ComparisonDataGenerator.generate_pl_dataset_biased_cl).
+                           Only for the fixed-k path with 2 <= k <= C-1.
 
     Returns:
         pl_dataset_raw:   WeaklySupervisedDataset with PL targets.
@@ -189,6 +204,10 @@ def prepare_cifar100_subset(
         test_info:        (test_data: np.ndarray, test_targets: list[int]).
         log_info:         dict with selection metadata.
     """
+    if cl_bias != 'uniform' and (cl_bias not in CL_BIAS_SETS or hierarchical_q is not None
+                                 or q is not None or bimodal is not None):
+        raise ValueError(f"cl_bias={cl_bias!r} needs fixed-k generation and one of {sorted(CL_BIAS_SETS)}")
+    cl_bias_partition = None
     if hierarchical_q is None and q is None and bimodal is None and not (1 <= n_partial_labels <= total_classes - 1):
         raise ValueError(
             f"n_partial_labels must be in [1, {total_classes - 1}], got {n_partial_labels}"
@@ -238,6 +257,12 @@ def prepare_cifar100_subset(
         # Special case: candidate set = {true_label} only.
         pl_targets = [torch.tensor([t], dtype=torch.long) for t in train_targets]
         pl_dataset_raw = WeaklySupervisedDataset(train_data, pl_targets)
+    elif cl_bias != 'uniform':
+        if hierarchical:
+            raise ValueError("cl_bias and hierarchical are mutually exclusive")
+        pl_dataset_raw, cl_bias_partition = generator.generate_pl_dataset_biased_cl(
+            k=n_partial_labels, group_probs=CL_BIAS_SETS[cl_bias],
+            partition_seed=CLASS_SELECTION_SEED)
     elif hierarchical:
         # Remap the coarse-superclass id of each SELECTED class into the
         # 0..C-1 label space (same remap as the fine labels themselves).
@@ -267,6 +292,8 @@ def prepare_cifar100_subset(
         "hierarchical_q":          hierarchical_q,
         "q":                       q,
         "bimodal":                 list(bimodal) if bimodal is not None else None,
+        "cl_bias":                 cl_bias,
+        "cl_bias_partition":       cl_bias_partition,
         "n_complementary_labels":  (total_classes - n_partial_labels) if not is_probabilistic else None,
         "seed":                    seed,
         "n_train":                 len(train_targets),
@@ -281,7 +308,7 @@ def prepare_cifar100_subset(
     elif q is not None:
         log_suffix = f"q{q}"
     else:
-        log_suffix = f"{n_partial_labels}k"
+        log_suffix = f"{n_partial_labels}k" + (f"_bias-{cl_bias}" if cl_bias != 'uniform' else '')
     log_fname = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{total_classes}classes_{log_suffix}.json"
     with open(os.path.join(log_dir, log_fname), "w") as f:
         json.dump(log_info, f, indent=2)

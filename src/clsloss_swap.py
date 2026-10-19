@@ -15,7 +15,9 @@ drive any of them:
 
 Loss keys (CLS_LOSSES):
   PLL side
-    UCE          -(1/k) sum_{j in Y} log p_j                (old "Cour2011", src/cour_loss.py)
+    UCE          -(1/k) sum_{j in Y} log p_j                (PRODEN paper's "PRODEN-naive" ablation, i.e.
+                 PRODEN with the uniform weights never updated; src/cour_loss.py. Not
+                 Cour 2011 -- its "naive" loss (Jin & Ghahramani 2002) is psi on raw scores)
     CLPL         squared-hinge CLPL on raw logits          (src/clpl_loss.py)
     Wu2022       proper PLL estimator                      (src/wu_loss.py)
     PRODEN       -sum w_j log p_j, w <- renormalized softmax in Y, every batch
@@ -28,6 +30,9 @@ Loss keys (CLS_LOSSES):
   CLL side (comp set = non-candidates, m = C - k)
     MCLLOG       -log sum_{j in Y} p_j * (C-1)/(C-m)       (MCL-LOG == PiCO-MCL == original ComCo)
     MCLLOGFixed  -log sum_{j in Y} p_j * 2(C-1)/m          (src/fixed_mcl_losses.py)
+    MCLNL        -log sum_{j in Y} p_j, unscaled           (ComCo's MCL-NL: Feng et al.'s L_LOG without the
+                 risk-estimator factor; ComCo Sec 5.4.2 "NL indicates SCL-NL/MCL-NL in
+                 CLL / MCLL". Equals SCL-NL at m = 1 and CE at k = 1)
     SCLNL        (1/m) sum_{ybar} -log(1 - p_ybar)         (SCL-NL == ComCo-Fixed native)
     OP           (1/m) sum_{ybar} -log softmax(-g)_ybar    (src/op_loss.py)
     OPW          weighted OP                               (src/op_loss.py)
@@ -100,6 +105,15 @@ class MCLLOGFixedLoss(_Stateless):
         m = (C - partial_Y.sum(dim=1)).clamp(min=1)
         s = (F.softmax(logits, dim=1) * partial_Y).sum(dim=1)
         return (-torch.log(s + 1e-7) * 2.0 * (C - 1.0) / m).mean()
+
+
+class MCLNLLoss(_Stateless):
+    """Unscaled MCL-NL / L_LOG: ComCo's classification loss for multiple
+    complementary labels. MCLLOGLoss / MCLLOGFixedLoss times a constant."""
+
+    def forward(self, logits, index, partial_Y):
+        s = (F.softmax(logits, dim=1) * partial_Y).sum(dim=1)
+        return (-torch.log(s + 1e-7)).mean()
 
 
 class SCLNLLoss(_Stateless):
@@ -264,7 +278,7 @@ class SoLarLoss(nn.Module):
 # ─── registry ─────────────────────────────────────────────────────────────
 
 CLS_LOSSES = ['UCE', 'CLPL', 'Wu2022', 'PRODEN', 'PiCOPartial', 'PiCOCLS', 'SoLar',
-              'MCLLOG', 'MCLLOGFixed', 'SCLNL', 'OP', 'OPW']
+              'MCLLOG', 'MCLLOGFixed', 'MCLNL', 'SCLNL', 'OP', 'OPW']
 FRAMEWORKS = ['PiCO', 'ComCo']
 
 
@@ -274,7 +288,7 @@ def swap_algorithm_name(framework: str, loss: str) -> str:
 
 def build_cls_loss(name: str, init_conf, num_class: int, solar_cfg: dict, batch_size: int):
     stateless = {'UCE': UCELoss, 'CLPL': CLPLLoss, 'Wu2022': Wu2022Loss, 'MCLLOG': MCLLOGLoss,
-                 'MCLLOGFixed': MCLLOGFixedLoss, 'SCLNL': SCLNLLoss, 'OP': OPLoss, 'OPW': OPWLoss}
+                 'MCLLOGFixed': MCLLOGFixedLoss, 'MCLNL': MCLNLLoss, 'SCLNL': SCLNLLoss, 'OP': OPLoss, 'OPW': OPWLoss}
     if name in stateless:
         return stateless[name]()
     if name == 'PRODEN':

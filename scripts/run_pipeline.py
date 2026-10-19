@@ -95,6 +95,11 @@ def _add_run_parser(sub):
                     help='Hold this fraction of the training set out of every training loader '
                          '(cifar100-subset only); exposed to runners as loaders["holdout"]. '
                          'Needed by the ComCo-Weighted-Bandit* algorithms (label-free reward).')
+    p.add_argument('--cl_bias', choices=['uniform', 'set1', 'set2', 'set3'], default='uniform',
+                    help='Biased complementary-label generation (ComCo / Gao & Zhang 2021 Sec 4.3): per '
+                         'true class the other labels are split into 3 groups drawn as complementary '
+                         'labels w.p. set1 .75/.24/.01, set2 .66/.24/.10, set3 .45/.30/.25 (fixed-k, '
+                         'cifar100-subset only). Not recorded in results.csv -- use one run_name per level.')
     p.add_argument('--switch_diag', action='store_true',
                     help='Generic bandit runners: also log per-epoch confidence/model/prototype/gradient '
                          'diagnostics (src/switch_diag.py) into bandit_trace/.')

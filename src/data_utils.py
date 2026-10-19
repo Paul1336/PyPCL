@@ -71,6 +71,41 @@ class ComparisonDataGenerator:
             new_targets.append(torch.tensor(candidate_set))
         return WeaklySupervisedDataset(original_data, new_targets)
 
+    def generate_pl_dataset_biased_cl(self, k: int, group_probs, partition_seed: int = 42):
+        """Biased complementary labels (ComCo / Gao & Zhang 2021 Sec 4.3, after
+        Yu et al. 2018), generalized to m = C - k complementary labels.
+
+        For every true class y, the C-1 other labels are split once at random
+        into three (near-)equal groups; a label in group g is drawn as a
+        complementary label w.p. group_probs[g] / |g|. The m complementary
+        labels are drawn without replacement with these weights; the candidate
+        set is the rest. The per-class partition (the "transition matrix")
+        comes from its own RNG seeded with partition_seed, so it is identical
+        across training seeds -- only the per-sample draws use the global
+        np.random state. With m = 1 this is exactly the paper's setting.
+        Returns (WeaklySupervisedDataset, partition) where partition[y] is a
+        list of three label lists (highest-probability group first)."""
+        C = self.num_classes
+        if not 1 < k <= C - 1:
+            raise ValueError(f"'k' must be between 2 and {C - 1}.")
+        m = C - k
+        part_rng = np.random.RandomState(partition_seed)
+        partition, weights = [], []
+        for y in range(C):
+            others = part_rng.permutation(np.delete(self.all_labels, y))
+            groups = np.array_split(others, 3)
+            partition.append([sorted(g.tolist()) for g in groups])
+            w = np.zeros(C)
+            for g, pg in zip(groups, group_probs):
+                w[g] = pg / len(g)
+            weights.append(w / w.sum())
+        new_targets = []
+        for _, true_label in tqdm(self.dataset, desc="Processing PL (biased CL)"):
+            comp = np.random.choice(self.all_labels, size=m, replace=False, p=weights[true_label])
+            candidate_set = np.setdiff1d(self.all_labels, comp)
+            new_targets.append(torch.tensor(candidate_set))
+        return WeaklySupervisedDataset(self.dataset.data, new_targets), partition
+
     def generate_pl_dataset_bimodal(self, k_lo: int, k_hi: int, p_lo: float):
         """Bimodal candidate-set sizes: each sample independently gets k_lo
         candidates w.p. p_lo, else k_hi (true label + uniformly drawn false

@@ -15,6 +15,22 @@
 > scaling 的 bug 判定正確**。"we denote the strategy in PiCO as strategy A and the strategy of
 > ComCo as strategy B"、K=1/warmup_pos=100/warmup_neg=1 的原文也都核對過，對比損失部分維持
 > 「完全忠實」的結論不變。
+>
+> **2026-10-19 更正（推翻上面兩段的分類損失結論）**：重新對照 `/home/Paul/papers/ComCo.pdf`，
+> 5.1 的 "we choose SCL-NL" 只適用於**單一互補標籤（CLL）**實驗。論文 5.4.2 原文：
+> "NL indicates **SCL-NL/MCL-NL in CLL / MCLL**. CLL and MCLL experiments are conducted on CIFAR-10
+> and CIFAR-100 respectively"——**多互補標籤（MCLL，含所有 CIFAR-100 實驗）時 ComCo 的分類損失是
+> MCL-NL**，即 Feng et al. 的 $L_{LOG}=-\log\sum_{j\notin\bar Y}p_j$（m=1 時退化成 SCL-NL）。
+> 佐證：Table 5 的 "ComCo w/o $\mathcal L_{cont}$ (baseline: NL)" 在 CIFAR-100 是 51.60，跟
+> Table 3 的 MCL-NL 51.16 幾乎相同。因此：
+> - 原版 `ComCoCLSLoss` 的 MCL **形式**才是論文在 MCLL 下的選擇；不一致的只有 `(C-1)/(C-m)`
+>   係數（論文沒寫 ComCo 是否縮放；Feng Eq. 12 的係數是 $2(C-1)/m$，見 `mcl_explanation.md`）。
+> - `ComCo-Fixed`（`FixedComCoCLSLoss`，對 m 個互補標籤平均的 SCL-NL）**只在 m=1（k=C-1）時忠實**；
+>   m>1 的平均寫法沒有論文出處，且梯度約為 CE 的 $10^{-4}$（C=100, k=1），C=100 時完全學不起來
+>   （`hard_c100_1017`：k=1 只有 ~8%）。
+> - 本專案的固定 k 設定幾乎都是 m>1，**貼近論文的 ComCo 分類損失請用不縮放的 MCL-NL**：
+>   `SwapComCo-MCLNL`（`src/clsloss_swap.py::MCLNLLoss`，2026-10-19 新增，數值驗證見
+>   `verify_scripts/check_clsloss_swap.py`：k=1 時等於 CE、m=1 時等於 SCL-NL）。
 
 **論文來源：** Jiang, H., Sun, Z., & Tian, Y. (2024).
 *ComCo: Complementary Supervised Contrastive Learning for Complementary Label Learning.*
@@ -78,6 +94,10 @@ $-\log(1-p_{\bar y})$，跟論文的 SCL-NL 一致——這也是為什麼程式
 延伸就採用本專案已經驗證過的 `SCL_NL`（`src/scl_loss.py`）的 multi-CL 平均 wrapper 形式——
 即對每個互補標籤各自算 $-\log(1-p_c)$ 再平均，不加任何 `(C-1)/(C-m)` scaling。）
 
+> **2026-10-19 更正**：上面「ComCo 論文只把 MCL-NL 當成 baseline」的判斷**錯誤**。論文 5.4.2
+> 明寫 MCLL 時 ComCo 的 NL 就是 MCL-NL（見檔首更正）。正確的判定是：**loss 形式（MCL-NL）是對的，
+> 只有 `(C-1)/(C-m)` 係數沒有出處**；而「SCL-NL 對 m 個互補標籤取平均」這個修正版反而沒有論文依據。
+
 ### 2. 對比損失：完全一致，包含論文自創的命名
 
 | 論文 | 程式碼 | 結果 |
@@ -107,6 +127,10 @@ $-\log(1-p_{\bar y})$，跟論文的 SCL-NL 一致——這也是為什麼程式
   （固定機率的偏態抽樣，Gao & Zhang 2021）、MCLL（Feng et al. 2020 的 $\binom{k}{s}/(2^k-2)$
   組合抽樣）。本專案是用 PL 生成的補集（constant-k / variable-q + 可選 noise η）——**跟論文三種
   方式都不一樣**，CLCIFAR-10/20（真人標註）則是論文完全沒用過的資料。
+- **CIFAR-100 只出現在變動數量 MCLL 設定**（Section 5.1）：$p(s)=\binom{C}{s}/(2^C-2)$ 抽互補標籤數
+  $s$，平均約 $C/2$（C=100 時候選集約 50），分類損失為 MCL-NL；Table 3 結果 ComCo **61.20±0.95**、
+  MCL-NL 51.16±0.60。Implementation：batch size 256、ComCo 在 CIFAR 用 lr 0.02（同段又說所有模型
+  Adam、lr 從 {1e-1,…,1e-5} 選，兩句不完全一致）、weight decay 1e-4、λ=0.3、queue 8192。
 - **Backbone**：CIFAR-10/100 用 ResNet-18（跟本專案 `SupConResNet` 一致）；MNIST 系列用 5 層 FC。
 - **評估**：top-1 accuracy，5 次重跑平均±標準差；CIFAR-10/100 訓練 1000 epoch，其餘 800 epoch。
 - **其他超參數**：MLP head 兩層，512→128 維（對應本專案 `low_dim:128`）；query 增強用
@@ -125,6 +149,10 @@ $-\log(1-p_{\bar y})$，跟論文的 SCL-NL 一致——這也是為什麼程式
 `run_comco_fixed`（`src/pipeline/algorithms/runners.py`）：沿用跟 `run_comco` 相同的模型/對比損失
 建構，只把 `ComCoCLSLoss()` 換成 `FixedComCoCLSLoss()`。已註冊
 `AlgorithmSpec('ComCo-Fixed', 'CLL', r.run_comco_fixed)`。
+
+> **2026-10-19 更正**：`ComCo-Fixed` 只在 m=1 時對應論文。多互補標籤時，忠實版本是
+> `SwapComCo-MCLNL`（ComCo-Fixed 架構 + 不縮放的 MCL-NL）；`SwapComCo-MCLLOG`（係數 $(C-1)/k$）
+> 與 `SwapComCo-MCLLOGFixed`（Feng 的 $2(C-1)/m$）可當作 scaling ablation。
 
 ---
 

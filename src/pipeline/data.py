@@ -38,7 +38,8 @@ def bimodal_sentinel_k(k_lo: int, k_hi: int, p_lo: float) -> int:
 
 def load_experiment_data(C: int, k: int, data_dir: str, seed: int, log_dir: str, batch_size: int,
                           dataset: str = 'cifar100-subset', q: float = None, bimodal: tuple = None,
-                          batching: str = 'random', holdout_frac: float = 0.0):
+                          batching: str = 'random', holdout_frac: float = 0.0,
+                          cl_bias: str = 'uniform'):
     """Returns (loaders, pl_dataset_raw, original_targets) for one (C, k) cell.
 
     `loaders` contains 'pl', 'cl', 'test' DataLoaders always, plus 'pico'/
@@ -56,6 +57,7 @@ def load_experiment_data(C: int, k: int, data_dir: str, seed: int, log_dir: str,
         pl_ds, cl_ds, orig_targets, test_info, _ = prepare_cifar100_subset(
             total_classes=C, n_partial_labels=k,
             data_dir=data_dir, seed=seed, log_dir=log_dir, q=q, bimodal=bimodal,
+            cl_bias=cl_bias,
         )
         loaders = get_subset_dataloaders_full(pl_ds, cl_ds, orig_targets, test_info, batch_size,
                                               batching=batching, holdout_frac=holdout_frac)
@@ -66,8 +68,8 @@ def load_experiment_data(C: int, k: int, data_dir: str, seed: int, log_dir: str,
         raise ValueError(f"Unknown --dataset '{dataset}'. Available: "
                           f"cifar100-subset, {', '.join(sorted(DATASETS.keys()))}")
     spec = DATASETS[dataset]
-    if bimodal is not None or batching != 'random' or holdout_frac > 0:
-        raise ValueError("--only_bimodal / --batching / --holdout_frac are only wired up for cifar100-subset")
+    if bimodal is not None or batching != 'random' or holdout_frac > 0 or cl_bias != 'uniform':
+        raise ValueError("--only_bimodal / --batching / --holdout_frac / --cl_bias are only wired up for cifar100-subset")
     bs = spec.batch_size_override or batch_size
     if q is not None:
         if not spec.supports_q:

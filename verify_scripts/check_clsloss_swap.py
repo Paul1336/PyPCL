@@ -4,6 +4,7 @@ import os
 import sys
 
 import torch
+import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -51,11 +52,17 @@ for k in [1, 3, 5, 10, 15, 19]:
         'MCLLOG=ComCo': (S.MCLLOGLoss()(logits, idx, Y), ComCoCLSLoss()(logits, comp)),
         'MCLLOGFixed': (S.MCLLOGFixedLoss()(logits, idx, Y), FixedMCLLog(C)(logits, Cp)),
         'SCLNL': (S.SCLNLLoss()(logits, idx, Y), SCL_NL()(logits, Cp)),
+        'MCLNL=MCLLOGFixed/scale': (S.MCLNLLoss()(logits, idx, Y),
+                                    S.MCLLOGFixedLoss()(logits, idx, Y) * max(C - k, 1) / (2.0 * (C - 1))),
         'SCLNL=ComCoFixed': (S.SCLNLLoss()(logits, idx, Y), FixedComCoCLSLoss()(logits, comp)),
         'OP': (S.OPLoss()(logits, idx, Y), OPLoss()(logits, Cp)),
         'OP=CPE(-g)': (S.OPLoss()(logits, idx, Y), CPELoss()(-logits, Cp)),
         'OPW': (S.OPWLoss()(logits, idx, Y), OPWLoss()(logits, Cp)),
     }
+    if k == 1:
+        pairs['MCLNL=CE'] = (S.MCLNLLoss()(logits, idx, Y), F.cross_entropy(logits, Y.argmax(1)))
+    if k == C - 1:
+        pairs['MCLNL=SCLNL'] = (S.MCLNLLoss()(logits, idx, Y), S.SCLNLLoss()(logits, idx, Y))
     if k < C:
         pairs['Wu2022'] = (S.Wu2022Loss()(logits, idx, Y), WuPLLLoss()(logits, Yp))
     # PRODEN: loss value and the updated confidence buffer.
@@ -66,8 +73,9 @@ for k in [1, 3, 5, 10, 15, 19]:
     pairs['PRODEN.conf'] = (mine.conf.sum() * 0 + (mine.conf - ref.conf).abs().max(), torch.tensor(0.))
     for name, (a, b) in pairs.items():
         # PiCOMCLLoss / ComCoCLSLoss guard log() with clamp(1e-8) instead of
-        # +1e-7, which only matters when the candidate mass is ~1e-7.
-        rtol = 1e-3 if name in ('MCLLOG=PiCOMCL', 'MCLLOG=ComCo') else 1e-5
+        # +1e-7, which only matters when the candidate mass is ~1e-7 (same for
+        # MCLNL's +1e-7 vs F.cross_entropy's exact log-softmax).
+        rtol = 1e-3 if name in ('MCLLOG=PiCOMCL', 'MCLLOG=ComCo', 'MCLNL=CE') else 1e-5
         good = torch.allclose(a, b, atol=1e-5, rtol=rtol)
         ok &= good
         if not good:
