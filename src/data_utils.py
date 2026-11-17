@@ -106,6 +106,44 @@ class ComparisonDataGenerator:
             new_targets.append(torch.tensor(candidate_set))
         return WeaklySupervisedDataset(self.dataset.data, new_targets), partition
 
+    def generate_pl_dataset_biased_cl_variable(self, mean_k: float, group_probs, partition_seed: int = 42):
+        """Variable-size version of generate_pl_dataset_biased_cl (2026-11-06): same per-class
+        three-group partition and per-label weights w_j (group_probs[g] / |g|), but each false label j
+        is drawn as a complementary label INDEPENDENTLY w.p. p_j = min(1, lam * w_j), with lam chosen
+        (bisection) so that E|Ybar| = sum_j p_j = C - mean_k, i.e. E|Y| = mean_k. Set sizes therefore
+        vary per sample; with uniform weights this is exactly generate_variable_pl_cl_datasets with
+        q = (mean_k - 1) / (C - 1). Returns (WeaklySupervisedDataset, partition, comp_probs) where
+        comp_probs[y] is the per-label complementary probability vector for true class y."""
+        C = self.num_classes
+        if not 1 <= mean_k <= C:
+            raise ValueError(f"mean_k must be in [1, {C}], got {mean_k}")
+        target_m = C - mean_k
+        part_rng = np.random.RandomState(partition_seed)
+        partition, probs = [], []
+        for y in range(C):
+            others = part_rng.permutation(np.delete(self.all_labels, y))
+            groups = np.array_split(others, 3)
+            partition.append([sorted(g.tolist()) for g in groups])
+            w = np.zeros(C)
+            for g, pg in zip(groups, group_probs):
+                w[g] = pg / len(g)
+            lo, hi = 0.0, 1.0
+            while np.minimum(1.0, hi * w).sum() < target_m - 1e-12 and hi < 1e12:
+                hi *= 2
+            for _ in range(200):
+                mid = 0.5 * (lo + hi)
+                if np.minimum(1.0, mid * w).sum() < target_m:
+                    lo = mid
+                else:
+                    hi = mid
+            probs.append(np.minimum(1.0, hi * w))
+        new_targets = []
+        for _, true_label in tqdm(self.dataset, desc="Processing PL (biased CL, variable size)"):
+            comp = np.random.rand(C) < probs[true_label]
+            comp[true_label] = False
+            new_targets.append(torch.tensor(np.flatnonzero(~comp)))
+        return WeaklySupervisedDataset(self.dataset.data, new_targets), partition, probs
+
     def generate_pl_dataset_bimodal(self, k_lo: int, k_hi: int, p_lo: float):
         """Bimodal candidate-set sizes: each sample independently gets k_lo
         candidates w.p. p_lo, else k_hi (true label + uniformly drawn false

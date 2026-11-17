@@ -19,6 +19,7 @@ Plans:
     python scripts/launch_clsloss_swap.py --plan c100 --gpus 0 1 2 3 --slots 4
     python scripts/launch_clsloss_swap.py --plan c100 --status      # progress, no launch
     python scripts/launch_clsloss_swap.py --plan c100 --dry_run     # print the queue
+    python scripts/launch_clsloss_swap.py --plan c100 --shard 0/4 ...   # only cells with index % 4 == 0
 """
 
 import argparse
@@ -77,9 +78,16 @@ def main():
     ap.add_argument('--epochs', type=int, default=200)
     ap.add_argument('--status', action='store_true')
     ap.add_argument('--dry_run', action='store_true')
+    ap.add_argument('--shard', default='0/1',
+                    help='i/N: only cells whose global index %% N == i (worker ids stay global)')
     a = ap.parse_args()
     os.chdir(ROOT)
     run, C, jobs = build_plan(a.plan)
+    si, sn = (int(x) for x in a.shard.split('/'))
+    if not 0 <= si < sn:
+        ap.error(f'--shard {a.shard}: need 0 <= i < N')
+    mine = [(wid, j) for wid, j in enumerate(jobs) if wid % sn == si]
+    shard_tag = f', shard {si}/{sn}' if sn > 1 else ''
     algos = sorted({j[1] for j in jobs})
     log_dir = os.path.join('logs', run)
     os.makedirs(log_dir, exist_ok=True)
@@ -87,23 +95,23 @@ def main():
     def log(msg):
         line = f'{datetime.now():%Y-%m-%d_%H:%M:%S} {msg}'
         print(line, flush=True)
-        with open(os.path.join(log_dir, 'launcher.log'), 'a') as f:
+        with open(os.path.join(log_dir, 'launcher.log' if sn == 1 else f'launcher_s{si}.log'), 'a') as f:
             f.write(line + '\n')
 
     done = finished(run, C)
     if a.status or a.dry_run:
-        for ph in sorted({j[0] for j in jobs}):
-            cells = [j for j in jobs if j[0] == ph]
+        for ph in sorted({j[0] for _, j in mine}):
+            cells = [j for _, j in mine if j[0] == ph]
             print(f'phase {ph}: {sum((j[1], j[2], j[3]) in done for j in cells)}/{len(cells)} done')
-        print(f'total: {len(done & {(j[1], j[2], j[3]) for j in jobs})}/{len(jobs)} done  ({run}, C={C})')
+        print(f'total: {len(done & {(j[1], j[2], j[3]) for _, j in mine})}/{len(mine)} done  ({run}, C={C}{shard_tag})')
         if a.dry_run:
-            for wid, (ph, alg, k, seed) in enumerate(jobs):
+            for wid, (ph, alg, k, seed) in mine:
                 if (alg, k, seed) not in done:
                     print(f'  worker{wid:3d} phase{ph} {alg} k={k} seed={seed}')
         return
 
-    queue = [(wid, j) for wid, j in enumerate(jobs) if (j[1], j[2], j[3]) not in done]
-    log(f'QUEUED {len(queue)}/{len(jobs)} cells of {run} (C={C}) on gpus {a.gpus} x {a.slots} slots')
+    queue = [(wid, j) for wid, j in mine if (j[1], j[2], j[3]) not in done]
+    log(f'QUEUED {len(queue)}/{len(mine)} cells of {run} (C={C}{shard_tag}) on gpus {a.gpus} x {a.slots} slots')
     running = {}
     while queue or running:
         for p in [p for p in running if p.poll() is not None]:

@@ -82,7 +82,8 @@ for _name in ('ComCo-Mix-A100', 'ComCo-Mix-BanditPaired', 'Solo-Uni-Fixed0', 'So
               'PiCO-Uni-Plateau', 'ComCo-Uni-Plateau',
               'Hybrid-Bandit01', 'Hybrid-BanditLong', 'Hybrid-Plateau', 'Hybrid-FixedPiCO', 'Hybrid-FixedComCo',
               'Hybrid-Sched150', 'Hybrid-Mix-Bandit01', 'Hybrid-Mix-FixedComCo', 'Hybrid-Mix-FixedPiCO',
-              'ComCo-Mix-BanditPaired-RhoEM', 'ComCo-Mix-BanditPaired-RhoOracle', 'ComCo-Mix-BanditPaired-TrueAcc'):
+              'ComCo-Mix-BanditPaired-RhoEM', 'ComCo-Mix-BanditPaired-RhoOracle', 'ComCo-Mix-BanditPaired-TrueAcc',
+              'ComCo-Uni-Bandit01-RhoEM'):
     ALGO_HPARAMS[_name] = _ADAM
 
 # cls-loss swap experiment (src/clsloss_swap.py) -- Adam for every loss,
@@ -92,6 +93,13 @@ from src.clsloss_swap import CLS_LOSSES, FRAMEWORKS, swap_algorithm_name  # noqa
 for _fw in FRAMEWORKS:
     for _l in CLS_LOSSES:
         ALGO_HPARAMS[swap_algorithm_name(_fw, _l)] = _ADAM
+for _a0, _a1 in (('PiCOPartial', 'MCLLOGFixed'), ('PRODEN', 'MCLLOGFixed')):  # runners.SWAP_BANDIT_PAIRS
+    ALGO_HPARAMS[f'SwapComCo-BanditPaired-{_a0}-{_a1}'] = _ADAM
+for _pl in ('PiCOPartial', 'PRODEN'):  # runners.PRUNE_RUNNERS
+    for _tag in ('Prune', 'PruneOracle'):
+        ALGO_HPARAMS[f'SwapComCo-{_tag}-{_pl}'] = _ADAM
+        if _pl == 'PiCOPartial':
+            ALGO_HPARAMS[f'SwapPiCO-{_tag}-{_pl}'] = _ADAM
 
 # Parametrized biased-init sweep #2 (see src/pll_init.py.BIAS_RAND_WEIGHTS /
 # BIAS_RAND_WF_VALUES / biased_rand_variant_name and
@@ -135,6 +143,20 @@ for _base in AB_SWEEP_BASES:
         for _s in AB_SWEEP_SCALES:
             ALGO_HPARAMS[ema_variant_name(_bn, _s)] = _ADAM
 
+
+# PiCO-Fixed vs ComCo-Fixed diagnostics (src/pcdiag.py) -- both bases use Adam.
+for _n in ('PCD-PiCO', 'PCD-ComCo'):
+    for _v in ('', '-OraclePL', '-OracleProto', '-OraclePos', '-OracleNeg', '-OracleCls', '-CandFilter'):
+        ALGO_HPARAMS[_n + _v] = _ADAM
+for _v in ('', '-OraclePL', '-OraclePos', '-OracleNeg', '-CandFilter'):  # ComCo-Fixed + MCL-LOG (2026-11-04)
+    ALGO_HPARAMS['PCD-ComCoMCL' + _v] = _ADAM
+from src.pcdiag import PL_EMA_MS  # noqa: E402  ComCoMCL + EMA pseudo-label (2026-11-05)
+ALGO_HPARAMS['PCD-ComCoMCLNL'] = ALGO_HPARAMS['PCD-ComCoMCLFixed'] = _ADAM  # 2026-11-06
+for _v in ('-PosAC', '-NegAC', '-PosNegAC'):  # AllClean pair selection on ComCo (2026-11-16)
+    ALGO_HPARAMS['PCD-ComCoMCLNL' + _v] = _ADAM
+for _tag in PL_EMA_MS:
+    ALGO_HPARAMS['PCD-ComCoMCL-' + _tag] = _ADAM
+ALGO_HPARAMS['PCD-PiCOPlus'] = ALGO_HPARAMS['PCD-PiCOPlus-AllClean'] = _ADAM  # PiCO+ (2026-11-08), same as PCD-PiCO
 
 def make_optimizer(model, hparams: dict):
     import torch.optim as optim

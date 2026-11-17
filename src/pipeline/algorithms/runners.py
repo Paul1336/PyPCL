@@ -12,13 +12,14 @@ Every run_* function shares one signature (see algorithms/__init__.py):
 
 import gc
 import json
+import math
 import os
 import time
 from types import SimpleNamespace
 
 import torch
 from PIL import Image
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Subset, Dataset
 from torchvision import transforms
 
 from src.collate import solar_collate_fn
@@ -251,6 +252,8 @@ def _run_proden_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch
     idx_ds = (_IndexedDataset(pl_ds.data, image_size=spec.image_size, mean=spec.mean, std=spec.std,
                                modality=spec.modality)
               if spec is not None else _IndexedDataset(pl_ds.data))
+    if 'train_idx' in loaders:  # --holdout_frac: never train on the held-out split (indices stay global)
+        idx_ds = Subset(idx_ds, [int(i) for i in loaders['train_idx']])
     idx_loader = DataLoader(idx_ds, batch_size=batch_size, shuffle=True, num_workers=2)
 
     chunk_t0 = time.perf_counter()
@@ -1138,6 +1141,35 @@ def _generic_bandit_setup(framework, loss_kind, pl_ds, C, hparams, raw_cfg, epoc
             return cls_loss(logits, index, cand, alpha=value)
 
         return model, cls_loss, cont_loss, opt, pico_args, 'pico', epoch_fn, init_conf, loss_at
+    elif framework == 'SwapComCo':
+        # Two clsloss_swap losses on SwapComCo (2026-10-27): loss_kind = '<arm0>+<arm1>', value 0 = arm0,
+        # 1 = arm1. Each epoch is exactly train_comco_swap_epoch, so a fixed arm == SwapComCo-<arm>.
+        from src.clsloss_swap import SwapMixClsLoss, build_cls_loss, train_comco_swap_epoch
+        comco_cfg = raw_cfg['comco']
+        args = {
+            'num_class': C, 'epochs': epochs,
+            'low_dim': comco_cfg['low_dim'], 'moco_queue': comco_cfg['moco_queue'],
+            'moco_m': comco_cfg['moco_m'], 'loss_weight': comco_cfg['loss_weight'],
+            'temperature': comco_cfg['temperature'], 'top_k': comco_cfg['top_k'],
+            'warmup_neg': comco_cfg['warmup_neg'], 'warmup_pos': comco_cfg['warmup_pos'],
+            'proto_m': pico_cfg['proto_m'], 'prot_start': pico_cfg.get('prot_start_fixed', 1),
+            'conf_ema_range': pico_cfg['conf_ema_range'],
+        }
+        model = ComCoWeightedModel(args).to(device)
+        arm0, arm1 = (build_cls_loss(n, init_conf, C, raw_cfg['solar'], None) for n in loss_kind.split('+'))
+        cls_loss = SwapMixClsLoss(arm0, arm1)
+        cont_loss = ComCoContrastiveLoss(temperature=args['temperature'], top_k=args['top_k'])
+        opt = make_optimizer(model, hparams)
+
+        def epoch_fn(ep, loader, value):
+            cls_loss.value = float(value)
+            train_comco_swap_epoch(args, model, loader, cls_loss, cont_loss, opt, ep, device)
+
+        def loss_at(logits, index, cand, value):
+            cls_loss.value = float(value)
+            return cls_loss(logits, index, cand)
+
+        return model, cls_loss, cont_loss, opt, args, 'comco', epoch_fn, init_conf, loss_at
     elif framework == 'Solo':
         # no contrastive branch; s updated from the classifier (src/solo_switch.py)
         from src.solo_switch import SoloModel, train_solo_switch_epoch
@@ -1378,6 +1410,13 @@ GENERIC_BANDIT_REWARD = {}
 for _suffix, _reward in (('RhoEM', 'rho_em'), ('RhoOracle', 'rho_oracle'), ('TrueAcc', 'true')):
     GENERIC_BANDIT_SPECS[f'ComCo-Mix-BanditPaired-{_suffix}'] = ('ComCo', 'mix', 'paired01', None)
     GENERIC_BANDIT_REWARD[f'ComCo-Mix-BanditPaired-{_suffix}'] = _reward
+# Same bias-aware reward on the {PartialLoss, original MCL-LOG} pair (ComCo-Uni-Bandit01), 2026-10-28.
+GENERIC_BANDIT_SPECS['ComCo-Uni-Bandit01-RhoEM'] = ('ComCo', 'unified', 'paired01', None)
+GENERIC_BANDIT_REWARD['ComCo-Uni-Bandit01-RhoEM'] = 'rho_em'
+# Paired bandit over two clsloss_swap losses on SwapComCo (2026-10-27): PL loss (value 0) vs MCL-LOG-Fixed (1).
+SWAP_BANDIT_PAIRS = (('PiCOPartial', 'MCLLOGFixed'), ('PRODEN', 'MCLLOGFixed'))
+for _a0, _a1 in SWAP_BANDIT_PAIRS:
+    GENERIC_BANDIT_SPECS[f'SwapComCo-BanditPaired-{_a0}-{_a1}'] = ('SwapComCo', f'{_a0}+{_a1}', 'paired01', None)
 
 
 def _make_generic_bandit_runner(name, spec):
@@ -1982,3 +2021,98 @@ def _build_swap_runners() -> dict:
 
 
 SWAP_RUNNERS = _build_swap_runners()
+
+
+# ─── Candidate pruning on SwapComCo (2026-10-28, src/clsloss_swap.CandidatePruneLoss) ──
+# MCL-LOG-Fixed on Y for PRUNE_WARM epochs, then a PLL loss on S subset of Y; S re-pruned every
+# PRUNE_EVERY epochs, |S| ramped linearly from k to k* = ceil(PRUNE_TARGET_FRAC * C) over
+# PRUNE_RAMP epochs. L_cont keeps the original complementary set. No held-out needed.
+# Per-epoch |S| / true-label retention (labels used for logging only, except Oracle) ->
+# results/<run>/prune_trace/.
+PRUNE_WARM, PRUNE_EVERY, PRUNE_RAMP, PRUNE_TARGET_FRAC = 50, 5, 50, 0.25
+
+
+def _run_swap_prune(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag,
+                    report_every, algorithm: str, pl_name: str, oracle: bool, framework: str = 'ComCo'):
+    from src.clsloss_swap import CandidatePruneLoss, train_comco_swap_epoch, train_pico_swap_epoch
+    pico_cfg = raw_cfg['pico']
+    if framework == 'PiCO':
+        # Option A (2026-10-29): only L_cls sees the pruned set S; PiCOModel's forward (prototype
+        # pseudo-labels for SupCon, score_prot) keeps the original candidate set Y.
+        fw_args = _pico_args(C, epochs, pico_cfg)
+        fw_args['prot_start'] = pico_cfg.get('prot_start_fixed', 1)
+        model = PiCOModel(fw_args).to(device)
+        cont_loss = SupConLoss()
+        loader, epoch_impl = loaders['pico'], train_pico_swap_epoch
+    else:
+        comco_cfg = raw_cfg['comco']
+        fw_args = {
+            'num_class': C, 'epochs': epochs,
+            'low_dim': comco_cfg['low_dim'], 'moco_queue': comco_cfg['moco_queue'],
+            'moco_m': comco_cfg['moco_m'], 'loss_weight': comco_cfg['loss_weight'],
+            'temperature': comco_cfg['temperature'], 'top_k': comco_cfg['top_k'],
+            'warmup_neg': comco_cfg['warmup_neg'], 'warmup_pos': comco_cfg['warmup_pos'],
+            'proto_m': pico_cfg['proto_m'], 'prot_start': pico_cfg.get('prot_start_fixed', 1),
+            'conf_ema_range': pico_cfg['conf_ema_range'],
+        }
+        model = ComCoWeightedModel(fw_args).to(device)
+        cont_loss = ComCoContrastiveLoss(temperature=fw_args['temperature'], top_k=fw_args['top_k'])
+        loader, epoch_impl = loaders['comco'], train_comco_swap_epoch
+    init_conf = _candidate_masked_init_conf(pl_ds, C, device)
+    y = torch.as_tensor(orig_targets, device=device).long()
+    cls_loss = CandidatePruneLoss(init_conf, pl_name, C, PRUNE_WARM, true_labels=y if oracle else None,
+                                  seed=raw_cfg.get('_current_seed') or 0)
+    opt = make_optimizer(model, hparams)
+    k = int(cls_loss.Y.sum(dim=1).max().item())
+    k_star = min(k, math.ceil(PRUNE_TARGET_FRAC * C))
+    rows = torch.arange(len(y), device=device)
+
+    trace = []
+    chunk_t0 = time.perf_counter()
+    for ep in range(epochs):
+        rec = {'epoch': ep + 1}
+        if ep >= PRUNE_WARM and (ep - PRUNE_WARM) % PRUNE_EVERY == 0:
+            r = round(k - (k - k_star) * min(1.0, (ep - PRUNE_WARM) / PRUNE_RAMP))
+            cls_loss.prune(r)
+            rec['r'] = r
+        epoch_impl(fw_args, model, loader, cls_loss, cont_loss, opt, ep, device)
+        with torch.no_grad():
+            rec['S_size'] = round(cls_loss.S.sum(dim=1).mean().item(), 3)
+            rec['retention'] = round(cls_loss.S[rows, y].mean().item(), 5)
+            rec['q_top1'] = round((cls_loss.q.argmax(dim=1) == y).float().mean().item(), 5)
+        if (ep + 1) % 5 == 0 or ep + 1 == epochs:
+            rec['test_acc'] = evaluate_model(model, loaders['test'], device)
+        trace.append(rec)
+        if (ep + 1) % report_every == 0 or ep + 1 == epochs:
+            _print_eta(tag, ep + 1, epochs, time.perf_counter() - chunk_t0, min(report_every, ep + 1))
+            print(f"    [prune] |S|={rec['S_size']:.2f}  retention={rec['retention']:.3f}  "
+                  f"q_top1={rec['q_top1']:.3f}", flush=True)
+            chunk_t0 = time.perf_counter()
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    acc = evaluate_model(model, loaders['test'], device)
+    out_dir = os.path.join(raw_cfg.get('_results_dir', 'results'), 'prune_trace')
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, f"{algorithm}_k{raw_cfg.get('_current_k')}"
+                                    f"_seed{raw_cfg.get('_current_seed')}.json"), 'w') as f:
+        json.dump({'k': k, 'k_star': k_star, 'warm': PRUNE_WARM, 'every': PRUNE_EVERY, 'ramp': PRUNE_RAMP,
+                   'trace': trace}, f)
+    del model, cls_loss, cont_loss, opt, init_conf
+    gc.collect()
+    torch.cuda.empty_cache()
+    return acc
+
+
+def _make_prune_runner(name, pl_name, oracle, framework):
+    def _runner(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
+        return _run_swap_prune(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device,
+                               tag, report_every, name, pl_name, oracle, framework)
+    return _runner
+
+
+# Swap<framework>-Prune[Oracle]-<PLL loss>; the PiCO-framework version (2026-10-29) only with PiCOPartial.
+PRUNE_VARIANTS = [('ComCo', _pl) for _pl in ('PiCOPartial', 'PRODEN')] + [('PiCO', 'PiCOPartial')]
+PRUNE_RUNNERS = {f'Swap{_fw}-Prune{"Oracle" if _o else ""}-{_pl}': _make_prune_runner(
+                     f'Swap{_fw}-Prune{"Oracle" if _o else ""}-{_pl}', _pl, _o, _fw)
+                 for _fw, _pl in PRUNE_VARIANTS for _o in (False, True)}

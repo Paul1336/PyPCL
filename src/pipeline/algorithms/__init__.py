@@ -92,6 +92,17 @@ def _build_registry() -> dict:
     # src/clsloss_swap.py. Paradigm follows the framework.
     for name, fn in r.SWAP_RUNNERS.items():
         registry[name] = AlgorithmSpec(name, 'PLL' if name.startswith('SwapPiCO') else 'CLL', fn)
+    # PiCO-Fixed vs ComCo-Fixed diagnostics / oracles / candidate filter (2026-11-03) -- src/pcdiag.py.
+    from src.pcdiag import PCD_RUNNERS
+    for name, fn in PCD_RUNNERS.items():
+        registry[name] = AlgorithmSpec(name, 'PLL' if name.startswith('PCD-PiCO') else 'CLL', fn)
+    # PiCO+ (Wang et al. TPAMI 2023, official train_pico_plus.py port, 2026-11-08) -- src/picoplus.py.
+    from src.picoplus import PLUS_RUNNERS
+    for name, fn in PLUS_RUNNERS.items():
+        registry[name] = AlgorithmSpec(name, 'PLL', fn)
+    # Candidate pruning on SwapComCo / SwapPiCO (MCL-LOG-Fixed warm-up -> PLL on pruned set) -- runners.PRUNE_RUNNERS.
+    for name, fn in r.PRUNE_RUNNERS.items():
+        registry[name] = AlgorithmSpec(name, 'PLL' if name.startswith('SwapPiCO') else 'CLL', fn)
 
     # Parametrized biased-init sweep #2 (PiCO-Fixed-BiasedRand-W*-Wf* /
     # PRODEN-BiasedRand-W*-Wf*, both PLL) -- see runners.BIASED_RAND_SWEEP_RUNNERS.

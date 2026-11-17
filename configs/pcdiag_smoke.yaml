@@ -1,0 +1,47 @@
+# Data Generation Parameters
+data_generation:
+  cifar_path: './data'
+  eta: 0.2 # Noise level for 'noisy' data generation
+
+# Training Hyperparameters
+training:
+  num_classes: 20
+  batch_size: 512
+  epochs: 1000
+  lr: 0.001
+  momentum: 0.9
+  weight_decay: 1e-4
+
+# ComCo Algorithm Parameters (Jiang et al., Neural Networks 2024)
+comco:
+  low_dim: 128        # MLP projection head output dimension
+  moco_queue: 8192    # Embedding queue size (paper: 8192 for CIFAR)
+  moco_m: 0.999       # Momentum for key encoder update
+  loss_weight: 0.3    # λ: weight for contrastive loss (paper: 0.3 for CIFAR)
+  temperature: 0.17   # τ for InfoNCE (paper: 0.17)
+  top_k: 1            # K pseudo-positive nearest neighbors (paper: K=1)
+  warmup_neg: 1       # Epoch to activate negative selection (paper: 1)
+  warmup_pos: 2
+
+# PiCO Algorithm Parameters
+pico:
+  low_dim: 128
+  moco_queue: 8192
+  moco_m: 0.999
+  proto_m: 0.99
+  prot_start: 80 # Epoch to start prototype learning (plain PiCO)
+  loss_weight: 0.5
+  conf_ema_range: [0.95, 0.8]
+  # prot_start_fixed: 1        # PiCO-Fixed / PiCO-Oracle warm-up length (paper Appendix B.1 default; uncomment to override, e.g. 100 for CIFAR-100 @ q=0.1)
+  # oracle_precision_threshold: 1.0  # PiCO-Oracle: 0 = plain PiCO-Fixed, 1 = correct every selected-positive-pair false positive
+
+# SoLar Algorithm Parameters
+solar:
+  warmup_epoch: 50
+  rho_range: [0.2, 0.6]
+  lamd: 3
+  eta: 0.9
+  tau: 0.99
+  est_epochs: 100  # Pre-estimation stage epochs
+  gamma1: 0.1     # Empirical distribution update rate (stage 1)
+  gamma2: 0.01    # Empirical distribution update rate (stage 2)

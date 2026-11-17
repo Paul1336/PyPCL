@@ -216,6 +216,16 @@ def run(cfg: PipelineConfig):
                 # can pick the right backbone/transform/output path without
                 # changing every runner's function signature.
                 cfg.raw['_dataset_spec'] = spec
+                # hptune (2026-11-12): eval_split: val -> every runner's loaders['test'] is the
+                # --holdout_frac validation split (true labels), so the recorded final accuracy is
+                # validation accuracy and the real test set is never looked at during tuning.
+                if cfg.raw.get('eval_split', 'test') == 'val':
+                    if 'holdout' not in loaders:
+                        raise ValueError('eval_split: val needs --holdout_frac > 0')
+                    from torch.utils.data import DataLoader, TensorDataset
+                    _h = loaders['holdout']
+                    loaders['test'] = DataLoader(TensorDataset(_h['x'], _h['y'].long()),
+                                                 batch_size=cfg.batch_size, shuffle=False)
                 # Under --only_q, `k` is q_sentinel_k's negative bookkeeping
                 # value (real k is meaningless when candidate-set size is
                 # drawn per-sample, not fixed) -- kept as-is for results.csv/
@@ -237,7 +247,7 @@ def run(cfg: PipelineConfig):
 
                 for alg in pending:
                     algo_spec = ALGORITHMS[alg]
-                    hparams = ALGO_HPARAMS[alg]
+                    hparams = {**ALGO_HPARAMS[alg], **(cfg.raw.get('hparams_override') or {})}
                     tag = f'GPU{cfg.gpu_id} {alg} C={C} k={k} seed={seed}'
                     print(f'\n  >> {alg}  C={C}  k={k}  seed={seed}', flush=True)
 

@@ -43,6 +43,7 @@ same experiment as OP.
 """
 
 import math
+from types import SimpleNamespace
 
 import torch
 import torch.nn as nn
@@ -273,6 +274,122 @@ class SoLarLoss(nn.Module):
         # no effect on training.
         self.last_terms = (pseudo_loss_vec[sel].mean() * eta, loss_unrel * (1 - eta))
         return self.last_terms[0] + self.last_terms[1]
+
+
+# ─── per-epoch arm switch for the paired bandit ───────────────────────────
+
+
+class SwapMixClsLoss(nn.Module):
+    """Hard switch between two swap cls losses (2026-10-27), for the paired
+    bandit in runners._generic_bandit_setup ('SwapComCo'): self.value 0 ->
+    arm0, 1 -> arm1, set before each (lookahead or real) epoch. Both arms'
+    confidence state stays live on every batch, whichever arm drives the
+    gradient -- same convention as ComCoWeightedClsLoss in
+    train_comco_weighted_switch_epoch. `partial_loss.confidence` exposes the
+    (single) stateful arm's buffer so comco_bandit.snapshot/restore roll it
+    back between lookahead arms."""
+
+    def __init__(self, arm0, arm1):
+        super().__init__()
+        self.arm0, self.arm1 = arm0, arm1
+        self.value = 0.0
+        bufs = [b for b in (_conf_buffer(arm0), _conf_buffer(arm1)) if b is not None]
+        assert len(bufs) <= 1, 'SwapMixClsLoss supports at most one stateful arm'
+        self.partial_loss = SimpleNamespace(confidence=bufs[0] if bufs else torch.zeros(1))
+
+    def set_conf_ema_m(self, epoch, args):
+        self.set_epoch(epoch, args['conf_ema_range'], args['epochs'])
+
+    def set_epoch(self, epoch, conf_ema_range, epochs):
+        self.arm0.set_epoch(epoch, conf_ema_range, epochs)
+        self.arm1.set_epoch(epoch, conf_ema_range, epochs)
+
+    def pre_update(self, score_prot, logits, index, partial_Y, start_upd_prot):
+        self.arm0.pre_update(score_prot, logits, index, partial_Y, start_upd_prot)
+        self.arm1.pre_update(score_prot, logits, index, partial_Y, start_upd_prot)
+
+    def forward(self, logits, index, partial_Y):
+        active, idle = (self.arm1, self.arm0) if self.value >= 0.5 else (self.arm0, self.arm1)
+        if isinstance(idle, PRODENLoss):  # PRODEN updates its buffer inside forward
+            with torch.no_grad():
+                idle(logits.detach(), index, partial_Y)
+        return active(logits, index, partial_Y)
+
+
+# ─── candidate pruning: reduce large-k (MCLL) to PLL (2026-10-28) ─────────
+
+
+class CandidatePruneLoss(nn.Module):
+    """Warm up with MCL-LOG-Fixed on the full candidate set Y_i, then train a
+    PLL loss (PiCOPartial / PRODEN) on a pruned set S_i subset of Y_i.
+
+    q_i = EMA (q_m) of the candidate-masked, renormalized softmax, updated on
+    every batch from the training forward pass (no extra compute). prune(r)
+    sets S_i = top-r of q_i within Y_i, recomputed from scratch each call, so a
+    wrongly dropped label can come back. oracle=True instead keeps the true
+    label plus r-1 false candidates in a fixed per-sample random order
+    (nested sets; upper bound only, uses labels). The PLL arm's confidence is
+    masked to S_i and renormalized at every prune, with a small floor so
+    re-admitted labels are reachable for PRODEN's (conf > 0) mask."""
+
+    def __init__(self, init_conf, pl_name: str, num_class: int, warm_epochs: int,
+                 true_labels=None, q_m: float = 0.9, seed: int = 0):
+        super().__init__()
+        self.Y = (init_conf > 0).float()
+        self.S = self.Y.clone()
+        self.q = init_conf.clone()
+        self.warm_loss = MCLLOGFixedLoss()
+        self.pl = build_cls_loss(pl_name, init_conf.clone(), num_class, None, None)
+        self.conf = _conf_buffer(self.pl)
+        self.warm_epochs, self.q_m, self.epoch = warm_epochs, q_m, 0
+        self.oracle_order = None
+        if true_labels is not None:
+            g = torch.Generator().manual_seed(seed)
+            y = torch.as_tensor(true_labels, device=init_conf.device).long()
+            # rank: true label first, false candidates in random order, non-candidates last
+            key = torch.rand(self.Y.shape, generator=g).to(init_conf.device) + 2.0 * (1.0 - self.Y)
+            key[torch.arange(len(y), device=y.device), y] = -1.0
+            self.oracle_order = key.argsort(dim=1)
+
+    def set_conf_ema_m(self, epoch, args):
+        self.set_epoch(epoch, args['conf_ema_range'], args['epochs'])
+
+    def set_epoch(self, epoch, conf_ema_range, epochs):
+        self.epoch = epoch
+        self.pl.set_epoch(epoch, conf_ema_range, epochs)
+
+    def pre_update(self, score_prot, logits, index, partial_Y, start_upd_prot):
+        if self.epoch >= self.warm_epochs:
+            self.pl.pre_update(score_prot, logits, index, self.S[index], start_upd_prot)
+
+    def forward(self, logits, index, partial_Y):
+        with torch.no_grad():
+            p = F.softmax(logits.detach(), dim=1) * self.Y[index]
+            self.q[index] = self.q_m * self.q[index] + (1 - self.q_m) * p / p.sum(dim=1, keepdim=True).clamp(min=1e-8)
+        if self.epoch < self.warm_epochs:
+            return self.warm_loss(logits, index, partial_Y)
+        return self.pl(logits, index, self.S[index])
+
+    @torch.no_grad()
+    def prune(self, r: int):
+        r = max(1, min(int(r), self.Y.shape[1]))
+        if self.oracle_order is not None:
+            keep = self.oracle_order[:, :r]
+        else:
+            keep = self.q.masked_fill(self.Y == 0, -1.0).topk(r, dim=1).indices
+        self.S = torch.zeros_like(self.Y).scatter_(1, keep, 1.0) * self.Y
+        conf = self.conf * self.S + 1e-4 * self.S
+        self.conf.copy_(conf / conf.sum(dim=1, keepdim=True))
+
+
+def _conf_buffer(loss):
+    if isinstance(loss, PRODENLoss):
+        return loss.conf
+    if isinstance(loss, PiCOEMALoss):
+        return loss.partial.confidence
+    if isinstance(loss, _Stateless):
+        return None
+    raise ValueError(f'SwapMixClsLoss: no snapshot support for {type(loss).__name__}')
 
 
 # ─── registry ─────────────────────────────────────────────────────────────

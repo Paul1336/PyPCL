@@ -205,8 +205,8 @@ def prepare_cifar100_subset(
         log_info:         dict with selection metadata.
     """
     if cl_bias != 'uniform' and (cl_bias not in CL_BIAS_SETS or hierarchical_q is not None
-                                 or q is not None or bimodal is not None):
-        raise ValueError(f"cl_bias={cl_bias!r} needs fixed-k generation and one of {sorted(CL_BIAS_SETS)}")
+                                 or bimodal is not None):
+        raise ValueError(f"cl_bias={cl_bias!r} needs fixed-k or q generation and one of {sorted(CL_BIAS_SETS)}")
     cl_bias_partition = None
     if hierarchical_q is None and q is None and bimodal is None and not (1 <= n_partial_labels <= total_classes - 1):
         raise ValueError(
@@ -248,6 +248,13 @@ def prepare_cifar100_subset(
         remapped_coarse = [_CIFAR100_FINE_TO_COARSE[orig] for orig in selected_indices]
         pl_dataset_raw = generator.generate_pl_dataset_hierarchical_variable(
             q=hierarchical_q, class_coarse=remapped_coarse)
+    elif q is not None and cl_bias != 'uniform':
+        # Variable-size biased CL (2026-11-06): E|Y| = 1 + q(C-1), same mean as the uniform q branch.
+        if hierarchical:
+            raise ValueError("cl_bias and hierarchical are mutually exclusive")
+        pl_dataset_raw, cl_bias_partition, _ = generator.generate_pl_dataset_biased_cl_variable(
+            mean_k=1 + q * (total_classes - 1), group_probs=CL_BIAS_SETS[cl_bias],
+            partition_seed=CLASS_SELECTION_SEED)
     elif q is not None:
         # CL from this call is recomputed via the shared complement loop below
         # for consistency with every other branch -- identical result either
@@ -306,7 +313,7 @@ def prepare_cifar100_subset(
     elif hierarchical_q is not None:
         log_suffix = f"hq{hierarchical_q}"
     elif q is not None:
-        log_suffix = f"q{q}"
+        log_suffix = f"q{q}" + (f"_bias-{cl_bias}" if cl_bias != 'uniform' else '')
     else:
         log_suffix = f"{n_partial_labels}k" + (f"_bias-{cl_bias}" if cl_bias != 'uniform' else '')
     log_fname = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{total_classes}classes_{log_suffix}.json"
