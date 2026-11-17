@@ -92,6 +92,20 @@ PCD_VARIANTS['PCD-ComCoMCLNL-PosAC'] = ('comco', {'cls': 'mclnl', 'pos_all': Tru
 PCD_VARIANTS['PCD-ComCoMCLNL-NegAC'] = ('comco', {'cls': 'mclnl', 'neg_all': True})
 PCD_VARIANTS['PCD-ComCoMCLNL-PosNegAC'] = ('comco', {'cls': 'mclnl', 'pos_all': True, 'neg_all': True})
 
+# 2026-11-17 (comco-smallk-1117):
+#   -OracleSel   oracle sample selection = OraclePos + OracleNeg together (selected positives that are not the
+#                same true class removed AND false negatives removed from the denominator); the pseudo-label
+#                and therefore which pairs are *selected* stay the algorithm's own. One component (selection).
+#   ComCo-Fixed + MCL-NL coefficient / contrastive-weight sensitivity:
+#     -CLSx{s}   training classification loss = s * MCL-NL (diagnostic loss columns stay unscaled)
+#     -LWx{s}    contrastive weight lambda = s * comco.loss_weight (config 0.3)
+PCD_VARIANTS['PCD-PiCO-OracleSel'] = ('pico', {'oracle_pos': True, 'oracle_neg': True})
+PCD_VARIANTS['PCD-ComCoMCL-OracleSel'] = ('comco', {'cls': 'mcllog', 'oracle_pos': True, 'oracle_neg': True})
+SCALE_TAGS = {'0.25': 0.25, '0.5': 0.5, '2': 2.0, '4': 4.0}
+for _t, _s in SCALE_TAGS.items():
+    PCD_VARIANTS[f'PCD-ComCoMCLNL-CLSx{_t}'] = ('comco', {'cls': 'mclnl', 'cls_scale': _s})
+    PCD_VARIANTS[f'PCD-ComCoMCLNL-LWx{_t}'] = ('comco', {'cls': 'mclnl', 'lam_scale': _s})
+
 PL_EMA_MS = {'EMA50': 0.5, 'EMA90': 0.9, 'EMA99': 0.99, 'EMA999': 0.999}
 for _tag, _m in PL_EMA_MS.items():
     PCD_VARIANTS[f'PCD-ComCoMCL-{_tag}'] = ('comco', {'cls': 'mcllog', 'pl_ema': _m})
@@ -493,6 +507,8 @@ def train_comco_pcd_epoch(comco_args, model, loader, optimizer, epoch, device, f
     warm_pos = epoch >= (AC_POS_START if pos_all else comco_args['warmup_pos'])
     warm_neg = epoch >= comco_args['warmup_neg']
     lam, tau, top_k = comco_args['loss_weight'], comco_args['temperature'], comco_args['top_k']
+    lam = lam * float(flags.get('lam_scale', 1.0))
+    cls_scale = float(flags.get('cls_scale', 1.0))
     for images_w, images_s, comp, true, index in loader:
         images_w, images_s, comp, true = (images_w.to(device), images_s.to(device), comp.to(device),
                                           true.to(device))
@@ -527,10 +543,10 @@ def train_comco_pcd_epoch(comco_args, model, loader, optimizer, epoch, device, f
 
         loss_cont = masked_infonce(q, feats, pos_used, denom_used, tau)
         loss_cont_gt = masked_infonce(q, feats, pos_gt, denom_gt, tau)
-        train_cls = loss_ce if flags.get('oracle_cls') else loss_cls
+        train_cls = loss_ce if flags.get('oracle_cls') else cls_scale * loss_cls
         loss = train_cls + lam * loss_cont
 
-        g_cls = torch.autograd.grad(loss_cls, h, retain_graph=True)[0]
+        g_cls = cls_scale * torch.autograd.grad(loss_cls, h, retain_graph=True)[0]
         g_ce = torch.autograd.grad(loss_ce, h, retain_graph=True)[0]
         g_own = torch.autograd.grad(loss_cls_gt_own, h, retain_graph=True)[0]
         g_cont = torch.autograd.grad(loss_cont, h, retain_graph=True)[0]

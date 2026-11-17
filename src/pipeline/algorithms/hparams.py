@@ -157,6 +157,10 @@ for _v in ('-PosAC', '-NegAC', '-PosNegAC'):  # AllClean pair selection on ComCo
 for _tag in PL_EMA_MS:
     ALGO_HPARAMS['PCD-ComCoMCL-' + _tag] = _ADAM
 ALGO_HPARAMS['PCD-PiCOPlus'] = ALGO_HPARAMS['PCD-PiCOPlus-AllClean'] = _ADAM  # PiCO+ (2026-11-08), same as PCD-PiCO
+from src.pcdiag import SCALE_TAGS  # noqa: E402  (2026-11-17) oracle selection + coefficient sweeps
+ALGO_HPARAMS['PCD-PiCO-OracleSel'] = ALGO_HPARAMS['PCD-ComCoMCL-OracleSel'] = _ADAM
+for _t in SCALE_TAGS:
+    ALGO_HPARAMS[f'PCD-ComCoMCLNL-CLSx{_t}'] = ALGO_HPARAMS[f'PCD-ComCoMCLNL-LWx{_t}'] = _ADAM
 
 def make_optimizer(model, hparams: dict):
     import torch.optim as optim
