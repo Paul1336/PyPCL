@@ -18,7 +18,7 @@ ROOT = '/nfs/home/Paul/PyPCL/.claude/worktrees/comco-smallk-1117'
 sys.path.insert(0, ROOT)
 from src.pipeline import results  # noqa: E402
 
-GPUS, SLOTS, BUDGET_MB, MEM = [0, 1, 2, 3], 4, 24000, 5500  # mixup adds one forward/backward
+GPUS, SLOTS, BUDGET_MB, MEM = [0, 1, 2, 3], 4, 24000, 7000  # mixup run peaks ~6 GB; 4 per A5000 OOMed on 11-18 -> max 3 per GPU
 MAX_RETRY = 2
 DATA_DIR = '/nfs/home/Paul/PyPCL/data'
 LOG_DIR = os.path.join(ROOT, 'logs', 'mixa_1118')
