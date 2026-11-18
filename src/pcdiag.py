@@ -36,6 +36,7 @@ import gc
 import os
 import time
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -105,6 +106,14 @@ SCALE_TAGS = {'0.25': 0.25, '0.5': 0.5, '2': 2.0, '4': 4.0}
 for _t, _s in SCALE_TAGS.items():
     PCD_VARIANTS[f'PCD-ComCoMCLNL-CLSx{_t}'] = ('comco', {'cls': 'mclnl', 'cls_scale': _s})
     PCD_VARIANTS[f'PCD-ComCoMCLNL-LWx{_t}'] = ('comco', {'cls': 'mclnl', 'lam_scale': _s})
+
+# 2026-11-18: ComCo-Fixed + MCL-NL + loss-level mixup ("option A"). No disambiguation target: the mixed image
+# x~ = lam*x_a + (1-lam)*x_b (weak views, in-batch random pairing) is trained with
+#   L_mix = lam * MCLNL(f(x~), S_a) + (1-lam) * MCLNL(f(x~), S_b),   lam ~ Beta(4,4), lam <- max(lam, 1-lam)
+# (same lam distribution / pairing as PiCO+'s mixup, src/picoplus.py:169-175), added to the total loss with
+# weight mix_weight (1.0, as L_mix in PiCO+). Everything else (pseudo-label, pair selection, tau, lambda) unchanged.
+MIX_BETA = 4.0
+PCD_VARIANTS['PCD-ComCoMCLNL-MixA'] = ('comco', {'cls': 'mclnl', 'mix_weight': 1.0})
 
 PL_EMA_MS = {'EMA50': 0.5, 'EMA90': 0.9, 'EMA99': 0.99, 'EMA999': 0.999}
 for _tag, _m in PL_EMA_MS.items():
@@ -545,6 +554,16 @@ def train_comco_pcd_epoch(comco_args, model, loader, optimizer, epoch, device, f
         loss_cont_gt = masked_infonce(q, feats, pos_gt, denom_gt, tau)
         train_cls = loss_ce if flags.get('oracle_cls') else cls_scale * loss_cls
         loss = train_cls + lam * loss_cont
+        mix_w = float(flags.get('mix_weight', 0.0))
+        if mix_w > 0:
+            mlam = float(np.random.beta(MIX_BETA, MIX_BETA))
+            mlam = max(mlam, 1.0 - mlam)
+            perm = torch.randperm(B, device=device)
+            logits_mix, _ = model.encoder_q(mlam * images_w + (1.0 - mlam) * images_w[perm])
+            loss_mix = mlam * cls_fn(logits_mix, comp) + (1.0 - mlam) * cls_fn(logits_mix, comp[perm])
+            loss = loss + mix_w * loss_mix
+            acc.mean('loss_mix', loss_mix.detach())
+            acc.mean('mix_lam', mlam)
 
         g_cls = cls_scale * torch.autograd.grad(loss_cls, h, retain_graph=True)[0]
         g_ce = torch.autograd.grad(loss_ce, h, retain_graph=True)[0]
