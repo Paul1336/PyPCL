@@ -156,7 +156,7 @@ for _v in ('-PosAC', '-NegAC', '-PosNegAC'):  # AllClean pair selection on ComCo
     ALGO_HPARAMS['PCD-ComCoMCLNL' + _v] = _ADAM
 for _tag in PL_EMA_MS:
     ALGO_HPARAMS['PCD-ComCoMCL-' + _tag] = _ADAM
-ALGO_HPARAMS['PCD-PiCOPlus'] = ALGO_HPARAMS['PCD-PiCOPlus-AllClean'] = _ADAM  # PiCO+ (2026-11-08), same as PCD-PiCO
+ALGO_HPARAMS['PCD-PiCOPlus'] = ALGO_HPARAMS['PCD-PiCOPlus-AllClean'] = ALGO_HPARAMS['PCD-PiCOPlus-D60'] = _ADAM  # PiCO+ (2026-11-08), same as PCD-PiCO
 ALGO_HPARAMS['PCD-ComCoMCLNL-MixA'] = _ADAM  # 2026-11-18 loss-level mixup on ComCo-Fixed + MCL-NL
 from src.pcdiag import SCALE_TAGS  # noqa: E402  (2026-11-17) oracle selection + coefficient sweeps
 ALGO_HPARAMS['PCD-PiCO-OracleSel'] = ALGO_HPARAMS['PCD-ComCoMCL-OracleSel'] = _ADAM

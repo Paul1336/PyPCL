@@ -128,6 +128,47 @@ CL_BIAS_SETS = {
 }
 
 
+def inject_fixed_k_noise(pl_targets, true_labels, C, eta, seed, cl_bias='uniform', partition=None):
+    """Noisy PLL for FIXED candidate-set size (2026-11-17).
+
+    PiCO+ (Wang et al., TPAMI 2023, Sec. 5.1) defines the noise rate eta = 1 - P(y in Y | y): the
+    probability that the ground-truth label is NOT in the candidate set. Its generator is the
+    variable-size q-flip one (true label kept w.p. 1 - eta, each false label w.p. q). Here |Y| = k is
+    kept fixed: each sample is independently made noisy w.p. eta, and a noisy sample gets a candidate
+    set of k FALSE labels, i.e. its complementary set becomes {y} + (m-1) other labels (m = C - k):
+      * uniform: Y = k labels drawn uniformly from the C-1 false labels;
+      * set1/2/3: the m-1 non-true complementary labels are drawn without replacement with the same
+        per-class biased weights as generate_pl_dataset_biased_cl (the partition passed in), Y = rest.
+    Clean samples keep exactly the candidate set produced by the clean generator (the noise uses its own
+    RNG seeded from (seed, eta)), so a noisy run differs from the eta=0 run of the same seed only on the
+    noisy rows. Returns (new_targets list, noisy bool np.ndarray)."""
+    rng = np.random.RandomState([int(seed), int(round(eta * 1000)), 20261117])
+    all_labels = np.arange(C)
+    m = C - len(pl_targets[0])
+    weights = None
+    if cl_bias != 'uniform':
+        weights = []
+        for y in range(C):
+            w = np.zeros(C)
+            for g, pg in zip(partition[y], CL_BIAS_SETS[cl_bias]):
+                w[g] = pg / len(g)
+            weights.append(w / w.sum())
+    noisy = rng.rand(len(pl_targets)) < eta
+    out = list(pl_targets)
+    for i in np.flatnonzero(noisy):
+        y = int(true_labels[i])
+        k = len(pl_targets[i])
+        others = np.delete(all_labels, y)
+        if weights is None:
+            cand = np.sort(rng.choice(others, size=k, replace=False))
+        else:
+            comp = rng.choice(all_labels, size=C - k - 1, replace=False, p=weights[y]) if C - k - 1 > 0 else []
+            cand = np.setdiff1d(others, comp)
+        assert len(cand) == k and y not in cand
+        out[i] = torch.tensor(cand, dtype=pl_targets[i].dtype)
+    return out, noisy
+
+
 def select_cifar100_classes(total_classes: int, seed: int = 42) -> list:
     """
     Returns a sorted list of `total_classes` class indices (0–99) chosen from
@@ -151,6 +192,7 @@ def prepare_cifar100_subset(
     q: float = None,
     bimodal: tuple = None,
     cl_bias: str = 'uniform',
+    noise_eta: float = 0.0,
 ):
     """
     Loads CIFAR-100, selects `total_classes` classes, generates PL labels
@@ -208,6 +250,9 @@ def prepare_cifar100_subset(
                                  or bimodal is not None):
         raise ValueError(f"cl_bias={cl_bias!r} needs fixed-k or q generation and one of {sorted(CL_BIAS_SETS)}")
     cl_bias_partition = None
+    if noise_eta > 0 and (hierarchical or hierarchical_q is not None or q is not None or bimodal is not None
+                          or not 2 <= n_partial_labels <= total_classes - 1):
+        raise ValueError("noise_eta is only wired up for fixed-k (uniform / biased-CL) generation, 2 <= k <= C-1")
     if hierarchical_q is None and q is None and bimodal is None and not (1 <= n_partial_labels <= total_classes - 1):
         raise ValueError(
             f"n_partial_labels must be in [1, {total_classes - 1}], got {n_partial_labels}"
@@ -279,6 +324,15 @@ def prepare_cifar100_subset(
     else:
         pl_dataset_raw = generator.generate_pl_dataset(k=n_partial_labels)
 
+    noise_info = None
+    if noise_eta > 0:
+        new_t, noisy = inject_fixed_k_noise(pl_dataset_raw.targets, train_targets, total_classes, noise_eta,
+                                            seed, cl_bias=cl_bias, partition=cl_bias_partition)
+        pl_dataset_raw = WeaklySupervisedDataset(pl_dataset_raw.data, new_t)
+        noise_info = {'eta': noise_eta, 'n_noisy': int(noisy.sum()), 'frac_noisy': float(noisy.mean())}
+        print(f"  [noise] eta={noise_eta}: {noise_info['n_noisy']}/{len(noisy)} "
+              f"({noise_info['frac_noisy']:.4f}) samples have y not in Y (|Y|={n_partial_labels} kept)")
+
     # --- Derive CL as complement of PL (consistent partition) ---
     all_class_set = set(range(total_classes))
     cl_targets = []
@@ -301,6 +355,7 @@ def prepare_cifar100_subset(
         "bimodal":                 list(bimodal) if bimodal is not None else None,
         "cl_bias":                 cl_bias,
         "cl_bias_partition":       cl_bias_partition,
+        "noise":                   noise_info,
         "n_complementary_labels":  (total_classes - n_partial_labels) if not is_probabilistic else None,
         "seed":                    seed,
         "n_train":                 len(train_targets),

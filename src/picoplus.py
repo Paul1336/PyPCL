@@ -43,6 +43,7 @@ from src.pico.model import PiCOModel
 PLUS_VARIANTS = {
     'PCD-PiCOPlus': {'pure_ratio': 0.8},
     'PCD-PiCOPlus-AllClean': {'pure_ratio': 1.0},
+    'PCD-PiCOPlus-D60': {'pure_ratio': 0.6},  # noisy 11-17: paper's delta for eta=0.2 (kept for eta=0.3)
 }
 
 # Official defaults (README CIFAR commands / argparse), adapted where noted.
@@ -257,6 +258,10 @@ def make_plus_runner(algorithm):
         opt = make_optimizer(model, hparams)
         log = _CsvLog(raw_cfg, algorithm, C)
         true_all = torch.as_tensor(np.asarray(orig_targets), device=device) if orig_targets is not None else None
+        true_in_Y = None  # noisy PLL diag (11-17): which rows really contain y
+        if true_all is not None and true_all.shape[0] == n:
+            cand = candidate_masked_init(pl_ds.targets, C).to(device) > 0
+            true_in_Y = cand.gather(1, true_all.view(-1, 1)).squeeze(1)
         t0 = time.perf_counter()
         for ep in range(epochs):
             te = time.perf_counter()
@@ -266,6 +271,11 @@ def make_plus_runner(algorithm):
             row = train_picoplus_epoch(a, model, loader, confidence, conf_ema_m, opt, ep, device, sel, C)
             if true_all is not None and true_all.shape[0] == n:
                 row['conf_acc_all'] = (confidence.argmax(1) == true_all).float().mean().item()
+            if true_in_Y is not None:
+                rel = sel['is_rel']
+                row['frac_true_clean'] = true_in_Y.float().mean().item()
+                row['sel_clean_prec'] = true_in_Y[rel].float().mean().item() if rel.any() else float('nan')
+                row['sel_noisy_recall'] = ((~rel) & (~true_in_Y)).sum().item() / max(1, (~true_in_Y).sum().item())
             row['test_acc'] = (evaluate_model(model, loaders['test'], device)
                                if (ep + 1) % 10 == 0 or ep + 1 == epochs or ep < 5 else float('nan'))
             row['epoch_time_s'] = time.perf_counter() - te

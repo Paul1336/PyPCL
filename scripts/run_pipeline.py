@@ -100,6 +100,10 @@ def _add_run_parser(sub):
                          'true class the other labels are split into 3 groups drawn as complementary '
                          'labels w.p. set1 .75/.24/.01, set2 .66/.24/.10, set3 .45/.30/.25 (fixed-k, '
                          'cifar100-subset only). Not recorded in results.csv -- use one run_name per level.')
+    p.add_argument('--noise_eta', type=float, default=0.0,
+                    help='Noisy PLL (PiCO+ Sec 5.1 eta = 1 - P(y in Y)): each sample w.p. eta gets a candidate set of '
+                         'k FALSE labels (|Y| = k kept; fixed-k uniform / --cl_bias only). Not recorded in '
+                         'results.csv -- use one run_name per eta.')
     p.add_argument('--switch_diag', action='store_true',
                     help='Generic bandit runners: also log per-epoch confidence/model/prototype/gradient '
                          'diagnostics (src/switch_diag.py) into bandit_trace/.')

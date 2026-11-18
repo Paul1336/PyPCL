@@ -47,6 +47,7 @@ class PipelineConfig:
     biasvariance_m_resamples: int
     biasvariance_eval_size: int
     raw: dict = field(default_factory=dict)   # full config.yaml (pico/comco/solar blocks)
+    noise_eta: float = 0.0                    # noisy PLL: P(y not in Y), fixed-k only (2026-11-17)
 
 
 def _parse_bimodal(v):
@@ -99,4 +100,5 @@ def load_config(args) -> PipelineConfig:
         biasvariance_m_resamples=getattr(args, 'biasvariance_m_resamples', 50),
         biasvariance_eval_size=getattr(args, 'biasvariance_eval_size', 256),
         raw=raw,
+        noise_eta=getattr(args, 'noise_eta', 0.0) or 0.0,
     )
