@@ -1,0 +1,104 @@
+"""Resolved configuration for a pipeline run: merges config.yaml with CLI args
+into a single object passed around src/pipeline modules."""
+
+import os
+from dataclasses import dataclass, field
+
+import yaml
+
+
+@dataclass
+class PipelineConfig:
+    run_name: str
+    algorithms: list
+    dataset: str
+    c_values: list
+    epochs: int
+    batch_size: int
+    seeds: list
+    data_dir: str
+    log_dir: str
+    results_dir: str
+    plots_dir: str
+    gpu_id: int
+    num_gpus: int
+    algo_override: str
+    report_every: int
+    only_c: int
+    only_k: list
+    only_q: float
+    only_bimodal: tuple
+    batching: str
+    holdout_frac: float
+    cl_bias: str
+    switch_diag: bool
+    detail: bool
+    detail_log_every: int
+    tsne: bool
+    tsne_every: int
+    tsne_max_points: int
+    concentration: bool
+    concentration_log_every: int
+    knn_eval: bool
+    knn_eval_k: int
+    knn_temperature: float
+    biasvariance: bool
+    biasvariance_log_every: int
+    biasvariance_m_resamples: int
+    biasvariance_eval_size: int
+    raw: dict = field(default_factory=dict)   # full config.yaml (pico/comco/solar blocks)
+    noise_eta: float = 0.0                    # noisy PLL: P(y not in Y), fixed-k only (2026-11-17)
+
+
+def _parse_bimodal(v):
+    """--only_bimodal K_LO K_HI P_LO -> (int, int, float), or None."""
+    if v is None:
+        return None
+    return int(v[0]), int(v[1]), float(v[2])
+
+
+def load_config(args) -> PipelineConfig:
+    with open(args.config, encoding='utf-8') as f:
+        raw = yaml.safe_load(f)
+
+    return PipelineConfig(
+        run_name=args.run_name,
+        algorithms=args.algorithms,
+        dataset=getattr(args, 'dataset', 'cifar100-subset'),
+        c_values=args.c_values,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        seeds=getattr(args, 'seeds', None) or [42, 43, 44],
+        data_dir=args.data_dir,
+        log_dir=args.log_dir,
+        results_dir=os.path.join('results', args.run_name),
+        plots_dir=os.path.join('plots', args.run_name),
+        gpu_id=args.gpu_id,
+        num_gpus=args.num_gpus,
+        algo_override=args.algo,
+        report_every=args.report_every,
+        only_c=args.only_c,
+        only_k=args.only_k,
+        only_q=getattr(args, 'only_q', None),
+        only_bimodal=_parse_bimodal(getattr(args, 'only_bimodal', None)),
+        batching=getattr(args, 'batching', 'random'),
+        holdout_frac=getattr(args, 'holdout_frac', 0.0),
+        cl_bias=getattr(args, 'cl_bias', 'uniform'),
+        switch_diag=getattr(args, 'switch_diag', False),
+        detail=getattr(args, 'detail', False),
+        detail_log_every=getattr(args, 'detail_log_every', 10),
+        tsne=getattr(args, 'tsne', False),
+        tsne_every=getattr(args, 'tsne_every', 50),
+        tsne_max_points=getattr(args, 'tsne_max_points', 2000),
+        concentration=getattr(args, 'concentration', False),
+        concentration_log_every=getattr(args, 'concentration_log_every', 10),
+        knn_eval=getattr(args, 'knn_eval', False),
+        knn_eval_k=getattr(args, 'knn_eval_k', 20),
+        knn_temperature=getattr(args, 'knn_temperature', 0.07),
+        biasvariance=getattr(args, 'biasvariance', False),
+        biasvariance_log_every=getattr(args, 'biasvariance_log_every', 20),
+        biasvariance_m_resamples=getattr(args, 'biasvariance_m_resamples', 50),
+        biasvariance_eval_size=getattr(args, 'biasvariance_eval_size', 256),
+        raw=raw,
+        noise_eta=getattr(args, 'noise_eta', 0.0) or 0.0,
+    )

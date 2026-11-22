@@ -43,6 +43,7 @@ import torch.nn.functional as F
 from src.comco.model import ComCoModel
 from src.engine import evaluate_model
 from src.pico.model import PiCOModel
+from src.losses import functional as Fn
 from src.pico.utils_loss import PartialLoss
 
 PCD_VARIANTS = {
@@ -152,32 +153,23 @@ def masked_infonce(q, feats, pos, denom, tau):
     return -((pos * log_prob).sum(1) / (pos.sum(1) + 1e-12)).mean()
 
 
+# cls losses on the dense comp mask -> canonical formulas in src/losses/functional.py (2026-11-22)
 def scl_nl_avg(logits, comp_mask):
     """FixedComCoCLSLoss: (1/m) sum_{j in Ybar} -log(1 - p_j)."""
-    probs = F.softmax(logits, dim=1)
-    m = comp_mask.sum(dim=1).clamp(min=1.0)
-    per = -torch.log1p(-probs.clamp(max=1.0 - 1e-7))
-    return ((per * comp_mask).sum(1) / m).mean()
+    return Fn.scl_nl(logits, 1.0 - comp_mask)
 
 
 def mcl_log(logits, comp_mask):
     """Original MCL-LOG (Feng et al. 2020 loss, (C-1)/(C-m) scaling as in src/mcl_losses.MCL_LOG)."""
-    C = logits.shape[1]
-    m = comp_mask.sum(dim=1)
-    s = (F.softmax(logits, dim=1) * (1.0 - comp_mask)).sum(dim=1)
-    return (-torch.log(s + 1e-7) * (C - 1.0) / (C - m)).mean()
+    return Fn.mcl(logits, 1.0 - comp_mask, 'log', 'c1_over_k')
 
 
 def mcl_nl(logits, comp_mask):
-    s = (F.softmax(logits, dim=1) * (1.0 - comp_mask)).sum(dim=1)
-    return (-torch.log(s + 1e-7)).mean()
+    return Fn.mcl(logits, 1.0 - comp_mask, 'log', 'none')
 
 
 def mcl_log_fixed(logits, comp_mask):
-    C = logits.shape[1]
-    m = comp_mask.sum(dim=1).clamp(min=1.0)
-    s = (F.softmax(logits, dim=1) * (1.0 - comp_mask)).sum(dim=1)
-    return (-torch.log(s + 1e-7) * 2.0 * (C - 1.0) / m).mean()
+    return Fn.mcl(logits, 1.0 - comp_mask, 'log', 'feng_fixed')
 
 
 CLS_FNS = {'mcllog': mcl_log, 'mclnl': mcl_nl, 'mcllogfixed': mcl_log_fixed}

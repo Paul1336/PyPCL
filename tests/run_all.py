@@ -18,6 +18,7 @@ sys.path.insert(0, ROOT)
 
 CHECKS = [  # (name, argv) -- existing equivalence scripts, run from repo root
     ('unit_checks', ['tests/unit_checks.py']),
+    ('step_equiv', ['tests/step_equiv.py']),
     ('check_analysis', ['verify_scripts/check_analysis.py']),
     ('check_clsloss_swap', ['verify_scripts/check_clsloss_swap.py']),
     ('check_clsloss_solo_grads', ['verify_scripts/check_clsloss_solo_grads.py']),

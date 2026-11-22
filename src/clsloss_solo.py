@@ -98,12 +98,7 @@ def build_train_eval_tensors(pl_ds, orig_targets, C, device):
 # ─── confidence buffers of the stateful losses ─────────────────────────────
 
 
-def conf_buffer(loss_fn):
-    if isinstance(loss_fn, (PRODENLoss, SoLarLoss)):
-        return loss_fn.conf
-    if isinstance(loss_fn, PiCOEMALoss):
-        return loss_fn.partial.confidence
-    return None
+from src.losses.confidence import conf_buffer  # noqa: E402,F401  (unified 2026-11-22)
 
 
 # ─── per-epoch dynamics ────────────────────────────────────────────────────

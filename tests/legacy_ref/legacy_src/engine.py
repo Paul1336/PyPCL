@@ -1,0 +1,388 @@
+import torch
+from tqdm import tqdm
+from legacy_src.pico.model import PiCOModel, PiCOOracleModel
+from legacy_src.comco.model import ComCoModel
+import torch.nn.functional as F
+import numpy as np
+import math
+from legacy_src.solar.utils_algo import sinkhorn, linear_rampup
+
+def evaluate_model(model, test_loader, device):
+    """Calculates model accuracy on the test set."""
+    model.eval()
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for images, labels in test_loader:
+            images, labels = images.to(device), labels.to(device)
+            if isinstance(model, (PiCOModel, PiCOOracleModel, ComCoModel)):
+                outputs = model(images, eval_only=True)
+            else:
+                outputs = model(images)
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+    return 100 * correct / total
+
+
+def train_algorithm(model, loader, test_loader, loss_fn, optimizer, epochs, device):
+    """Generic training loop for a model."""
+    best_accuracy = 0.0
+    accuracies = []
+    model.to(device)
+    for epoch in range(epochs):
+        model.train()
+        total_loss = 0
+        progress_bar = tqdm(loader, desc=f"Epoch {epoch + 1}/{epochs}")
+        for images, labels in progress_bar:
+            images, labels = images.to(device), labels.to(device)
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = loss_fn(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+            progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
+        avg_loss = total_loss / len(loader)
+        current_accuracy = evaluate_model(model, test_loader, device)
+        print(f"Epoch [{epoch+1}/{epochs}], Loss: {avg_loss:.4f}, Test Accuracy: {current_accuracy:.2f}%")
+        accuracies.append(current_accuracy)
+        if current_accuracy > best_accuracy:
+            best_accuracy = current_accuracy
+    print(f"Training finished. Best accuracy: {best_accuracy:.2f}%\n")
+    return accuracies
+
+def train_pico_epoch(pico_args, model, loader, loss_fn, loss_cont_fn, optimizer, epoch, device):
+    """Runs a single training epoch for the PiCO model.
+
+    KNOWN DISCREPANCY (2026-08-14, see docs/pico_explanation.md): the paper
+    (Wang et al., ICLR 2022, Appendix B.1) describes warm-up as omitting
+    L_cont from the total loss entirely for the first `prot_start` epochs.
+    This function instead keeps L_cont active during warm-up but switches
+    SupConLoss to its unsupervised MoCo mode (mask=None). The default
+    `prot_start=80` in config.yaml also doesn't match either paper-reported
+    value (1 epoch default, 100 for CIFAR-100 @ q=0.1). See
+    src/fixed_pico_engine.py::train_pico_epoch_fixed (algorithm ID
+    PiCO-Fixed) for the paper-faithful version.
+    """
+    model.train()
+    total_loss = 0
+    start_upd_prot = epoch >= pico_args['prot_start']
+    
+    progress_bar = tqdm(loader, desc=f"PiCO Epoch {epoch + 1}/{pico_args['epochs']}")
+    for (images_w, images_s, partial_Y, true_labels, index) in progress_bar:
+        images_w, images_s, partial_Y, index = images_w.to(device), images_s.to(device), partial_Y.to(device), index.to(device)
+        
+        cls_out, features, pseudo_target_cont, score_prot = model(images_w, images_s, partial_Y, pico_args)
+        batch_size = cls_out.shape[0]
+
+        if start_upd_prot:
+            loss_fn.confidence_update(temp_un_conf=score_prot.detach(), batch_index=index, batchY=partial_Y)
+        
+        mask = torch.eq(pseudo_target_cont[:batch_size].unsqueeze(1), pseudo_target_cont.unsqueeze(0)).float() if start_upd_prot else None
+
+        loss_cls = loss_fn(cls_out, index)
+        loss_cont = loss_cont_fn(features=features, mask=mask, batch_size=batch_size)
+        loss = loss_cls + pico_args['loss_weight'] * loss_cont
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
+    return total_loss / len(loader)
+
+
+def train_pico_moco_epoch(pico_args, model, loader, loss_fn, loss_cont_fn, optimizer, epoch, device):
+    """PiCO-MOCO: identical to train_pico_epoch except the contrastive mask is
+    NEVER built from candidate-set/prototype-pseudo-label agreement, even
+    after warm-up ends. `mask` stays None for the whole run, so SupConLoss
+    always falls back to its unsupervised MoCo InfoNCE branch: the only
+    positive pair for a sample is its own weak/strong augmentation pair
+    (q · k), never other same-(pseudo)class samples from the batch/queue.
+    Confidence/pseudo-target updates (Eq. 6) still gate on `start_upd_prot`
+    exactly like train_pico_epoch -- that governs the classification target,
+    not contrastive positive-pair selection, so it is left unchanged.
+    """
+    model.train()
+    total_loss = 0
+    start_upd_prot = epoch >= pico_args['prot_start']
+
+    progress_bar = tqdm(loader, desc=f"PiCO-MOCO Epoch {epoch + 1}/{pico_args['epochs']}")
+    for (images_w, images_s, partial_Y, true_labels, index) in progress_bar:
+        images_w, images_s, partial_Y, index = images_w.to(device), images_s.to(device), partial_Y.to(device), index.to(device)
+
+        cls_out, features, pseudo_target_cont, score_prot = model(images_w, images_s, partial_Y, pico_args)
+        batch_size = cls_out.shape[0]
+
+        if start_upd_prot:
+            loss_fn.confidence_update(temp_un_conf=score_prot.detach(), batch_index=index, batchY=partial_Y)
+
+        loss_cls = loss_fn(cls_out, index)
+        loss_cont = loss_cont_fn(features=features, mask=None, batch_size=batch_size)
+        loss = loss_cls + pico_args['loss_weight'] * loss_cont
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
+    return total_loss / len(loader)
+
+
+def train_pico_mclloss_epoch(pico_args, model, loader, loss_fn, loss_cont_fn, optimizer, epoch, device):
+    """Single training epoch for PiCO-MCL: uses MCL-LOG style cls loss instead of PartialLoss."""
+    model.train()
+    total_loss = 0
+    start_upd_prot = epoch >= pico_args['prot_start']
+
+    progress_bar = tqdm(loader, desc=f"PiCO-MCL Epoch {epoch + 1}/{pico_args['epochs']}")
+    for (images_w, images_s, partial_Y, true_labels, index) in progress_bar:
+        images_w  = images_w.to(device)
+        images_s  = images_s.to(device)
+        partial_Y = partial_Y.to(device)
+
+        cls_out, features, pseudo_target_cont, score_prot = model(images_w, images_s, partial_Y, pico_args)
+        batch_size = cls_out.shape[0]
+
+        mask = (
+            torch.eq(pseudo_target_cont[:batch_size].unsqueeze(1),
+                     pseudo_target_cont.unsqueeze(0)).float()
+            if start_upd_prot else None
+        )
+
+        loss_cls  = loss_fn(cls_out, partial_Y)
+        loss_cont = loss_cont_fn(features=features, mask=mask, batch_size=batch_size)
+        loss = loss_cls + pico_args['loss_weight'] * loss_cont
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
+    return total_loss / len(loader)
+
+
+def train_pico_sc_epoch(pico_args, model, loader, loss_fn, loss_cont_fn, optimizer, epoch, device):
+    """PiCO with softmax-based confidence update (PiCO-SC).
+
+    Identical to train_pico_epoch except the confidence update uses the model's
+    own cls softmax output instead of prototype similarity scores:
+
+        Original:  loss_fn.confidence_update(score_prot, index, partial_Y)
+        PiCO-SC:   loss_fn.update_confidence(cls_out, index)
+
+    The dual encoder, MoCo queue, and prototype memory are still maintained
+    (model forward pass is unchanged), so the contrastive mask still uses
+    prototype-derived pseudo-labels.  Only the cls confidence update differs.
+    """
+    model.train()
+    total_loss     = 0
+    start_upd_prot = epoch >= pico_args['prot_start']
+
+    progress_bar = tqdm(loader, desc=f"PiCO-SC Epoch {epoch + 1}/{pico_args['epochs']}")
+    for (images_w, images_s, partial_Y, true_labels, index) in progress_bar:
+        images_w  = images_w.to(device)
+        images_s  = images_s.to(device)
+        partial_Y = partial_Y.to(device)
+        index     = index.to(device)
+
+        cls_out, features, pseudo_target_cont, score_prot = model(
+            images_w, images_s, partial_Y, pico_args
+        )
+        batch_size = cls_out.shape[0]
+
+        if start_upd_prot:
+            # Use cls softmax (not prototype scores) to pick pseudo-label
+            loss_fn.update_confidence(cls_out.detach(), index)
+
+        mask = (
+            torch.eq(pseudo_target_cont[:batch_size].unsqueeze(1),
+                     pseudo_target_cont.unsqueeze(0)).float()
+            if start_upd_prot else None
+        )
+
+        loss_cls  = loss_fn(cls_out, index)
+        loss_cont = loss_cont_fn(features=features, mask=mask, batch_size=batch_size)
+        loss      = loss_cls + pico_args['loss_weight'] * loss_cont
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
+    return total_loss / len(loader)
+
+
+def train_comco_epoch(comco_args, model, loader, cls_loss_fn, cont_loss_fn, optimizer, epoch, device):
+    """Runs a single training epoch for the ComCo model."""
+    model.train()
+    total_loss = 0
+    warmup_pos = epoch >= comco_args['warmup_pos']
+    warmup_neg = epoch >= comco_args['warmup_neg']
+
+    progress_bar = tqdm(loader, desc=f"ComCo Epoch {epoch + 1}/{comco_args['epochs']}")
+    for (images_w, images_s, comp_mask, true_labels, index) in progress_bar:
+        images_w = images_w.to(device)
+        images_s = images_s.to(device)
+        comp_mask = comp_mask.to(device)
+
+        cls_out, q, all_feats, all_pseudo, all_comp = model(images_w, images_s, comp_mask, comco_args)
+        pseudo_q = cls_out.argmax(dim=1)
+
+        loss_cls = cls_loss_fn(cls_out, comp_mask)
+        loss_cont = cont_loss_fn(q, all_feats, all_pseudo, all_comp, pseudo_q, warmup_pos, warmup_neg)
+        loss = loss_cls + comco_args['loss_weight'] * loss_cont
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
+    return total_loss / len(loader)
+
+
+def train_solar_epoch(solar_args, model, loader, loss_fn, optimizer, epoch, device, queue, emp_dist):
+    """Runs a single training epoch for the SoLar model."""
+    model.train()
+    total_loss = 0
+    
+    rho_start, rho_end = solar_args['rho_range']
+    eta = solar_args['eta'] * linear_rampup(epoch, solar_args['warmup_epoch'])
+    rho = rho_start + (rho_end - rho_start) * linear_rampup(epoch, solar_args['warmup_epoch'])
+
+    progress_bar = tqdm(loader, desc=f"SoLar Epoch {epoch + 1}/{solar_args['epochs']}")
+    for (images_w, images_s, partial_Y, true_labels, index) in progress_bar:
+        images_w, images_s, partial_Y, index = images_w.to(device), images_s.to(device), partial_Y.to(device), index.to(device)
+
+        logits_w = model(images_w)
+        logits_s = model(images_s)
+        bs = logits_w.shape[0]
+
+        prediction = F.softmax(logits_w.detach(), dim=1)
+        sinkhorn_cost = prediction * partial_Y
+        
+        detached_sinkhorn_cost = sinkhorn_cost.detach()
+        sinkhorn_input = detached_sinkhorn_cost
+
+        if queue is not None:
+            if not torch.all(queue[-1, :] == 0):
+                sinkhorn_input = torch.cat((queue, detached_sinkhorn_cost))
+
+            queue[bs:] = queue[:-bs].clone().detach()
+            queue[:bs] = detached_sinkhorn_cost.clone().detach()
+        
+        pseudo_label_soft, _ = sinkhorn(sinkhorn_input, solar_args['lamd'], r_in=emp_dist)
+        
+        pseudo_label = pseudo_label_soft[-bs:]
+        pseudo_label_idx = pseudo_label.max(dim=1)[1]
+
+        _, rn_loss_vec = loss_fn(logits_w, index)
+        _, pseudo_loss_vec = loss_fn(logits_w, None, targets=pseudo_label)
+
+        idx_chosen_sm = []
+        sel_flags = torch.zeros(images_w.shape[0], device=device).detach()
+
+        for j in range(solar_args['num_class']):
+            indices = np.where(pseudo_label_idx.cpu().numpy()==j)[0]
+            if len(indices) == 0:
+                continue
+            bs_j = bs * emp_dist[j]
+            pseudo_loss_vec_j = pseudo_loss_vec[indices]
+            sorted_idx_j = pseudo_loss_vec_j.sort()[1].cpu().numpy()
+            partition_j = max(min(int(math.ceil(bs_j*rho)), len(indices)), 1)
+            idx_chosen_sm.append(indices[sorted_idx_j[:partition_j]])
+
+        if len(idx_chosen_sm) > 0:
+            idx_chosen_sm = np.concatenate(idx_chosen_sm)
+            sel_flags[idx_chosen_sm] = 1
+
+        high_conf_cond = (pseudo_label * prediction).sum(dim=1) > solar_args['tau']
+        sel_flags[high_conf_cond] = 1
+        idx_chosen = torch.where(sel_flags == 1)[0]
+        idx_unchosen = torch.where(sel_flags == 0)[0]
+
+        if epoch < 1 or idx_chosen.shape[0] == 0:
+            loss = rn_loss_vec.mean()
+        else:
+            if idx_unchosen.shape[0] > 0:
+                loss_unreliable = rn_loss_vec[idx_unchosen].mean()
+            else:
+                loss_unreliable = 0
+            loss_sin = pseudo_loss_vec[idx_chosen].mean()
+            loss_cons, _ = loss_fn(logits_s[idx_chosen], None, targets=pseudo_label[idx_chosen])
+            
+            l = np.random.beta(4, 4)
+            l = max(l, 1-l)
+            X_w_c = images_w[idx_chosen]
+            pseudo_label_c = pseudo_label[idx_chosen]
+            rand_idx = torch.randperm(X_w_c.size(0))
+            X_w_c_rand = X_w_c[rand_idx]
+            pseudo_label_c_rand = pseudo_label_c[rand_idx]
+            X_w_c_mix = l * X_w_c + (1 - l) * X_w_c_rand        
+            pseudo_label_c_mix = l * pseudo_label_c + (1 - l) * pseudo_label_c_rand
+            logits_mix = model(X_w_c_mix)
+            loss_mix, _  = loss_fn(logits_mix, None, targets=pseudo_label_c_mix)
+
+            loss = (loss_sin + loss_mix + loss_cons) * eta + loss_unreliable * (1 - eta)
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        conf_rn = sinkhorn_cost / sinkhorn_cost.sum(dim=1).repeat(prediction.size(1), 1).transpose(0, 1)
+        loss_fn.confidence_update(conf_rn, index)
+        
+        total_loss += loss.item()
+        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
+    return total_loss / len(loader)
+
+def estimate_empirical_distribution(model, loader, num_class, device):
+    """Estimates the empirical class distribution from model predictions."""
+    model.eval()
+    est_pred_list = []
+    with torch.no_grad():
+        for (images_w, images_s, partial_Y, true_labels, index) in loader:
+            images_w, partial_Y = images_w.to(device), partial_Y.to(device)
+            outputs = model(images_w)
+            pred = torch.softmax(outputs, dim=1) * partial_Y
+            est_pred_list.append(pred.cpu())
+    
+    est_pred_list = torch.cat(est_pred_list, dim=0)
+    est_pred_idx = est_pred_list.max(dim=1)[1]
+    est_pred = F.one_hot(est_pred_idx, num_class).float()
+    emp_dist = est_pred.sum(0) / est_pred.sum()
+    return emp_dist.unsqueeze(1)
+
+
+def train_solar(solar_args, model, loader, test_loader, loss_fn, optimizer, device, queue):
+    """Main training loop for the SoLar model, including pre-estimation and final training stages."""
+    accuracies = []
+    
+    # Stage 1: Pre-estimation
+    print("\n--- SoLar Stage 1: Pre-estimation ---")
+    emp_dist = (torch.ones(solar_args['num_class']) / solar_args['num_class']).unsqueeze(1)
+    for epoch in range(solar_args['est_epochs']):
+        avg_loss = train_solar_epoch(solar_args, model, loader, loss_fn, optimizer, epoch, device, queue, emp_dist)
+        emp_dist_train = estimate_empirical_distribution(model, loader, solar_args['num_class'], device)
+        emp_dist = solar_args['gamma1'] * emp_dist_train + (1 - solar_args['gamma1']) * emp_dist
+        current_accuracy = evaluate_model(model, test_loader, device)
+        print(f"Epoch [{epoch+1}/{solar_args['est_epochs']}], Loss: {avg_loss:.4f}, Test Accuracy: {current_accuracy:.2f}%")
+        # Accuracies from this stage are not used for final model selection.
+
+    # Stage 2: Final Training
+    print("\n--- SoLar Stage 2: Final Training ---")
+    for epoch in range(solar_args['epochs']):
+        avg_loss = train_solar_epoch(solar_args, model, loader, loss_fn, optimizer, epoch, device, queue, emp_dist)
+        emp_dist_train = estimate_empirical_distribution(model, loader, solar_args['num_class'], device)
+        emp_dist = solar_args['gamma2'] * emp_dist_train + (1 - solar_args['gamma2']) * emp_dist
+        current_accuracy = evaluate_model(model, test_loader, device)
+        print(f"Epoch [{epoch+1}/{solar_args['epochs']}], Loss: {avg_loss:.4f}, Test Accuracy: {current_accuracy:.2f}%")
+        accuracies.append(current_accuracy)
+        
+    return accuracies

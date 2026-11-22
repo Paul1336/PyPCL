@@ -3,36 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class ComCoCLSLoss(nn.Module):
-    """
-    MCL-NL style complementary loss for ComCo (Eq. 3 in paper).
-
-    For each sample with complementary mask Y_bar (binary [B, C]):
-        L = -log(sum_{c not in Y_bar} softmax(logits)_c) * (C-1) / (C-m)
-    where m = number of complementary labels for that sample.
-
-    Reduces to SCL-NL (-log(1 - g_ybar)) for single complementary label.
-
-    KNOWN BUG (2026-08-14, see docs/comco_explanation.md): Eq. 3 in the paper
-    is only a generic wrapper ("L_cls = L-bar(g(x),ybar)"); Section 5.1
-    states explicitly "we choose SCL-NL as complementary loss" -- i.e. the
-    paper's own classification loss is *plain, unscaled* SCL-NL, not this
-    MCL-NL-style (C-1)/(C-m)-scaled formula (borrowed from Feng et al. 2020,
-    a different paper ComCo only cites as a baseline). This only matches the
-    paper when m=1 (scale=1); for m>1 it diverges. Use FixedComCoCLSLoss
-    (src/comco/fixed_utils_loss.py, algorithm ID ComCo-Fixed) for the
-    corrected version.
-    """
-
-    def forward(self, logits: torch.Tensor, comp_mask: torch.Tensor) -> torch.Tensor:
-        C = logits.shape[1]
-        probs = F.softmax(logits, dim=1)
-        non_comp_probs = probs * (1.0 - comp_mask)
-        sum_non_comp = non_comp_probs.sum(dim=1).clamp(min=1e-8)
-        m = comp_mask.sum(dim=1)
-        scale = (C - 1.0) / (C - m).clamp(min=1.0)
-        loss = -torch.log(sum_non_comp) * scale
-        return loss.mean()
+from src.losses.stateless import ComCoCLSLoss  # noqa: F401,E402  (moved 2026-11-22)
 
 
 class ComCoContrastiveLoss(nn.Module):

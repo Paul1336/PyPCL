@@ -1,0 +1,46 @@
+import torch
+
+# Collate function for standard dataloaders.
+def collate_fn(batch):
+    images, labels = zip(*batch)
+    images = torch.stack(images, 0)
+    
+    # Get max length of label lists in the batch.
+    max_len = max(len(label) for label in labels)
+    
+    # Pad labels to max length with -1.
+    padded_labels = torch.full((len(labels), max_len), -1, dtype=torch.long)
+    for i, label in enumerate(labels):
+        padded_labels[i, :len(label)] = label
+        
+    return images, padded_labels
+
+# Collate function for PiCO dataloader.
+def pico_collate_fn(batch):
+    images_w, images_s, partial_Y, true_labels, indices = zip(*batch)
+    images_w = torch.stack(images_w, 0)
+    images_s = torch.stack(images_s, 0)
+    partial_Y = torch.stack(partial_Y, 0)
+    true_labels = torch.tensor(true_labels)
+    indices = torch.tensor(indices)
+    return images_w, images_s, partial_Y, true_labels, indices
+
+# Collate function for ComCo dataloader.
+def comco_collate_fn(batch):
+    images_w, images_s, comp_masks, true_labels, indices = zip(*batch)
+    images_w = torch.stack(images_w, 0)
+    images_s = torch.stack(images_s, 0)
+    comp_masks = torch.stack(comp_masks, 0)
+    true_labels = torch.tensor(true_labels)
+    indices = torch.tensor(indices)
+    return images_w, images_s, comp_masks, true_labels, indices
+
+# Collate function for SoLar dataloader.
+def solar_collate_fn(batch):
+    images_w, images_s, partial_Y, true_labels, indices = zip(*batch)
+    images_w = torch.stack(images_w, 0)
+    images_s = torch.stack(images_s, 0)
+    partial_Y = torch.stack(partial_Y, 0)
+    true_labels = torch.tensor(true_labels)
+    indices = torch.tensor(indices)
+    return images_w, images_s, partial_Y, true_labels, indices

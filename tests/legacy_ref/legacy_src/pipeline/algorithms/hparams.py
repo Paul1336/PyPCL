@@ -1,0 +1,172 @@
+"""Per-algorithm default hyperparameters.
+
+Optimizer/lr/wd choices mirror the values already validated in
+scripts/run_adam_comparison.py, scripts/run_solar_comparison.py, etc.:
+Adam lr=3e-4 for most algorithms; SGD lr=0.01 momentum=0.9 for PRODEN and
+SoLar, which follow their original papers.
+"""
+
+_ADAM = dict(optimizer='adam', lr=3e-4, weight_decay=1e-4)
+_SGD = dict(optimizer='sgd', lr=0.01, momentum=0.9, weight_decay=1e-4)
+
+ALGO_HPARAMS = {
+    'CLPL':     _ADAM,
+    'Wu2022':   _ADAM,
+    'PRODEN':   _SGD,
+    'PRODEN-UniformInit': _SGD,
+    'PRODEN-BiasedInit':  _SGD,
+    'PRODEN-RandomCandInit': _SGD,
+    'MCL-LOG':  _ADAM,
+    'MCL-LOG-Fixed': _ADAM,
+    'SCL-NL':   _ADAM,
+    'OP':       _ADAM,
+    'OP-W':     _ADAM,
+    'CPE':      _ADAM,
+    'PiCO':     _ADAM,
+    'PiCO-Oracle': _ADAM,
+    'PiCO-Oracle-Add': _ADAM,
+    'PiCO-Fixed': _ADAM,
+    'PiCO-Fixed-UniformInit': _ADAM,
+    'PiCO-Fixed-BiasedInit':  _ADAM,
+    'PiCO-MOCO': _ADAM,
+    'PiCO-MCL': _ADAM,
+    'PiCO-MCL-Fixed': _ADAM,
+    'PiCO-SC':  _ADAM,
+    'PiCO-CLS': _ADAM,
+    'ComCo':    _ADAM,
+    'ComCo-Fixed': _ADAM,
+    'SoLar':    _SGD,
+}
+
+# Parametrized biased-init sweep (see src/pll_init.py.BIAS_WEIGHTS /
+# biased_variant_name and src/pipeline/algorithms/runners.py's
+# BIASED_SWEEP_RUNNERS) -- same optimizer as each variant's base algorithm.
+from legacy_src.pll_init import BIAS_WEIGHTS, biased_variant_name  # noqa: E402
+
+for _w in BIAS_WEIGHTS:
+    for _strategy in ('cand', 'all'):
+        ALGO_HPARAMS[biased_variant_name('PiCO-Fixed', _strategy, _w)] = _ADAM
+        ALGO_HPARAMS[biased_variant_name('PRODEN', _strategy, _w)] = _SGD
+
+# Parametrized PiCO-weighted-cls-loss sweep (see src/pll_init.py.ALPHA_VALUES
+# / pico_weighted_variant_name and
+# src/pipeline/algorithms/runners.py's PICO_WEIGHTED_SWEEP_RUNNERS).
+from legacy_src.pll_init import ALPHA_VALUES, pico_weighted_variant_name  # noqa: E402
+
+for _a in ALPHA_VALUES:
+    ALGO_HPARAMS[pico_weighted_variant_name(_a)] = _ADAM
+
+# ComCo-side mirror of the sweep above (see src/pll_init.py.comco_weighted_variant_name
+# and src/pipeline/algorithms/runners.py's COMCO_WEIGHTED_SWEEP_RUNNERS).
+from legacy_src.pll_init import comco_weighted_variant_name  # noqa: E402
+
+for _a in ALPHA_VALUES:
+    ALGO_HPARAMS[comco_weighted_variant_name(_a)] = _ADAM
+
+ALGO_HPARAMS['ComCo-Weighted-BatchCond'] = _ADAM
+ALGO_HPARAMS['ComCo-Weighted-BatchRandom'] = _ADAM
+ALGO_HPARAMS['ComCo-Weighted-SampleCond'] = _ADAM
+ALGO_HPARAMS['ComCo-Weighted-BanditPaired'] = _ADAM
+ALGO_HPARAMS['ComCo-Weighted-BanditEpoch'] = _ADAM
+for _name in ('ComCo-Uni-Fixed0', 'ComCo-Uni-Fixed1', 'ComCo-Uni-Bandit01', 'ComCo-Uni-BanditCont',
+              'PiCO-Uni-Fixed0', 'PiCO-Uni-Fixed1', 'PiCO-Uni-Bandit01', 'PiCO-Uni-BanditCont',
+              'PiCO-Mix-A100', 'PiCO-Mix-BanditPaired'):
+    ALGO_HPARAMS[_name] = _ADAM
+for _fw in ('PiCO', 'ComCo'):
+    for _tag in ('Uni', 'Mix'):
+        for _suffix in ('Sched25', 'Sched50', 'Sched100', 'Sched150', 'Sched50-Frozen', 'Sched100-Frozen'):
+            ALGO_HPARAMS[f'{_fw}-{_tag}-{_suffix}'] = _ADAM
+for _name in ('ComCo-Mix-A100', 'ComCo-Mix-BanditPaired', 'Solo-Uni-Fixed0', 'Solo-Uni-Fixed1', 'Solo-Uni-Bandit01',
+              'Solo-Uni-BanditCont', 'Solo-Mix-A100', 'Solo-Mix-BanditPaired',
+              'PiCO-Uni-BanditLong', 'ComCo-Uni-BanditLong', 'PiCO-Uni-SFlip', 'ComCo-Uni-SFlip',
+              'PiCO-Uni-Plateau', 'ComCo-Uni-Plateau',
+              'Hybrid-Bandit01', 'Hybrid-BanditLong', 'Hybrid-Plateau', 'Hybrid-FixedPiCO', 'Hybrid-FixedComCo',
+              'Hybrid-Sched150', 'Hybrid-Mix-Bandit01', 'Hybrid-Mix-FixedComCo', 'Hybrid-Mix-FixedPiCO',
+              'ComCo-Mix-BanditPaired-RhoEM', 'ComCo-Mix-BanditPaired-RhoOracle', 'ComCo-Mix-BanditPaired-TrueAcc',
+              'ComCo-Uni-Bandit01-RhoEM'):
+    ALGO_HPARAMS[_name] = _ADAM
+
+# cls-loss swap experiment (src/clsloss_swap.py) -- Adam for every loss,
+# including PRODEN/SoLar, so only L_cls differs between cells.
+from legacy_src.clsloss_swap import CLS_LOSSES, FRAMEWORKS, swap_algorithm_name  # noqa: E402
+
+for _fw in FRAMEWORKS:
+    for _l in CLS_LOSSES:
+        ALGO_HPARAMS[swap_algorithm_name(_fw, _l)] = _ADAM
+for _a0, _a1 in (('PiCOPartial', 'MCLLOGFixed'), ('PRODEN', 'MCLLOGFixed')):  # runners.SWAP_BANDIT_PAIRS
+    ALGO_HPARAMS[f'SwapComCo-BanditPaired-{_a0}-{_a1}'] = _ADAM
+for _pl in ('PiCOPartial', 'PRODEN'):  # runners.PRUNE_RUNNERS
+    for _tag in ('Prune', 'PruneOracle'):
+        ALGO_HPARAMS[f'SwapComCo-{_tag}-{_pl}'] = _ADAM
+        if _pl == 'PiCOPartial':
+            ALGO_HPARAMS[f'SwapPiCO-{_tag}-{_pl}'] = _ADAM
+
+# Parametrized biased-init sweep #2 (see src/pll_init.py.BIAS_RAND_WEIGHTS /
+# BIAS_RAND_WF_VALUES / biased_rand_variant_name and
+# src/pipeline/algorithms/runners.py's BIASED_RAND_SWEEP_RUNNERS).
+from legacy_src.pll_init import BIAS_RAND_WEIGHTS, BIAS_RAND_WF_VALUES, biased_rand_variant_name  # noqa: E402
+
+for _w in BIAS_RAND_WEIGHTS:
+    for _wf in BIAS_RAND_WF_VALUES:
+        ALGO_HPARAMS[biased_rand_variant_name('PiCO-Fixed', _w, _wf)] = _ADAM
+        ALGO_HPARAMS[biased_rand_variant_name('PRODEN', _w, _wf)] = _SGD
+
+# Parametrized biased-init sweep #3 (see src/pll_init.py.BIAS_RAND_ALL_WEIGHTS
+# / BIAS_RAND_ALL_N_VALUES / biased_rand_all_variant_name and
+# src/pipeline/algorithms/runners.py's BIASED_RAND_ALL_SWEEP_RUNNERS).
+from legacy_src.pll_init import BIAS_RAND_ALL_N_VALUES, BIAS_RAND_ALL_WEIGHTS, biased_rand_all_variant_name  # noqa: E402
+
+for _w in BIAS_RAND_ALL_WEIGHTS:
+    for _n in BIAS_RAND_ALL_N_VALUES:
+        ALGO_HPARAMS[biased_rand_all_variant_name('PiCO-Fixed', _w, _n)] = _ADAM
+        ALGO_HPARAMS[biased_rand_all_variant_name('PRODEN', _w, _n)] = _SGD
+
+# conf_ema_m sweep (see src/pll_init.py CONF_EMA_SCALES / ema_variant_name /
+# conf_ema_sweep_base_names and runners.py's CONF_EMA_SWEEP_RUNNERS) -- same
+# optimizer as each variant's base algorithm.
+from legacy_src.pll_init import (CONF_EMA_SCALES, CONF_EMA_SWEEP_BASES,  # noqa: E402
+                           conf_ema_sweep_base_names, ema_variant_name)
+
+for _base in CONF_EMA_SWEEP_BASES:
+    for _bn in conf_ema_sweep_base_names(_base):
+        for _s in CONF_EMA_SCALES:
+            ALGO_HPARAMS[ema_variant_name(_bn, _s)] = _ADAM if _base == 'PiCO-Fixed' else _SGD
+
+# confidence-update-mechanism sweep (Factor A x Factor B, see
+# src/pll_init.py AB_VARIANT_SOURCE_HARD / AB_SWEEP_BASES / AB_SWEEP_SCALES
+# and src/pipeline/algorithms/runners.py's AB_SWEEP_RUNNERS) -- all bases
+# are PiCO-Fixed variants, so all use _ADAM.
+from legacy_src.pll_init import AB_SWEEP_BASES, AB_SWEEP_SCALES  # noqa: E402
+
+for _base in AB_SWEEP_BASES:
+    for _bn in conf_ema_sweep_base_names(_base):
+        for _s in AB_SWEEP_SCALES:
+            ALGO_HPARAMS[ema_variant_name(_bn, _s)] = _ADAM
+
+
+# PiCO-Fixed vs ComCo-Fixed diagnostics (src/pcdiag.py) -- both bases use Adam.
+for _n in ('PCD-PiCO', 'PCD-ComCo'):
+    for _v in ('', '-OraclePL', '-OracleProto', '-OraclePos', '-OracleNeg', '-OracleCls', '-CandFilter'):
+        ALGO_HPARAMS[_n + _v] = _ADAM
+for _v in ('', '-OraclePL', '-OraclePos', '-OracleNeg', '-CandFilter'):  # ComCo-Fixed + MCL-LOG (2026-11-04)
+    ALGO_HPARAMS['PCD-ComCoMCL' + _v] = _ADAM
+from legacy_src.pcdiag import PL_EMA_MS  # noqa: E402  ComCoMCL + EMA pseudo-label (2026-11-05)
+ALGO_HPARAMS['PCD-ComCoMCLNL'] = ALGO_HPARAMS['PCD-ComCoMCLFixed'] = _ADAM  # 2026-11-06
+for _v in ('-PosAC', '-NegAC', '-PosNegAC'):  # AllClean pair selection on ComCo (2026-11-16)
+    ALGO_HPARAMS['PCD-ComCoMCLNL' + _v] = _ADAM
+for _tag in PL_EMA_MS:
+    ALGO_HPARAMS['PCD-ComCoMCL-' + _tag] = _ADAM
+ALGO_HPARAMS['PCD-PiCOPlus'] = ALGO_HPARAMS['PCD-PiCOPlus-AllClean'] = ALGO_HPARAMS['PCD-PiCOPlus-D60'] = _ADAM  # PiCO+ (2026-11-08), same as PCD-PiCO
+ALGO_HPARAMS['PCD-ComCoMCLNL-MixA'] = _ADAM  # 2026-11-18 loss-level mixup on ComCo-Fixed + MCL-NL
+from legacy_src.pcdiag import SCALE_TAGS  # noqa: E402  (2026-11-17) oracle selection + coefficient sweeps
+ALGO_HPARAMS['PCD-PiCO-OracleSel'] = ALGO_HPARAMS['PCD-ComCoMCL-OracleSel'] = _ADAM
+for _t in SCALE_TAGS:
+    ALGO_HPARAMS[f'PCD-ComCoMCLNL-CLSx{_t}'] = ALGO_HPARAMS[f'PCD-ComCoMCLNL-LWx{_t}'] = _ADAM
+
+def make_optimizer(model, hparams: dict):
+    import torch.optim as optim
+
+    if hparams['optimizer'] == 'adam':
+        return optim.Adam(model.parameters(), lr=hparams['lr'], weight_decay=hparams['weight_decay'])
+    return optim.SGD(model.parameters(), lr=hparams['lr'],
+                      momentum=hparams.get('momentum', 0.9), weight_decay=hparams['weight_decay'])
