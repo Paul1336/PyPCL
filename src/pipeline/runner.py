@@ -17,29 +17,10 @@ from src.pipeline.algorithms.hparams import ALGO_HPARAMS
 from src.pipeline.config import PipelineConfig
 from src.pipeline.gpu import assign_algorithms, get_device
 
-# Algorithms that need real RGB image weak/strong augmentation pairs
-# (loaders['pico'] / loaders['comco']) -- unsupported on any DatasetSpec with
-# supports_pico_family=False (grayscale, tabular, preambiguous-feature, or
-# lazy-path datasets). See docs/00_paper_alignment_guide.md.
-IMAGE_ONLY_ALGORITHMS = {'PiCO', 'PiCO-Oracle', 'PiCO-Oracle-Add', 'PiCO-MOCO', 'PiCO-Fixed',
-                          'PiCO-Fixed-UniformInit', 'PiCO-Fixed-BiasedInit',
-                          'PiCO-MCL', 'PiCO-SC', 'ComCo', 'ComCo-Fixed', 'SoLar'}
-
-# Parametrized biased-init sweeps' PiCO-Fixed-family variants also use
-# loaders['pico'] -- see algorithms.runners.BIASED_SWEEP_RUNNERS /
-# BIASED_RAND_SWEEP_RUNNERS.
-from src.pll_init import (BIAS_RAND_WEIGHTS as _BIAS_RAND_WEIGHTS,  # noqa: E402
-                           BIAS_RAND_WF_VALUES as _BIAS_RAND_WF_VALUES,
-                           BIAS_WEIGHTS as _BIAS_WEIGHTS,
-                           biased_rand_variant_name as _biased_rand_variant_name,
-                           biased_variant_name as _biased_variant_name)
-IMAGE_ONLY_ALGORITHMS |= {_biased_variant_name('PiCO-Fixed', s, w) for s in ('cand', 'all') for w in _BIAS_WEIGHTS}
-IMAGE_ONLY_ALGORITHMS |= {_biased_rand_variant_name('PiCO-Fixed', w, wf)
-                           for w in _BIAS_RAND_WEIGHTS for wf in _BIAS_RAND_WF_VALUES}
-# Every other PiCO-Fixed-* variant (BiasedRandAll, the conf_ema sweep's
-# '-EMA*' names, ...) is a dual-encoder PiCO too -- catch them all by prefix
-# so a new PiCO-Fixed family can't silently be run on a non-image dataset.
-IMAGE_ONLY_ALGORITHMS |= {n for n in ALGORITHMS if n.startswith('PiCO-Fixed-')}
+# Algorithms that need real RGB weak/strong augmentation pairs (loaders['pico'] / ['comco']) --
+# skipped on DatasetSpecs with supports_pico_family=False. Derived from the registry
+# (AlgorithmSpec.needs_views) since 2026-11-22; the old hand list missed most newer families.
+IMAGE_ONLY_ALGORITHMS = {n for n, s in ALGORITHMS.items() if s.needs_views}
 
 
 def _set_seed(seed: int) -> None:

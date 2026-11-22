@@ -82,7 +82,15 @@ MCLLOGFixedLoss = _stateless('MCLLOGFixedLoss', Fn.STATELESS['MCLLOGFixed'])
 MCLNLLoss = _stateless('MCLNLLoss', Fn.STATELESS['MCLNL'])
 SCLNLLoss = _stateless('SCLNLLoss', Fn.scl_nl)
 OPLoss = _stateless('OPLoss', Fn.op)
-OPWLoss = _stateless('OPWLoss', Fn.opw)
+class OPWLoss(_Stateless):
+    __doc__ = Fn.opw.__doc__
+
+    def __init__(self, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+
+    def forward(self, logits, index, partial_Y):
+        return Fn.opw(logits, partial_Y, self.eps)
 
 
 # ─── confidence-buffer losses ─────────────────────────────────────────────

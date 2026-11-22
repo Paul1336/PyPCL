@@ -52,6 +52,9 @@ from src.scl_loss import SCL_NL
 from src.wu_loss import WuPLLLoss
 
 from src.core.io import write_trace
+from src.pipeline.algorithms.families import (candidate_init_conf, comco_args as _comco_args, fmt_eta as _fmt_eta,  # noqa: F401
+                                              print_eta as _print_eta, run_comco_family, run_pico_family)
+from src.pipeline.algorithms.families import pico_args as _pico_args  # noqa: E402
 from src.pipeline import biasvariance, detail
 
 from .hparams import make_optimizer
@@ -62,18 +65,8 @@ _STD = [0.247, 0.2435, 0.2616]
 # ─── shared helpers ────────────────────────────────────────────────────────
 
 
-def _fmt_eta(seconds: float) -> str:
-    if seconds < 90:
-        return f'{seconds:.0f}s'
-    if seconds < 3600:
-        return f'{seconds / 60:.1f}min'
-    return f'{seconds / 3600:.2f}h'
 
 
-def _print_eta(tag: str, ep_done: int, ep_total: int, t_chunk: float, chunk_size: int):
-    avg_s = t_chunk / chunk_size
-    eta = avg_s * (ep_total - ep_done)
-    print(f'  [{tag}]  ep {ep_done:>3}/{ep_total}  {avg_s:.1f}s/ep  ETA {_fmt_eta(eta)}', flush=True)
 
 
 class _IndexedDataset(Dataset):
@@ -111,18 +104,6 @@ class _IndexedDataset(Dataset):
         return self._train_tf(img), idx
 
 
-def _pico_args(C: int, epochs: int, pico_cfg: dict) -> dict:
-    return {
-        'num_class': C,
-        'epochs': epochs,
-        'low_dim': pico_cfg['low_dim'],
-        'moco_queue': pico_cfg['moco_queue'],
-        'moco_m': pico_cfg['moco_m'],
-        'proto_m': pico_cfg['proto_m'],
-        'prot_start': pico_cfg['prot_start'],
-        'loss_weight': pico_cfg['loss_weight'],
-        'conf_ema_range': pico_cfg['conf_ema_range'],
-    }
 
 
 # ─── 'simple' shape: one loss_fn + standard loader + argmax eval ──────────
@@ -318,196 +299,23 @@ def run_proden_random_cand_init(loaders, pl_ds, orig_targets, C, hparams, raw_cf
 
 
 def run_pico(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
-    pico_cfg = raw_cfg['pico']
-    pico_args = _pico_args(C, epochs, pico_cfg)
-    model = PiCOModel(pico_args).to(device)
-    init_conf = torch.ones(len(pl_ds), C).to(device) / C
-    cls_loss = PartialLoss(init_conf)
-    cont_loss = SupConLoss()
-    opt = make_optimizer(model, hparams)
-
-    detail_on = detail.is_enabled(raw_cfg)
-
-    chunk_t0 = time.perf_counter()
-    for ep in range(epochs):
-        cls_loss.set_conf_ema_m(ep, pico_args)
-        if detail_on:
-            # Instrumented copy of train_pico_epoch that also measures, per
-            # BATCH, contrastive positive/negative pair-selection precision
-            # against ground truth -- see src/pipeline/detail.py. Logs to
-            # pico_selection_stats.csv internally (buffered, flushed once
-            # per epoch).
-            detail.train_pico_epoch_with_selection_stats(
-                pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device,
-                raw_cfg, 'PiCO', C)
-        else:
-            train_pico_epoch(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
-
-        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO')
-        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO')
-
-        if (ep + 1) % report_every == 0 or ep + 1 == epochs:
-            elapsed = time.perf_counter() - chunk_t0
-            _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
-            chunk_t0 = time.perf_counter()
-            gc.collect()
-            torch.cuda.empty_cache()
-
-    acc = evaluate_model(model, loaders['test'], device)
-    del model, cls_loss, cont_loss, opt, init_conf
-    gc.collect()
-    torch.cuda.empty_cache()
-    return acc
+    return run_pico_family(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every,
+                    variant='PiCO', algorithm='PiCO')
 
 
 def run_pico_oracle(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
-    """Graduated precision-controlled contrastive-pair-selection oracle,
-    aligned with PiCO-Fixed (not plain PiCO): candidate-set-masked
-    pseudo-target init (Eq. 6, same as run_pico_fixed), prot_start_fixed
-    warm-up length, and L_cont omitted entirely (not switched to
-    unsupervised MoCo) during warm-up.
-
-    Post-warmup, the contrastive mask is PiCO-Fixed's own natural
-    pseudo-label-driven mask, corrected up to config.yaml's
-    pico.oracle_precision_threshold (default 1.0) if it falls short -- see
-    src/oracle_pico_engine.py::train_pico_oracle_graded_epoch for exactly
-    how the correction works. threshold=0 reproduces PiCO-Fixed exactly;
-    threshold=1 removes every false positive from the model's own selected
-    set (not identical to the old ground-truth-mask oracle -- see that
-    function's docstring). Not for real use: even at low thresholds this
-    still requires true labels at train time, unavailable in a genuine
-    partial-label setting."""
-    pico_cfg = raw_cfg['pico']
-    pico_args = _pico_args(C, epochs, pico_cfg)
-    pico_args['prot_start'] = pico_cfg.get('prot_start_fixed', 1)
-    precision_threshold = pico_cfg.get('oracle_precision_threshold', 1.0)
-    model = PiCOOracleModel(pico_args).to(device)
-    init_conf = _candidate_masked_init_conf(pl_ds, C, device)
-    cls_loss = PartialLoss(init_conf)
-    cont_loss = SupConLoss()
-    opt = make_optimizer(model, hparams)
-
-    detail_on = detail.is_enabled(raw_cfg)
-
-    chunk_t0 = time.perf_counter()
-    for ep in range(epochs):
-        cls_loss.set_conf_ema_m(ep, pico_args)
-        if detail_on:
-            detail.train_pico_oracle_graded_epoch_with_stats(
-                pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device,
-                raw_cfg, 'PiCO-Oracle', C, precision_threshold)
-        else:
-            train_pico_oracle_graded_epoch(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device,
-                                            precision_threshold)
-
-        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-Oracle')
-        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-Oracle')
-
-        if (ep + 1) % report_every == 0 or ep + 1 == epochs:
-            elapsed = time.perf_counter() - chunk_t0
-            _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
-            chunk_t0 = time.perf_counter()
-            gc.collect()
-            torch.cuda.empty_cache()
-
-    acc = evaluate_model(model, loaders['test'], device)
-    del model, cls_loss, cont_loss, opt, init_conf
-    gc.collect()
-    torch.cuda.empty_cache()
-    return acc
+    return run_pico_family(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every,
+                    variant='PiCO-Oracle', algorithm='PiCO-Oracle')
 
 
 def run_pico_oracle_add(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
-    """Additive counterpart to run_pico_oracle: instead of REMOVING false
-    positives from the natural mask to reach config.yaml's
-    pico.oracle_precision_threshold, ADDS randomly-chosen genuine true
-    positives (pairs the natural mask didn't select but which do share the
-    true class) until the threshold is reached, capped at
-    pico.oracle_max_add_ratio (default 1.0, i.e. at most doubling the
-    natural positive-set size per batch) to avoid unboundedly large
-    injections at high thresholds -- see
-    src/oracle_pico_engine.py::train_pico_oracle_add_graded_epoch. Otherwise
-    identical setup to run_pico_oracle (PiCO-Fixed-aligned warm-up,
-    candidate-masked init). Not for real use: requires true labels at train
-    time, unavailable in a genuine partial-label setting."""
-    pico_cfg = raw_cfg['pico']
-    pico_args = _pico_args(C, epochs, pico_cfg)
-    pico_args['prot_start'] = pico_cfg.get('prot_start_fixed', 1)
-    precision_threshold = pico_cfg.get('oracle_precision_threshold', 1.0)
-    max_add_ratio = pico_cfg.get('oracle_max_add_ratio', 1.0)
-    model = PiCOOracleModel(pico_args).to(device)
-    init_conf = _candidate_masked_init_conf(pl_ds, C, device)
-    cls_loss = PartialLoss(init_conf)
-    cont_loss = SupConLoss()
-    opt = make_optimizer(model, hparams)
-
-    detail_on = detail.is_enabled(raw_cfg)
-
-    chunk_t0 = time.perf_counter()
-    for ep in range(epochs):
-        cls_loss.set_conf_ema_m(ep, pico_args)
-        if detail_on:
-            detail.train_pico_oracle_add_graded_epoch_with_stats(
-                pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device,
-                raw_cfg, 'PiCO-Oracle-Add', C, precision_threshold, max_add_ratio)
-        else:
-            train_pico_oracle_add_graded_epoch(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep,
-                                                device, precision_threshold, max_add_ratio)
-
-        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-Oracle-Add')
-        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-Oracle-Add')
-        detail.maybe_log_concentration(raw_cfg, model, pl_ds, device, C, ep + 1, 'PiCO-Oracle-Add')
-
-        if (ep + 1) % report_every == 0 or ep + 1 == epochs:
-            elapsed = time.perf_counter() - chunk_t0
-            _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
-            chunk_t0 = time.perf_counter()
-            gc.collect()
-            torch.cuda.empty_cache()
-
-    detail.maybe_run_knn_eval(raw_cfg, model, pl_ds, orig_targets, loaders['test'], device, C, epochs,
-                               'PiCO-Oracle-Add')
-    acc = evaluate_model(model, loaders['test'], device)
-    del model, cls_loss, cont_loss, opt, init_conf
-    gc.collect()
-    torch.cuda.empty_cache()
-    return acc
+    return run_pico_family(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every,
+                    variant='PiCO-Oracle-Add', algorithm='PiCO-Oracle-Add')
 
 
 def run_pico_moco(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
-    """PiCO-MOCO: identical to run_pico except the contrastive positive pair
-    is always the sample's own weak/strong augmentation pair, even after
-    warm-up ends -- the candidate-set/prototype-pseudo-label-driven SupCon
-    mask (mask = same predicted class in batch+queue) is never built. See
-    src/engine.py::train_pico_moco_epoch."""
-    pico_cfg = raw_cfg['pico']
-    pico_args = _pico_args(C, epochs, pico_cfg)
-    model = PiCOModel(pico_args).to(device)
-    init_conf = torch.ones(len(pl_ds), C).to(device) / C
-    cls_loss = PartialLoss(init_conf)
-    cont_loss = SupConLoss()
-    opt = make_optimizer(model, hparams)
-
-    chunk_t0 = time.perf_counter()
-    for ep in range(epochs):
-        cls_loss.set_conf_ema_m(ep, pico_args)
-        train_pico_moco_epoch(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
-
-        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-MOCO')
-        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-MOCO')
-
-        if (ep + 1) % report_every == 0 or ep + 1 == epochs:
-            elapsed = time.perf_counter() - chunk_t0
-            _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
-            chunk_t0 = time.perf_counter()
-            gc.collect()
-            torch.cuda.empty_cache()
-
-    acc = evaluate_model(model, loaders['test'], device)
-    del model, cls_loss, cont_loss, opt, init_conf
-    gc.collect()
-    torch.cuda.empty_cache()
-    return acc
+    return run_pico_family(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every,
+                    variant='PiCO-MOCO', algorithm='PiCO-MOCO')
 
 
 def _candidate_masked_init_conf(pl_ds, C: int, device) -> torch.Tensor:
@@ -542,80 +350,12 @@ def _biased_oracle_init_conf(pl_ds, orig_targets, C: int, device) -> torch.Tenso
     return biased_oracle_init(pl_ds.targets, orig_targets, C).to(device)
 
 
-def _run_pico_fixed_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
-                             device, tag, report_every, algorithm: str, init_conf: torch.Tensor,
+def _run_pico_fixed_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every, algorithm: str, init_conf: torch.Tensor,
                              conf_ema_range=None, conf_source: str = 'prototype', conf_hard: bool = True):
-    """Shared body for PiCO-Fixed and its confidence-init ablations
-    (PiCO-Fixed-UniformInit, PiCO-Fixed-BiasedInit): identical warm-up config
-    (prot_start_fixed, L_cont omitted entirely during warm-up per
-    docs/pico_explanation.md) and training loop; only the initial confidence
-    matrix and the `algorithm` label (used for detail-log output paths)
-    differ between the three callers below.
-
-    conf_ema_range (optional [start, end]): overrides config.yaml's
-    pico.conf_ema_range for PartialLoss.set_conf_ema_m -- used by the
-    conf_ema sweep (CONF_EMA_SWEEP_RUNNERS); [0, 0] degenerates the EMA
-    confidence update into a hard overwrite (PRODEN-like).
-
-    conf_source / conf_hard: forwarded to train_pico_epoch_fixed -- Factor A
-    / Factor B of the 2026-09-15 confidence-update-mechanism ablation (see
-    scripts/run_ab_sweep.py, AB_SWEEP_RUNNERS below). Both default to
-    PiCO-Fixed's native behaviour (prototype-sourced, hard one-hot), so
-    every existing caller is unaffected."""
-    pico_cfg = raw_cfg['pico']
-    pico_args = _pico_args(C, epochs, pico_cfg)
-    pico_args['prot_start'] = pico_cfg.get('prot_start_fixed', 1)
-    if conf_ema_range is not None:
-        pico_args['conf_ema_range'] = list(conf_ema_range)
-    model = PiCOModel(pico_args).to(device)
-    cls_loss = PartialLoss(init_conf)
-    cont_loss = SupConLoss()
-    opt = make_optimizer(model, hparams)
-
-    detail_on = detail.is_enabled(raw_cfg)
-    if detail_on and (conf_source != 'prototype' or not conf_hard):
-        raise NotImplementedError(
-            '--detail (per-batch selection stats) is not wired up for the conf_source/conf_hard '
-            'ablation -- detail.train_pico_epoch_fixed_with_selection_stats always uses the native '
-            'prototype-sourced hard update. Run the AB sweep without --detail.')
-
-    bv_on = detail.biasvariance_enabled(raw_cfg)
-    if bv_on:
-        eval_size = detail.biasvariance_cfg(raw_cfg).get('eval_size', 256)
-        bv_images, bv_labels, bv_index = biasvariance.build_fixed_eval_batch(pl_ds, orig_targets, eval_size, device)
-
-    chunk_t0 = time.perf_counter()
-    for ep in range(epochs):
-        cls_loss.set_conf_ema_m(ep, pico_args)
-        if detail_on:
-            # See detail.train_pico_epoch_fixed_with_selection_stats: previously
-            # this branch didn't exist, so PiCO-Fixed never wrote
-            # pico_selection_stats.csv regardless of --detail.
-            detail.train_pico_epoch_fixed_with_selection_stats(
-                pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device,
-                raw_cfg, algorithm, C)
-        else:
-            train_pico_epoch_fixed(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device,
-                                    conf_source=conf_source, conf_hard=conf_hard)
-        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
-        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
-        detail.maybe_log_concentration(raw_cfg, model, pl_ds, device, C, ep + 1, algorithm)
-        if bv_on:
-            detail.maybe_log_biasvariance(raw_cfg, model, cls_loss, cont_loss, algorithm,
-                                           bv_images, bv_labels, bv_index, C, ep + 1, device)
-        if (ep + 1) % report_every == 0 or ep + 1 == epochs:
-            elapsed = time.perf_counter() - chunk_t0
-            _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
-            chunk_t0 = time.perf_counter()
-            gc.collect()
-            torch.cuda.empty_cache()
-
-    detail.maybe_run_knn_eval(raw_cfg, model, pl_ds, orig_targets, loaders['test'], device, C, epochs, algorithm)
-    acc = evaluate_model(model, loaders['test'], device)
-    del model, cls_loss, cont_loss, opt, init_conf
-    gc.collect()
-    torch.cuda.empty_cache()
-    return acc
+    """PiCO-Fixed core shared by every init / conf-EMA / A-B sweep variant (families.run_pico_family)."""
+    return run_pico_family(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every, variant='PiCO-Fixed',
+                           algorithm=algorithm, init_conf=init_conf, conf_ema_range=conf_ema_range,
+                           conf_source=conf_source, conf_hard=conf_hard)
 
 
 def run_pico_fixed(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
@@ -715,45 +455,10 @@ BIASED_SWEEP_RUNNERS = _build_biased_sweep_runners()
 # BIASED_SWEEP_RUNNERS above.
 
 
-def _run_pico_weighted_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
-                                device, tag, report_every, algorithm: str, alpha: float):
-    pico_cfg = raw_cfg['pico']
-    pico_args = _pico_args(C, epochs, pico_cfg)
-    pico_args['prot_start'] = pico_cfg.get('prot_start_fixed', 1)
-    init_conf = _candidate_masked_init_conf(pl_ds, C, device)
-    model = PiCOModel(pico_args).to(device)
-    cls_loss = PiCOWeightedClsLoss(init_conf, alpha)
-    cont_loss = SupConLoss()
-    opt = make_optimizer(model, hparams)
-
-    bv_on = detail.biasvariance_enabled(raw_cfg)
-    if bv_on:
-        eval_size = detail.biasvariance_cfg(raw_cfg).get('eval_size', 256)
-        bv_images, bv_labels, bv_index = biasvariance.build_fixed_eval_batch(pl_ds, orig_targets, eval_size, device)
-
-    chunk_t0 = time.perf_counter()
-    for ep in range(epochs):
-        cls_loss.set_conf_ema_m(ep, pico_args)
-        train_pico_weighted_epoch(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
-        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
-        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
-        detail.maybe_log_concentration(raw_cfg, model, pl_ds, device, C, ep + 1, algorithm)
-        if bv_on:
-            detail.maybe_log_biasvariance(raw_cfg, model, cls_loss, cont_loss, algorithm,
-                                           bv_images, bv_labels, bv_index, C, ep + 1, device)
-        if (ep + 1) % report_every == 0 or ep + 1 == epochs:
-            elapsed = time.perf_counter() - chunk_t0
-            _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
-            chunk_t0 = time.perf_counter()
-            gc.collect()
-            torch.cuda.empty_cache()
-
-    detail.maybe_run_knn_eval(raw_cfg, model, pl_ds, orig_targets, loaders['test'], device, C, epochs, algorithm)
-    acc = evaluate_model(model, loaders['test'], device)
-    del model, cls_loss, cont_loss, opt, init_conf
-    gc.collect()
-    torch.cuda.empty_cache()
-    return acc
+def _run_pico_weighted_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every, algorithm: str, alpha: float):
+    """alpha * PartialLoss + (1 - alpha) * PiCO-MCL on PiCO-Fixed (families.run_pico_family)."""
+    return run_pico_family(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every, variant='PiCO-Weighted',
+                           algorithm=algorithm, alpha=alpha)
 
 
 def _make_pico_weighted_runner(alpha: float):
@@ -792,59 +497,10 @@ PICO_WEIGHTED_SWEEP_RUNNERS = _build_pico_weighted_sweep_runners()
 # mechanism either way.
 
 
-def _run_comco_weighted_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
-                                 device, tag, report_every, algorithm: str, alpha: float):
-    comco_cfg = raw_cfg['comco']
-    pico_cfg = raw_cfg['pico']
-    comco_args = {
-        'num_class': C,
-        'epochs': epochs,
-        'low_dim': comco_cfg['low_dim'],
-        'moco_queue': comco_cfg['moco_queue'],
-        'moco_m': comco_cfg['moco_m'],
-        'loss_weight': comco_cfg['loss_weight'],
-        'temperature': comco_cfg['temperature'],
-        'top_k': comco_cfg['top_k'],
-        'warmup_neg': comco_cfg['warmup_neg'],
-        'warmup_pos': comco_cfg['warmup_pos'],
-        'proto_m': pico_cfg['proto_m'],
-        'prot_start': pico_cfg.get('prot_start_fixed', 1),
-        'conf_ema_range': pico_cfg['conf_ema_range'],
-    }
-    init_conf = _candidate_masked_init_conf(pl_ds, C, device)
-    model = ComCoWeightedModel(comco_args).to(device)
-    cls_loss = ComCoWeightedClsLoss(init_conf, alpha)
-    cont_loss = ComCoContrastiveLoss(temperature=comco_args['temperature'], top_k=comco_args['top_k'])
-    opt = make_optimizer(model, hparams)
-
-    bv_on = detail.biasvariance_enabled(raw_cfg)
-    if bv_on:
-        eval_size = detail.biasvariance_cfg(raw_cfg).get('eval_size', 256)
-        bv_images, bv_labels, bv_index = biasvariance.build_fixed_eval_batch(pl_ds, orig_targets, eval_size, device)
-
-    chunk_t0 = time.perf_counter()
-    for ep in range(epochs):
-        cls_loss.set_conf_ema_m(ep, comco_args)
-        train_comco_weighted_epoch(comco_args, model, loaders['comco'], cls_loss, cont_loss, opt, ep, device)
-        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
-        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
-        detail.maybe_log_concentration(raw_cfg, model, pl_ds, device, C, ep + 1, algorithm)
-        if bv_on:
-            detail.maybe_log_biasvariance(raw_cfg, model, cls_loss, cont_loss, algorithm,
-                                           bv_images, bv_labels, bv_index, C, ep + 1, device)
-        if (ep + 1) % report_every == 0 or ep + 1 == epochs:
-            elapsed = time.perf_counter() - chunk_t0
-            _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
-            chunk_t0 = time.perf_counter()
-            gc.collect()
-            torch.cuda.empty_cache()
-
-    detail.maybe_run_knn_eval(raw_cfg, model, pl_ds, orig_targets, loaders['test'], device, C, epochs, algorithm)
-    acc = evaluate_model(model, loaders['test'], device)
-    del model, cls_loss, cont_loss, opt, init_conf
-    gc.collect()
-    torch.cuda.empty_cache()
-    return acc
+def _run_comco_weighted_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every, algorithm: str, alpha: float):
+    """alpha * SCL-NL + (1 - alpha) * PartialLoss on ComCo (families.run_comco_family)."""
+    return run_comco_family(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every, variant='ComCo-Weighted',
+                            algorithm=algorithm, alpha=alpha)
 
 
 def _make_comco_weighted_runner(alpha: float):
@@ -881,63 +537,10 @@ COMCO_WEIGHTED_SWEEP_RUNNERS = _build_comco_weighted_sweep_runners()
 # average candidate-set size fluctuates around the dataset's target mean.
 
 
-def _run_comco_weighted_switch_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs,
-                                        device, tag, report_every, algorithm: str, alpha_fn):
-    comco_cfg = raw_cfg['comco']
-    pico_cfg = raw_cfg['pico']
-    comco_args = {
-        'num_class': C,
-        'epochs': epochs,
-        'low_dim': comco_cfg['low_dim'],
-        'moco_queue': comco_cfg['moco_queue'],
-        'moco_m': comco_cfg['moco_m'],
-        'loss_weight': comco_cfg['loss_weight'],
-        'temperature': comco_cfg['temperature'],
-        'top_k': comco_cfg['top_k'],
-        'warmup_neg': comco_cfg['warmup_neg'],
-        'warmup_pos': comco_cfg['warmup_pos'],
-        'proto_m': pico_cfg['proto_m'],
-        'prot_start': pico_cfg.get('prot_start_fixed', 1),
-        'conf_ema_range': pico_cfg['conf_ema_range'],
-    }
-    init_conf = _candidate_masked_init_conf(pl_ds, C, device)
-    model = ComCoWeightedModel(comco_args).to(device)
-    cls_loss = ComCoWeightedClsLoss(init_conf, alpha=0.0)  # placeholder; alpha_fn overrides every batch
-    cont_loss = ComCoContrastiveLoss(temperature=comco_args['temperature'], top_k=comco_args['top_k'])
-    opt = make_optimizer(model, hparams)
-
-    bv_on = detail.biasvariance_enabled(raw_cfg)
-    if bv_on:
-        eval_size = detail.biasvariance_cfg(raw_cfg).get('eval_size', 256)
-        bv_images, bv_labels, bv_index = biasvariance.build_fixed_eval_batch(pl_ds, orig_targets, eval_size, device)
-
-    alpha_per_epoch = []  # [epoch][batch] realized mean alpha -- did the switch actually switch?
-    chunk_t0 = time.perf_counter()
-    for ep in range(epochs):
-        cls_loss.set_conf_ema_m(ep, comco_args)
-        alpha_per_epoch.append([])
-        train_comco_weighted_switch_epoch(comco_args, model, loaders['comco'], cls_loss, cont_loss, opt, ep,
-                                           device, alpha_fn, alpha_trace=alpha_per_epoch[-1])
-        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
-        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
-        detail.maybe_log_concentration(raw_cfg, model, pl_ds, device, C, ep + 1, algorithm)
-        if bv_on:
-            detail.maybe_log_biasvariance(raw_cfg, model, cls_loss, cont_loss, algorithm,
-                                           bv_images, bv_labels, bv_index, C, ep + 1, device)
-        if (ep + 1) % report_every == 0 or ep + 1 == epochs:
-            elapsed = time.perf_counter() - chunk_t0
-            _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
-            chunk_t0 = time.perf_counter()
-            gc.collect()
-            torch.cuda.empty_cache()
-
-    detail.maybe_run_knn_eval(raw_cfg, model, pl_ds, orig_targets, loaders['test'], device, C, epochs, algorithm)
-    acc = evaluate_model(model, loaders['test'], device)
-    _save_alpha_trace(raw_cfg, algorithm, alpha_per_epoch, C)
-    del model, cls_loss, cont_loss, opt, init_conf
-    gc.collect()
-    torch.cuda.empty_cache()
-    return acc
+def _run_comco_weighted_switch_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every, algorithm: str, alpha_fn):
+    """ComCo-Weighted with per-batch alpha = alpha_fn(Y); writes alpha_trace JSON (families.run_comco_family)."""
+    return run_comco_family(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every, variant='ComCo-Weighted',
+                            algorithm=algorithm, alpha_fn=alpha_fn)
 
 
 _write_trace = write_trace  # src.core.io (trace file layout lives there)
@@ -973,21 +576,7 @@ def _run_comco_weighted_bandit(loaders, pl_ds, orig_targets, C, hparams, raw_cfg
         raise ValueError(f'{algorithm} needs a held-out split: run with --holdout_frac > 0')
     comco_cfg = raw_cfg['comco']
     pico_cfg = raw_cfg['pico']
-    comco_args = {
-        'num_class': C,
-        'epochs': epochs,
-        'low_dim': comco_cfg['low_dim'],
-        'moco_queue': comco_cfg['moco_queue'],
-        'moco_m': comco_cfg['moco_m'],
-        'loss_weight': comco_cfg['loss_weight'],
-        'temperature': comco_cfg['temperature'],
-        'top_k': comco_cfg['top_k'],
-        'warmup_neg': comco_cfg['warmup_neg'],
-        'warmup_pos': comco_cfg['warmup_pos'],
-        'proto_m': pico_cfg['proto_m'],
-        'prot_start': pico_cfg.get('prot_start_fixed', 1),
-        'conf_ema_range': pico_cfg['conf_ema_range'],
-    }
+    comco_args = _comco_args(C, epochs, raw_cfg, borrow_pico=True)
     init_conf = _candidate_masked_init_conf(pl_ds, C, device)
     model = ComCoWeightedModel(comco_args).to(device)
     cls_loss = ComCoWeightedClsLoss(init_conf, alpha=0.0)  # alpha overridden every batch by the chosen arm
@@ -1077,15 +666,7 @@ def _generic_bandit_setup(framework, loss_kind, pl_ds, C, hparams, raw_cfg, epoc
     init_conf = _candidate_masked_init_conf(pl_ds, C, device)
     if framework == 'ComCo':
         comco_cfg = raw_cfg['comco']
-        args = {
-            'num_class': C, 'epochs': epochs,
-            'low_dim': comco_cfg['low_dim'], 'moco_queue': comco_cfg['moco_queue'],
-            'moco_m': comco_cfg['moco_m'], 'loss_weight': comco_cfg['loss_weight'],
-            'temperature': comco_cfg['temperature'], 'top_k': comco_cfg['top_k'],
-            'warmup_neg': comco_cfg['warmup_neg'], 'warmup_pos': comco_cfg['warmup_pos'],
-            'proto_m': pico_cfg['proto_m'], 'prot_start': pico_cfg.get('prot_start_fixed', 1),
-            'conf_ema_range': pico_cfg['conf_ema_range'],
-        }
+        args = _comco_args(C, epochs, raw_cfg, borrow_pico=True)
         model = ComCoWeightedModel(args).to(device)
         cls_loss = UnifiedClsLossComCo(init_conf) if loss_kind == 'unified' else ComCoWeightedClsLoss(init_conf, 0.0)
         cont_loss = ComCoContrastiveLoss(temperature=args['temperature'], top_k=args['top_k'])
@@ -1104,15 +685,7 @@ def _generic_bandit_setup(framework, loss_kind, pl_ds, C, hparams, raw_cfg, epoc
         comco_cfg = raw_cfg['comco']
         pico_args = _pico_args(C, epochs, pico_cfg)
         pico_args['prot_start'] = pico_cfg.get('prot_start_fixed', 1)
-        comco_args = {
-            'num_class': C, 'epochs': epochs,
-            'low_dim': comco_cfg['low_dim'], 'moco_queue': comco_cfg['moco_queue'],
-            'moco_m': comco_cfg['moco_m'], 'loss_weight': comco_cfg['loss_weight'],
-            'temperature': comco_cfg['temperature'], 'top_k': comco_cfg['top_k'],
-            'warmup_neg': comco_cfg['warmup_neg'], 'warmup_pos': comco_cfg['warmup_pos'],
-            'proto_m': pico_cfg['proto_m'], 'prot_start': pico_cfg.get('prot_start_fixed', 1),
-            'conf_ema_range': pico_cfg['conf_ema_range'],
-        }
+        comco_args = _comco_args(C, epochs, raw_cfg, borrow_pico=True)
         model = HybridModel(pico_args, comco_args).to(device)
         cls_loss = UnifiedClsLoss(init_conf) if loss_kind == 'unified' else PiCOFixedComCoMixClsLoss(init_conf)
         comco_view = ComCoLossView(cls_loss)
@@ -1140,15 +713,7 @@ def _generic_bandit_setup(framework, loss_kind, pl_ds, C, hparams, raw_cfg, epoc
         # 1 = arm1. Each epoch is exactly train_comco_swap_epoch, so a fixed arm == SwapComCo-<arm>.
         from src.clsloss_swap import SwapMixClsLoss, build_cls_loss, train_comco_swap_epoch
         comco_cfg = raw_cfg['comco']
-        args = {
-            'num_class': C, 'epochs': epochs,
-            'low_dim': comco_cfg['low_dim'], 'moco_queue': comco_cfg['moco_queue'],
-            'moco_m': comco_cfg['moco_m'], 'loss_weight': comco_cfg['loss_weight'],
-            'temperature': comco_cfg['temperature'], 'top_k': comco_cfg['top_k'],
-            'warmup_neg': comco_cfg['warmup_neg'], 'warmup_pos': comco_cfg['warmup_pos'],
-            'proto_m': pico_cfg['proto_m'], 'prot_start': pico_cfg.get('prot_start_fixed', 1),
-            'conf_ema_range': pico_cfg['conf_ema_range'],
-        }
+        args = _comco_args(C, epochs, raw_cfg, borrow_pico=True)
         model = ComCoWeightedModel(args).to(device)
         arm0, arm1 = (build_cls_loss(n, init_conf, C, raw_cfg['solar'], None) for n in loss_kind.split('+'))
         cls_loss = SwapMixClsLoss(arm0, arm1)
@@ -1647,101 +1212,18 @@ AB_SWEEP_RUNNERS = _build_ab_sweep_runners()
 
 
 def run_pico_mcl(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
-    pico_cfg = raw_cfg['pico']
-    pico_args = _pico_args(C, epochs, pico_cfg)
-    model = PiCOModel(pico_args).to(device)
-    cls_loss = PiCOMCLLoss()
-    cont_loss = SupConLoss()
-    opt = make_optimizer(model, hparams)
-
-    chunk_t0 = time.perf_counter()
-    for ep in range(epochs):
-        train_pico_mclloss_epoch(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
-        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-MCL')
-        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-MCL')
-        if (ep + 1) % report_every == 0 or ep + 1 == epochs:
-            elapsed = time.perf_counter() - chunk_t0
-            _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
-            chunk_t0 = time.perf_counter()
-            gc.collect()
-            torch.cuda.empty_cache()
-
-    acc = evaluate_model(model, loaders['test'], device)
-    del model, cls_loss, cont_loss, opt
-    gc.collect()
-    torch.cuda.empty_cache()
-    return acc
+    return run_pico_family(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every,
+                    variant='PiCO-MCL', algorithm='PiCO-MCL')
 
 
 def run_pico_mcl_fixed(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
-    """PiCO-MCL with PiCO-Fixed's paper-faithful warm-up fix (L_cont omitted
-    entirely during warm-up, governed by prot_start_fixed) instead of
-    PiCO-MCL's original warm-up (which keeps L_cont active throughout, same
-    as plain PiCO -- see train_pico_mclloss_epoch). PiCOMCLLoss itself is
-    stateless, so there is no confidence-buffer/init-conf to fix (unlike
-    run_pico_fixed vs. run_pico); only the warm-up scheduling changes."""
-    pico_cfg = raw_cfg['pico']
-    pico_args = _pico_args(C, epochs, pico_cfg)
-    pico_args['prot_start'] = pico_cfg.get('prot_start_fixed', 1)
-    model = PiCOModel(pico_args).to(device)
-    cls_loss = PiCOMCLLoss()
-    cont_loss = SupConLoss()
-    opt = make_optimizer(model, hparams)
-
-    bv_on = detail.biasvariance_enabled(raw_cfg)
-    if bv_on:
-        eval_size = detail.biasvariance_cfg(raw_cfg).get('eval_size', 256)
-        bv_images, bv_labels, bv_index = biasvariance.build_fixed_eval_batch(pl_ds, orig_targets, eval_size, device)
-
-    chunk_t0 = time.perf_counter()
-    for ep in range(epochs):
-        train_pico_mcl_epoch_fixed(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
-        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-MCL-Fixed')
-        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-MCL-Fixed')
-        if bv_on:
-            detail.maybe_log_biasvariance(raw_cfg, model, cls_loss, cont_loss, 'PiCO-MCL-Fixed',
-                                           bv_images, bv_labels, bv_index, C, ep + 1, device)
-        if (ep + 1) % report_every == 0 or ep + 1 == epochs:
-            elapsed = time.perf_counter() - chunk_t0
-            _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
-            chunk_t0 = time.perf_counter()
-            gc.collect()
-            torch.cuda.empty_cache()
-
-    acc = evaluate_model(model, loaders['test'], device)
-    del model, cls_loss, cont_loss, opt
-    gc.collect()
-    torch.cuda.empty_cache()
-    return acc
+    return run_pico_family(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every,
+                    variant='PiCO-MCL-Fixed', algorithm='PiCO-MCL-Fixed')
 
 
 def run_pico_sc(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
-    pico_cfg = raw_cfg['pico']
-    pico_args = _pico_args(C, epochs, pico_cfg)
-    model = PiCOModel(pico_args).to(device)
-    cls_loss = PiCOCLSLoss(pl_ds.targets, C, conf_ema_range=tuple(pico_cfg['conf_ema_range']),
-                            epochs=epochs).to(device)
-    cont_loss = SupConLoss()
-    opt = make_optimizer(model, hparams)
-
-    chunk_t0 = time.perf_counter()
-    for ep in range(epochs):
-        cls_loss.set_conf_ema_m(ep)
-        train_pico_sc_epoch(pico_args, model, loaders['pico'], cls_loss, cont_loss, opt, ep, device)
-        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-SC')
-        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'PiCO-SC')
-        if (ep + 1) % report_every == 0 or ep + 1 == epochs:
-            elapsed = time.perf_counter() - chunk_t0
-            _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
-            chunk_t0 = time.perf_counter()
-            gc.collect()
-            torch.cuda.empty_cache()
-
-    acc = evaluate_model(model, loaders['test'], device)
-    del model, cls_loss, cont_loss, opt
-    gc.collect()
-    torch.cuda.empty_cache()
-    return acc
+    return run_pico_family(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every,
+                    variant='PiCO-SC', algorithm='PiCO-SC')
 
 
 def run_pico_cls(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
@@ -1794,112 +1276,13 @@ def run_pico_cls(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, 
 
 
 def run_comco(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
-    comco_cfg = raw_cfg['comco']
-    comco_args = {
-        'num_class': C,
-        'epochs': epochs,
-        'low_dim': comco_cfg['low_dim'],
-        'moco_queue': comco_cfg['moco_queue'],
-        'moco_m': comco_cfg['moco_m'],
-        'loss_weight': comco_cfg['loss_weight'],
-        'temperature': comco_cfg['temperature'],
-        'top_k': comco_cfg['top_k'],
-        'warmup_neg': comco_cfg['warmup_neg'],
-        'warmup_pos': comco_cfg['warmup_pos'],
-    }
-    model = ComCoModel(comco_args).to(device)
-    cls_loss = ComCoCLSLoss()
-    cont_loss = ComCoContrastiveLoss(temperature=comco_args['temperature'], top_k=comco_args['top_k'])
-    opt = make_optimizer(model, hparams)
-
-    detail_on = detail.is_enabled(raw_cfg)
-
-    chunk_t0 = time.perf_counter()
-    for ep in range(epochs):
-        if detail_on:
-            # Instrumented copy of train_comco_epoch that also measures, per
-            # BATCH, contrastive positive-pair selection precision against
-            # ground truth (ComCo counterpart to PiCO's selection-stats
-            # logging) -- see src/pipeline/detail.py.
-            detail.train_comco_epoch_with_selection_stats(
-                comco_args, model, loaders['comco'], cls_loss, cont_loss, opt, ep, device, raw_cfg, 'ComCo', C)
-        else:
-            train_comco_epoch(comco_args, model, loaders['comco'], cls_loss, cont_loss, opt, ep, device)
-        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'ComCo')
-        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'ComCo')
-        detail.maybe_log_concentration(raw_cfg, model, pl_ds, device, C, ep + 1, 'ComCo')
-        if (ep + 1) % report_every == 0 or ep + 1 == epochs:
-            elapsed = time.perf_counter() - chunk_t0
-            _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
-            chunk_t0 = time.perf_counter()
-            gc.collect()
-            torch.cuda.empty_cache()
-
-    detail.maybe_run_knn_eval(raw_cfg, model, pl_ds, orig_targets, loaders['test'], device, C, epochs, 'ComCo')
-    acc = evaluate_model(model, loaders['test'], device)
-    del model, cls_loss, cont_loss, opt
-    gc.collect()
-    torch.cuda.empty_cache()
-    return acc
+    return run_comco_family(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every,
+                    variant='ComCo', algorithm='ComCo')
 
 
 def run_comco_fixed(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
-    # See docs/comco_explanation.md: classification loss corrected to plain
-    # (unscaled) SCL-NL per the paper's Section 5.1, instead of the original's
-    # MCL-NL-style (C-1)/(C-m)-scaled formula borrowed from a different paper.
-    # Contrastive loss / model architecture are unchanged (already verified faithful).
-    comco_cfg = raw_cfg['comco']
-    comco_args = {
-        'num_class': C,
-        'epochs': epochs,
-        'low_dim': comco_cfg['low_dim'],
-        'moco_queue': comco_cfg['moco_queue'],
-        'moco_m': comco_cfg['moco_m'],
-        'loss_weight': comco_cfg['loss_weight'],
-        'temperature': comco_cfg['temperature'],
-        'top_k': comco_cfg['top_k'],
-        'warmup_neg': comco_cfg['warmup_neg'],
-        'warmup_pos': comco_cfg['warmup_pos'],
-    }
-    model = ComCoModel(comco_args).to(device)
-    cls_loss = FixedComCoCLSLoss()
-    cont_loss = ComCoContrastiveLoss(temperature=comco_args['temperature'], top_k=comco_args['top_k'])
-    opt = make_optimizer(model, hparams)
-
-    detail_on = detail.is_enabled(raw_cfg)
-
-    bv_on = detail.biasvariance_enabled(raw_cfg)
-    if bv_on:
-        eval_size = detail.biasvariance_cfg(raw_cfg).get('eval_size', 256)
-        bv_images, bv_labels, bv_index = biasvariance.build_fixed_eval_batch(pl_ds, orig_targets, eval_size, device)
-
-    chunk_t0 = time.perf_counter()
-    for ep in range(epochs):
-        if detail_on:
-            detail.train_comco_epoch_with_selection_stats(
-                comco_args, model, loaders['comco'], cls_loss, cont_loss, opt, ep, device, raw_cfg,
-                'ComCo-Fixed', C)
-        else:
-            train_comco_epoch(comco_args, model, loaders['comco'], cls_loss, cont_loss, opt, ep, device)
-        detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, 'ComCo-Fixed')
-        detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, 'ComCo-Fixed')
-        detail.maybe_log_concentration(raw_cfg, model, pl_ds, device, C, ep + 1, 'ComCo-Fixed')
-        if bv_on:
-            detail.maybe_log_biasvariance(raw_cfg, model, cls_loss, cont_loss, 'ComCo-Fixed',
-                                           bv_images, bv_labels, bv_index, C, ep + 1, device)
-        if (ep + 1) % report_every == 0 or ep + 1 == epochs:
-            elapsed = time.perf_counter() - chunk_t0
-            _print_eta(tag, ep + 1, epochs, elapsed, min(report_every, ep + 1))
-            chunk_t0 = time.perf_counter()
-            gc.collect()
-            torch.cuda.empty_cache()
-
-    detail.maybe_run_knn_eval(raw_cfg, model, pl_ds, orig_targets, loaders['test'], device, C, epochs, 'ComCo-Fixed')
-    acc = evaluate_model(model, loaders['test'], device)
-    del model, cls_loss, cont_loss, opt
-    gc.collect()
-    torch.cuda.empty_cache()
-    return acc
+    return run_comco_family(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every,
+                    variant='ComCo-Fixed', algorithm='ComCo-Fixed')
 
 
 # ─── SoLar: two-stage (pre-estimation + Sinkhorn-Knopp final training) ────
@@ -1953,15 +1336,7 @@ def _run_swap_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_s
         loader, epoch_fn = loaders['pico'], train_pico_swap_epoch
     else:
         comco_cfg = raw_cfg['comco']
-        fw_args = {
-            'num_class': C, 'epochs': epochs,
-            'low_dim': comco_cfg['low_dim'], 'moco_queue': comco_cfg['moco_queue'],
-            'moco_m': comco_cfg['moco_m'], 'loss_weight': comco_cfg['loss_weight'],
-            'temperature': comco_cfg['temperature'], 'top_k': comco_cfg['top_k'],
-            'warmup_neg': comco_cfg['warmup_neg'], 'warmup_pos': comco_cfg['warmup_pos'],
-            'proto_m': pico_cfg['proto_m'], 'prot_start': pico_cfg.get('prot_start_fixed', 1),
-            'conf_ema_range': pico_cfg['conf_ema_range'],
-        }
+        fw_args = _comco_args(C, epochs, raw_cfg, borrow_pico=True)
         model = ComCoWeightedModel(fw_args).to(device)
         cont_loss = ComCoContrastiveLoss(temperature=fw_args['temperature'], top_k=fw_args['top_k'])
         loader, epoch_fn = loaders['comco'], train_comco_swap_epoch
@@ -2040,15 +1415,7 @@ def _run_swap_prune(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_siz
         loader, epoch_impl = loaders['pico'], train_pico_swap_epoch
     else:
         comco_cfg = raw_cfg['comco']
-        fw_args = {
-            'num_class': C, 'epochs': epochs,
-            'low_dim': comco_cfg['low_dim'], 'moco_queue': comco_cfg['moco_queue'],
-            'moco_m': comco_cfg['moco_m'], 'loss_weight': comco_cfg['loss_weight'],
-            'temperature': comco_cfg['temperature'], 'top_k': comco_cfg['top_k'],
-            'warmup_neg': comco_cfg['warmup_neg'], 'warmup_pos': comco_cfg['warmup_pos'],
-            'proto_m': pico_cfg['proto_m'], 'prot_start': pico_cfg.get('prot_start_fixed', 1),
-            'conf_ema_range': pico_cfg['conf_ema_range'],
-        }
+        fw_args = _comco_args(C, epochs, raw_cfg, borrow_pico=True)
         model = ComCoWeightedModel(fw_args).to(device)
         cont_loss = ComCoContrastiveLoss(temperature=fw_args['temperature'], top_k=fw_args['top_k'])
         loader, epoch_impl = loaders['comco'], train_comco_swap_epoch

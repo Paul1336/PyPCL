@@ -6,9 +6,10 @@ uniformly:
     runner(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size,
            epochs, device, tag, report_every) -> final_accuracy: float
 
-To add a new algorithm: implement (or reuse) a runner function in
-runners.py, add its default hyperparameters to hparams.ALGO_HPARAMS, then
-add one line below. Nothing else in the pipeline needs to change.
+To add a new algorithm: implement (or reuse) a runner (families.py for PiCO / ComCo variants,
+runners.py otherwise) and register its name below. Default hyperparameters follow the rule in
+hparams.hparams_for; needs_views (does it need RGB weak/strong augmentation pairs, i.e.
+loaders['pico'] / loaders['comco']?) is derived in _needs_views.
 """
 
 from dataclasses import dataclass
@@ -20,6 +21,16 @@ class AlgorithmSpec:
     name: str
     paradigm: str  # 'PLL' or 'CLL'
     runner: Callable
+    needs_views: bool = True  # filled in by _build_registry
+
+_SINGLE_ENCODER = {'CLPL', 'Wu2022', 'MCL-LOG', 'MCL-LOG-Fixed', 'SCL-NL', 'OP', 'OP-W', 'CPE', 'PiCO-CLS'}
+
+
+def _needs_views(name: str) -> bool:
+    """Everything except the single-encoder losses and PRODEN* trains on weak/strong RGB views
+    (PiCO / ComCo / Hybrid / Solo / Swap / PCD / PiCO+ / SoLar). Replaces the hand-maintained,
+    incomplete runner.IMAGE_ONLY_ALGORITHMS list (2026-11-22, refactor plan B3)."""
+    return not (name in _SINGLE_ENCODER or name.startswith('PRODEN'))
 
 
 def _build_registry() -> dict:
@@ -129,6 +140,8 @@ def _build_registry() -> dict:
     for name, fn in r.AB_SWEEP_RUNNERS.items():
         registry[name] = AlgorithmSpec(name, 'PLL', fn)
 
+    for name, spec in registry.items():
+        spec.needs_views = _needs_views(name)
     return registry
 
 
