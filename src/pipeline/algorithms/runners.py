@@ -51,6 +51,7 @@ from src.proden_loss import ProdenLoss
 from src.scl_loss import SCL_NL
 from src.wu_loss import WuPLLLoss
 
+from src.core.io import write_trace
 from src.pipeline import biasvariance, detail
 
 from .hparams import make_optimizer
@@ -939,14 +940,7 @@ def _run_comco_weighted_switch_variant(loaders, pl_ds, orig_targets, C, hparams,
     return acc
 
 
-def _write_trace(raw_cfg, subdir, algorithm, C, obj):
-    """results/<run>/<subdir>/<algorithm>_C{C}_k{k}_seed{seed}.json (C added 2026-11-22: runs that
-    sweep several C into one results dir used to overwrite each other's traces)."""
-    out_dir = os.path.join(raw_cfg.get('_results_dir', 'results'), subdir)
-    os.makedirs(out_dir, exist_ok=True)
-    fname = f"{algorithm}_C{C}_k{raw_cfg.get('_current_k')}_seed{raw_cfg.get('_current_seed')}.json"
-    with open(os.path.join(out_dir, fname), 'w') as f:
-        json.dump(obj, f)
+_write_trace = write_trace  # src.core.io (trace file layout lives there)
 
 
 def _save_alpha_trace(raw_cfg, algorithm, alpha_per_epoch, C):

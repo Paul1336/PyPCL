@@ -248,9 +248,11 @@ def cmd_record(only):
     return 1 if bad else 0
 
 
-def cmd_check(only):
+def cmd_check(only, allow=None, update=False):
+    """allow: regex of mismatch paths that are EXPECTED (e.g. a new column); update: when every
+    remaining mismatch of a cell matches `allow`, overwrite its golden with the new fingerprint."""
     done = run_cells(select(CELLS, only))
-    fails = {}
+    fails, allowed = {}, {}
     for cid, (ok, workdir, fp, _) in done.items():
         gpath = os.path.join(STORE, safe(cid) + '.json')
         if not ok:
@@ -259,13 +261,23 @@ def cmd_check(only):
         if not os.path.isfile(gpath):
             fails[cid] = ['no golden recorded']
             continue
-        errs = compare(json.load(open(gpath)), fingerprint(workdir, fp))
+        newfp = fingerprint(workdir, fp)
+        errs = compare(json.load(open(gpath)), newfp)
+        if allow:
+            ok_errs = [e for e in errs if re.search(allow, e)]
+            errs = [e for e in errs if not re.search(allow, e)]
+            if ok_errs:
+                allowed[cid] = len(ok_errs)
+            if update and ok_errs and not errs:
+                json.dump(newfp, open(gpath, 'w'))
         if errs:
             fails[cid] = errs
     for cid, errs in fails.items():
         print(f'FAIL {cid}: {len(errs)} mismatches')
         for e in errs[:8]:
             print('     ', e)
+    if allowed:
+        print(f'{len(allowed)} cells had only allowed diffs (/{allow}/)' + (' -> golden updated' if update else ''))
     print(f'\n{len(done) - len(fails)}/{len(done)} cells match' + ('' if not fails else f'; FAILED: {list(fails)}'))
     return 1 if fails else 0
 
@@ -306,6 +318,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('cmd', choices=['record', 'check', 'list', 'data-record', 'data-check'])
     ap.add_argument('--only', default=None)
+    ap.add_argument('--allow', default=None, help='regex of expected mismatch paths')
+    ap.add_argument('--update', action='store_true', help='with --allow: update goldens whose diffs are all allowed')
     a = ap.parse_args()
     if a.cmd == 'list':
         for c in select(CELLS, a.only):
@@ -314,7 +328,7 @@ def main():
     if a.cmd == 'record':
         return cmd_record(a.only)
     if a.cmd == 'check':
-        return cmd_check(a.only)
+        return cmd_check(a.only, a.allow, a.update)
     fps = data_fingerprints()
     path = os.path.join(STORE, '_data.json')
     if a.cmd == 'data-record':

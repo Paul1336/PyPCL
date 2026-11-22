@@ -10,6 +10,7 @@ import time
 import numpy as np
 import torch
 
+from src.core.context import CellContext, config_hash, training_config
 from src.pipeline import data, results
 from src.pipeline.algorithms import ALGORITHMS
 from src.pipeline.algorithms.hparams import ALGO_HPARAMS
@@ -94,7 +95,18 @@ def run(cfg: PipelineConfig):
         my_algorithms = [a for a in my_algorithms if a not in IMAGE_ONLY_ALGORITHMS]
 
     shard = results.shard_path(cfg.results_dir, cfg.gpu_id)
-    done = results.load_done(shard)
+    done_hash = results.load_done_hashes(shard)
+    done = set(done_hash)
+    train_cfg = training_config(cfg)
+    chash = config_hash(train_cfg)
+    results.write_cell_config(cfg.results_dir, chash, train_cfg)
+    clash = sorted({k for k, h in done_hash.items() if h and h != chash})
+    if clash:
+        # Same (dataset, C, k, algorithm, seed) already recorded under DIFFERENT training settings
+        # (e.g. another --cl_bias / --noise_eta / yaml in the same run_name): refuse instead of
+        # silently skipping and mixing settings. Rows from before 2026-11-22 have no hash.
+        raise RuntimeError(f'{len(clash)} cell(s) in {shard} were recorded with config_hash != {chash} '
+                           f'(see {cfg.results_dir}/run_configs/); use a new --run_name. e.g. {clash[:3]}')
 
     print(f'GPU {cfg.gpu_id}/{cfg.num_gpus}  device={device}  dataset={cfg.dataset}  '
           f'epochs={cfg.epochs}  batch_size={cfg.batch_size}', flush=True)
@@ -237,13 +249,14 @@ def run(cfg: PipelineConfig):
                 # exactly recoverable from q since generate_variable_pl_cl_datasets
                 # includes each of the C-1 wrong classes independently w.p. q
                 # (mean size = 1 + q*(C-1); round() only guards float noise).
-                cfg.raw['_current_k'] = k if cfg.only_q is None else round(1 + cfg.only_q * (C - 1))
+                k_mean = k if cfg.only_q is None else round(1 + cfg.only_q * (C - 1))
                 if cfg.only_bimodal is not None:
                     k_lo, k_hi, p_lo = cfg.only_bimodal
-                    cfg.raw['_current_k'] = round(p_lo * k_lo + (1 - p_lo) * k_hi)
-                cfg.raw['_results_dir'] = cfg.results_dir
-                cfg.raw['_switch_diag'] = cfg.switch_diag
-                cfg.raw['_current_seed'] = seed
+                    k_mean = round(p_lo * k_lo + (1 - p_lo) * k_hi)
+                ctx = CellContext(results_dir=cfg.results_dir, dataset=cfg.dataset, C=C, k=k, k_mean=k_mean,
+                                  seed=seed, dataset_spec=spec, switch_diag=cfg.switch_diag,
+                                  detail=cfg.raw['_detail'], config_hash=chash)
+                ctx.publish(cfg.raw)  # also mirrors the legacy raw_cfg['_current_k', ...] keys
 
                 for alg in pending:
                     algo_spec = ALGORITHMS[alg]
@@ -257,7 +270,8 @@ def run(cfg: PipelineConfig):
                                             cfg.batch_size, cfg.epochs, device, tag, cfg.report_every)
                     elapsed = time.perf_counter() - t0
 
-                    results.append_result(shard, cfg.dataset, C, k, alg, seed, acc, cfg.epochs, elapsed)
+                    results.append_result(shard, cfg.dataset, C, k, alg, seed, acc, cfg.epochs, elapsed,
+                                          config_hash=chash)
                     done.add((cfg.dataset, C, k, alg, seed))
                     print(f'  DONE  {alg}  seed={seed}  acc={acc:.2f}%  ({elapsed:.1f}s)', flush=True)
 

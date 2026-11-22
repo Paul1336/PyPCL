@@ -27,7 +27,11 @@ import subprocess
 from datetime import datetime
 
 FIELDS = ['dataset', 'total_classes', 'k', 'algorithm', 'seed', 'final_accuracy',
-          'epochs', 'training_time_s', 'timestamp', 'git_commit']
+          'epochs', 'training_time_s', 'timestamp', 'git_commit', 'config_hash']
+
+# 2026-11-22: 'config_hash' appended (src.core.context.config_hash of the cell's training
+# settings; the full settings are in run_configs/<hash>.json). Rows written before have ''.
+_PREV_FIELDS = FIELDS[:-1]
 
 # The schema before 'dataset' was prepended (2026-08-14). Used only by
 # _repair_shard_if_needed to recognize and migrate pre-existing shard files.
@@ -86,9 +90,12 @@ def _repair_shard_if_needed(shard: str):
     for values in data_rows:
         if len(values) == len(FIELDS):
             fixed_rows.append(dict(zip(FIELDS, values)))
+        elif len(values) == len(_PREV_FIELDS):
+            fixed_rows.append(dict(zip(_PREV_FIELDS, values), config_hash=''))
         elif len(values) == len(_OLD_FIELDS):
             row = dict(zip(_OLD_FIELDS, values))
             row['dataset'] = _DEFAULT_DATASET
+            row['config_hash'] = ''
             fixed_rows.append(row)
         else:
             print(f"  [warn] skipping malformed row in {shard} "
@@ -101,8 +108,22 @@ def _repair_shard_if_needed(shard: str):
         for row in fixed_rows:
             w.writerow(row)
     print(f"  [migrate] repaired {shard}: {len(fixed_rows)} row(s) now consistent "
-          f"with the current schema (backfilled dataset='{_DEFAULT_DATASET}' where missing).",
-          flush=True)
+          f"with the current schema (backfilled dataset='{_DEFAULT_DATASET}' / config_hash='' "
+          f"where missing).", flush=True)
+
+
+def load_done_hashes(shard: str) -> dict:
+    """(dataset, C, k, algorithm, seed) -> config_hash ('' for rows written before 2026-11-22)."""
+    _repair_shard_if_needed(shard)
+    out = {}
+    if not os.path.isfile(shard):
+        return out
+    with open(shard, newline='') as f:
+        for row in csv.DictReader(f):
+            dataset = row.get('dataset') or _DEFAULT_DATASET
+            key = (dataset, int(row['total_classes']), int(row['k']), row['algorithm'], int(row['seed']))
+            out[key] = row.get('config_hash') or ''
+    return out
 
 
 def load_done(shard: str) -> set:
@@ -123,7 +144,7 @@ def load_done(shard: str) -> set:
 
 
 def append_result(shard: str, dataset: str, C: int, k: int, algorithm: str, seed: int,
-                   final_accuracy: float, epochs: int, training_time_s: float):
+                   final_accuracy: float, epochs: int, training_time_s: float, config_hash: str = ''):
     os.makedirs(os.path.dirname(shard), exist_ok=True)
     _repair_shard_if_needed(shard)
     new_file = not os.path.isfile(shard)
@@ -142,6 +163,7 @@ def append_result(shard: str, dataset: str, C: int, k: int, algorithm: str, seed
             'training_time_s': round(training_time_s, 1),
             'timestamp': datetime.now().isoformat(),
             'git_commit': _git_commit(),
+            'config_hash': config_hash,
         })
 
 
@@ -170,12 +192,28 @@ def merge_shards(results_dir: str) -> str:
 
     out_path = merged_path(results_dir)
     os.makedirs(results_dir, exist_ok=True)
-    with open(out_path, 'w', newline='') as f:
+    tmp = f'{out_path}.tmp{os.getpid()}'  # atomic: concurrent workers / readers never see a torn file
+    with open(tmp, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=FIELDS)
         w.writeheader()
         for row in rows.values():
-            w.writerow(row)
+            w.writerow({k: row.get(k, '') for k in FIELDS})
+    os.replace(tmp, out_path)
     return out_path
+
+
+def write_cell_config(results_dir: str, chash: str, config: dict):
+    """results/<run>/run_configs/<hash>.json -- content-addressed, so concurrent workers writing
+    the same settings never conflict (unlike run_config.json, which every worker overwrites)."""
+    d = os.path.join(results_dir, 'run_configs')
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, f'{chash}.json')
+    if not os.path.isfile(path):
+        tmp = f'{path}.tmp{os.getpid()}'
+        with open(tmp, 'w') as f:
+            json.dump(config, f, indent=2, sort_keys=True, default=str)
+        os.replace(tmp, path)
+    return path
 
 
 def load_results(run_dirs: list) -> dict:
