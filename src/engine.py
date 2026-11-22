@@ -1,6 +1,8 @@
 import torch
 from tqdm import tqdm
 from src.models.common import predict_logits
+from src.train.pico import SPECS as _PS, pico_epoch as _pico_epoch
+from src.train.comco import SPECS as _CS, comco_epoch as _comco_epoch
 import torch.nn.functional as F
 import numpy as np
 import math
@@ -49,198 +51,28 @@ def train_algorithm(model, loader, test_loader, loss_fn, optimizer, epochs, devi
     return accuracies
 
 def train_pico_epoch(pico_args, model, loader, loss_fn, loss_cont_fn, optimizer, epoch, device):
-    """Runs a single training epoch for the PiCO model.
-
-    KNOWN DISCREPANCY (2026-08-14, see docs/pico_explanation.md): the paper
-    (Wang et al., ICLR 2022, Appendix B.1) describes warm-up as omitting
-    L_cont from the total loss entirely for the first `prot_start` epochs.
-    This function instead keeps L_cont active during warm-up but switches
-    SupConLoss to its unsupervised MoCo mode (mask=None). The default
-    `prot_start=80` in config.yaml also doesn't match either paper-reported
-    value (1 epoch default, 100 for CIFAR-100 @ q=0.1). See
-    src/fixed_pico_engine.py::train_pico_epoch_fixed (algorithm ID
-    PiCO-Fixed) for the paper-faithful version.
-    """
-    model.train()
-    total_loss = 0
-    start_upd_prot = epoch >= pico_args['prot_start']
-    
-    progress_bar = tqdm(loader, desc=f"PiCO Epoch {epoch + 1}/{pico_args['epochs']}")
-    for (images_w, images_s, partial_Y, true_labels, index) in progress_bar:
-        images_w, images_s, partial_Y, index = images_w.to(device), images_s.to(device), partial_Y.to(device), index.to(device)
-        
-        cls_out, features, pseudo_target_cont, score_prot = model(images_w, images_s, partial_Y, pico_args)
-        batch_size = cls_out.shape[0]
-
-        if start_upd_prot:
-            loss_fn.confidence_update(temp_un_conf=score_prot.detach(), batch_index=index, batchY=partial_Y)
-        
-        mask = torch.eq(pseudo_target_cont[:batch_size].unsqueeze(1), pseudo_target_cont.unsqueeze(0)).float() if start_upd_prot else None
-
-        loss_cls = loss_fn(cls_out, index)
-        loss_cont = loss_cont_fn(features=features, mask=mask, batch_size=batch_size)
-        loss = loss_cls + pico_args['loss_weight'] * loss_cont
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        total_loss += loss.item()
-        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
-    return total_loss / len(loader)
+    """Plain PiCO (MoCo L_cont during warm-up, original prot_start) -> src/train/pico.py (2026-11-22 refactor)."""
+    return _pico_epoch(pico_args, model, loader, loss_fn, loss_cont_fn, optimizer, epoch, device, _PS['PiCO'])
 
 
 def train_pico_moco_epoch(pico_args, model, loader, loss_fn, loss_cont_fn, optimizer, epoch, device):
-    """PiCO-MOCO: identical to train_pico_epoch except the contrastive mask is
-    NEVER built from candidate-set/prototype-pseudo-label agreement, even
-    after warm-up ends. `mask` stays None for the whole run, so SupConLoss
-    always falls back to its unsupervised MoCo InfoNCE branch: the only
-    positive pair for a sample is its own weak/strong augmentation pair
-    (q · k), never other same-(pseudo)class samples from the batch/queue.
-    Confidence/pseudo-target updates (Eq. 6) still gate on `start_upd_prot`
-    exactly like train_pico_epoch -- that governs the classification target,
-    not contrastive positive-pair selection, so it is left unchanged.
-    """
-    model.train()
-    total_loss = 0
-    start_upd_prot = epoch >= pico_args['prot_start']
-
-    progress_bar = tqdm(loader, desc=f"PiCO-MOCO Epoch {epoch + 1}/{pico_args['epochs']}")
-    for (images_w, images_s, partial_Y, true_labels, index) in progress_bar:
-        images_w, images_s, partial_Y, index = images_w.to(device), images_s.to(device), partial_Y.to(device), index.to(device)
-
-        cls_out, features, pseudo_target_cont, score_prot = model(images_w, images_s, partial_Y, pico_args)
-        batch_size = cls_out.shape[0]
-
-        if start_upd_prot:
-            loss_fn.confidence_update(temp_un_conf=score_prot.detach(), batch_index=index, batchY=partial_Y)
-
-        loss_cls = loss_fn(cls_out, index)
-        loss_cont = loss_cont_fn(features=features, mask=None, batch_size=batch_size)
-        loss = loss_cls + pico_args['loss_weight'] * loss_cont
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        total_loss += loss.item()
-        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
-    return total_loss / len(loader)
+    """PiCO-MOCO: MoCo L_cont always, never supervised positives -> src/train/pico.py (2026-11-22 refactor)."""
+    return _pico_epoch(pico_args, model, loader, loss_fn, loss_cont_fn, optimizer, epoch, device, _PS['PiCO-MOCO'])
 
 
 def train_pico_mclloss_epoch(pico_args, model, loader, loss_fn, loss_cont_fn, optimizer, epoch, device):
-    """Single training epoch for PiCO-MCL: uses MCL-LOG style cls loss instead of PartialLoss."""
-    model.train()
-    total_loss = 0
-    start_upd_prot = epoch >= pico_args['prot_start']
-
-    progress_bar = tqdm(loader, desc=f"PiCO-MCL Epoch {epoch + 1}/{pico_args['epochs']}")
-    for (images_w, images_s, partial_Y, true_labels, index) in progress_bar:
-        images_w  = images_w.to(device)
-        images_s  = images_s.to(device)
-        partial_Y = partial_Y.to(device)
-
-        cls_out, features, pseudo_target_cont, score_prot = model(images_w, images_s, partial_Y, pico_args)
-        batch_size = cls_out.shape[0]
-
-        mask = (
-            torch.eq(pseudo_target_cont[:batch_size].unsqueeze(1),
-                     pseudo_target_cont.unsqueeze(0)).float()
-            if start_upd_prot else None
-        )
-
-        loss_cls  = loss_fn(cls_out, partial_Y)
-        loss_cont = loss_cont_fn(features=features, mask=mask, batch_size=batch_size)
-        loss = loss_cls + pico_args['loss_weight'] * loss_cont
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        total_loss += loss.item()
-        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
-    return total_loss / len(loader)
+    """PiCO-MCL: PiCOMCLLoss(out, Y), no confidence buffer -> src/train/pico.py (2026-11-22 refactor)."""
+    return _pico_epoch(pico_args, model, loader, loss_fn, loss_cont_fn, optimizer, epoch, device, _PS['PiCO-MCL'])
 
 
 def train_pico_sc_epoch(pico_args, model, loader, loss_fn, loss_cont_fn, optimizer, epoch, device):
-    """PiCO with softmax-based confidence update (PiCO-SC).
-
-    Identical to train_pico_epoch except the confidence update uses the model's
-    own cls softmax output instead of prototype similarity scores:
-
-        Original:  loss_fn.confidence_update(score_prot, index, partial_Y)
-        PiCO-SC:   loss_fn.update_confidence(cls_out, index)
-
-    The dual encoder, MoCo queue, and prototype memory are still maintained
-    (model forward pass is unchanged), so the contrastive mask still uses
-    prototype-derived pseudo-labels.  Only the cls confidence update differs.
-    """
-    model.train()
-    total_loss     = 0
-    start_upd_prot = epoch >= pico_args['prot_start']
-
-    progress_bar = tqdm(loader, desc=f"PiCO-SC Epoch {epoch + 1}/{pico_args['epochs']}")
-    for (images_w, images_s, partial_Y, true_labels, index) in progress_bar:
-        images_w  = images_w.to(device)
-        images_s  = images_s.to(device)
-        partial_Y = partial_Y.to(device)
-        index     = index.to(device)
-
-        cls_out, features, pseudo_target_cont, score_prot = model(
-            images_w, images_s, partial_Y, pico_args
-        )
-        batch_size = cls_out.shape[0]
-
-        if start_upd_prot:
-            # Use cls softmax (not prototype scores) to pick pseudo-label
-            loss_fn.update_confidence(cls_out.detach(), index)
-
-        mask = (
-            torch.eq(pseudo_target_cont[:batch_size].unsqueeze(1),
-                     pseudo_target_cont.unsqueeze(0)).float()
-            if start_upd_prot else None
-        )
-
-        loss_cls  = loss_fn(cls_out, index)
-        loss_cont = loss_cont_fn(features=features, mask=mask, batch_size=batch_size)
-        loss      = loss_cls + pico_args['loss_weight'] * loss_cont
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        total_loss += loss.item()
-        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
-    return total_loss / len(loader)
+    """PiCO-SC: PiCOCLSLoss confidence from the classifier -> src/train/pico.py (2026-11-22 refactor)."""
+    return _pico_epoch(pico_args, model, loader, loss_fn, loss_cont_fn, optimizer, epoch, device, _PS['PiCO-SC'])
 
 
 def train_comco_epoch(comco_args, model, loader, cls_loss_fn, cont_loss_fn, optimizer, epoch, device):
-    """Runs a single training epoch for the ComCo model."""
-    model.train()
-    total_loss = 0
-    warmup_pos = epoch >= comco_args['warmup_pos']
-    warmup_neg = epoch >= comco_args['warmup_neg']
-
-    progress_bar = tqdm(loader, desc=f"ComCo Epoch {epoch + 1}/{comco_args['epochs']}")
-    for (images_w, images_s, comp_mask, true_labels, index) in progress_bar:
-        images_w = images_w.to(device)
-        images_s = images_s.to(device)
-        comp_mask = comp_mask.to(device)
-
-        cls_out, q, all_feats, all_pseudo, all_comp = model(images_w, images_s, comp_mask, comco_args)
-        pseudo_q = cls_out.argmax(dim=1)
-
-        loss_cls = cls_loss_fn(cls_out, comp_mask)
-        loss_cont = cont_loss_fn(q, all_feats, all_pseudo, all_comp, pseudo_q, warmup_pos, warmup_neg)
-        loss = loss_cls + comco_args['loss_weight'] * loss_cont
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        total_loss += loss.item()
-        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
-    return total_loss / len(loader)
+    """ComCo / ComCo-Fixed -> src/train/comco.py (2026-11-22 refactor)."""
+    return _comco_epoch(comco_args, model, loader, cls_loss_fn, cont_loss_fn, optimizer, epoch, device, _CS['ComCo'])
 
 
 def train_solar_epoch(solar_args, model, loader, loss_fn, optimizer, epoch, device, queue, emp_dist):

@@ -15,10 +15,18 @@ import torch.nn.functional as F
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src import pcdiag  # noqa: E402
-from src import comco_bandit  # noqa: E402
-from src.pipeline import biasvariance as bv  # noqa: E402
-from src import clsloss_solo  # noqa: E402
+# Reference = the frozen pre-refactor implementations (tests/legacy_ref), since the live
+# pcdiag / detail now call src/analysis themselves (2026-11-22 refactor).
+_LEG = os.path.join(os.path.dirname(__file__), '..', 'tests', 'legacy_ref')
+if os.path.isdir(_LEG):
+    sys.path.insert(0, os.path.abspath(_LEG))
+    from legacy_src import pcdiag, comco_bandit, clsloss_solo  # noqa: E402
+    from legacy_src.pipeline import biasvariance as bv  # noqa: E402
+else:
+    from src import pcdiag  # noqa: E402
+    from src import comco_bandit  # noqa: E402
+    from src.pipeline import biasvariance as bv  # noqa: E402
+    from src import clsloss_solo  # noqa: E402
 from src.analysis import accum, estimates, gradients, labels, pairs, prediction, traces  # noqa: E402
 
 torch.manual_seed(0)

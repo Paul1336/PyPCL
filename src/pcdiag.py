@@ -46,6 +46,9 @@ from src.pico.model import PiCOModel
 from src.losses import functional as Fn
 from src.losses.contrastive import comco_masks, masked_infonce  # noqa: F401  (moved 2026-11-22)
 from src.models.common import seq_ema_prototypes  # noqa: F401  (moved 2026-11-22)
+from src.analysis.accum import EpochAccumulator
+from src.analysis.gradients import grad_alignment
+from src.analysis.pairs import POOL_PAIR_METRICS, pool_pair_sums, self_key_masks
 from src.pico.utils_loss import PartialLoss
 
 PCD_VARIANTS = {
@@ -151,85 +154,27 @@ CLS_FNS = {'mcllog': mcl_log, 'mclnl': mcl_nl, 'mcllogfixed': mcl_log_fixed}
 
 
 def _self_key(B, A, device):
-    eye = torch.zeros(B, A, device=device)
-    eye[torch.arange(B), torch.arange(B)] = 1.0
-    key = torch.zeros(B, A, device=device)
-    key[torch.arange(B), torch.arange(B) + B] = 1.0
-    return eye, key
+    return self_key_masks(B, A, device)
 
 
-class _Acc:
-    """Epoch accumulator: sums for ratio-of-sums, and running means for per-batch scalars."""
-
-    def __init__(self):
-        self.s, self.m, self.n = {}, {}, {}
-
-    def add(self, k, v):
-        self.s[k] = self.s.get(k, 0.0) + float(v)
-
-    def mean(self, k, v):
-        self.m[k] = self.m.get(k, 0.0) + float(v)
-        self.n[k] = self.n.get(k, 0) + 1
-
-    def ratio(self, a, b):
-        d = self.s.get(b, 0.0)
-        return self.s.get(a, 0.0) / d if d > 0 else float('nan')
-
-    def avg(self, k):
-        return self.m[k] / self.n[k] if self.n.get(k) else float('nan')
+_Acc = EpochAccumulator  # src/analysis/accum.py (ratio-of-sums + mean-of-batch-means)
 
 
 def pair_stats(acc, pos, denom, same, compat, valid, eye, key, B):
     """pos/denom: selected masks (B x A). same: same true class. compat: Y_i.Y_j > 0. valid: filled
-    pool slot (1 x A). All float 0/1."""
-    v = valid * (1 - eye)
-    pv = pos * v
-    nonkey = pv * (1 - key)
-    fp = pv * (1 - same)
-    viol = pv * (1 - compat)
-    neg = denom * (1 - pos) * v
-    acc.add('pos_n', pv.sum())
-    acc.add('pos_tp', (pv * same).sum())
-    acc.add('pos_nk_n', nonkey.sum())
-    acc.add('pos_nk_tp', (nonkey * same).sum())
-    acc.add('pos_viol', viol.sum())
-    acc.add('pos_nk_viol', (nonkey * (1 - compat)).sum())
-    acc.add('pos_fp', fp.sum())
-    acc.add('pos_fp_viol', (fp * (1 - compat)).sum())
-    acc.add('pos_ok_n', (pv * compat).sum())
-    acc.add('pos_ok_tp', (pv * compat * same).sum())
-    acc.add('same_all', (same * v).sum())
-    acc.add('neg_n', neg.sum())
-    acc.add('neg_fn', (neg * same).sum())
-    acc.add('neg_cert', (neg * (1 - compat)).sum())
-    acc.add('anchors', B)
+    pool slot (1 x A). All float 0/1. Sums -> src/analysis/pairs.pool_pair_sums."""
+    acc.add_many(pool_pair_sums(pos, denom, same, compat, valid, eye, key))
 
 
 def grad_stats(acc, name, g, g_ref):
-    gf, rf = g.flatten(), g_ref.flatten()
-    acc.mean(f'g_{name}_cos', F.cosine_similarity(gf, rf, dim=0, eps=1e-12))
-    acc.mean(f'g_{name}_cos_sample', F.cosine_similarity(g, g_ref, dim=1, eps=1e-12).mean())
-    acc.mean(f'g_{name}_norm_ratio', gf.norm() / rf.norm().clamp(min=1e-12))
+    """g_{name}_cos / _cos_sample / _norm_ratio -> src/analysis/gradients.grad_alignment."""
+    acc.mean_many(grad_alignment(g, g_ref, name))
 
 
 def _row_common(acc, ep):
     r = {'epoch': ep + 1}
-    r.update({
-        'pos_per_anchor': acc.ratio('pos_n', 'anchors'),
-        'pos_prec': acc.ratio('pos_tp', 'pos_n'),
-        'pos_nonkey_per_anchor': acc.ratio('pos_nk_n', 'anchors'),
-        'pos_nonkey_prec': acc.ratio('pos_nk_tp', 'pos_nk_n'),
-        'pos_recall': acc.ratio('pos_tp', 'same_all'),
-        'pos_viol_rate': acc.ratio('pos_viol', 'pos_n'),
-        'pos_nonkey_viol_rate': acc.ratio('pos_nk_viol', 'pos_nk_n'),
-        'fp_viol_share': acc.ratio('pos_fp_viol', 'pos_fp'),
-        'pos_prec_if_filtered': acc.ratio('pos_ok_tp', 'pos_ok_n'),
-        'neg_per_anchor': acc.ratio('neg_n', 'anchors'),
-        'neg_fn_rate': acc.ratio('neg_fn', 'neg_n'),
-        'neg_certified_rate': acc.ratio('neg_cert', 'neg_n'),
-    })
-    for k in sorted(acc.m):
-        r[k] = acc.avg(k)
+    r.update(acc.ratios(POOL_PAIR_METRICS))
+    r.update(acc.means())
     return r
 
 

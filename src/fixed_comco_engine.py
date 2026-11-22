@@ -22,39 +22,11 @@ import torch
 from tqdm import tqdm
 
 
+from src.train.comco import SPECS as _CS, comco_epoch as _comco_epoch
+
 def train_comco_weighted_epoch(comco_args, model, loader, cls_loss_fn, cont_loss_fn, optimizer, epoch, device):
-    model.train()
-    total_loss = 0
-    warmup_pos = epoch >= comco_args['warmup_pos']
-    warmup_neg = epoch >= comco_args['warmup_neg']
-    start_upd_prot = epoch >= comco_args['prot_start']
-
-    progress_bar = tqdm(loader, desc=f"ComCo-Weighted Epoch {epoch + 1}/{comco_args['epochs']}")
-    for (images_w, images_s, comp_mask, true_labels, index) in progress_bar:
-        images_w = images_w.to(device)
-        images_s = images_s.to(device)
-        comp_mask = comp_mask.to(device)
-        index = index.to(device)
-        partial_Y = 1.0 - comp_mask
-
-        cls_out, q, all_feats, all_pseudo, all_comp, score_prot = model(
-            images_w, images_s, comp_mask, partial_Y, comco_args)
-        pseudo_q = cls_out.argmax(dim=1)
-
-        if start_upd_prot:
-            cls_loss_fn.confidence_update(temp_un_conf=score_prot.detach(), batch_index=index, batchY=partial_Y)
-
-        loss_cls = cls_loss_fn(cls_out, index, comp_mask)
-        loss_cont = cont_loss_fn(q, all_feats, all_pseudo, all_comp, pseudo_q, warmup_pos, warmup_neg)
-        loss = loss_cls + comco_args['loss_weight'] * loss_cont
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        total_loss += loss.item()
-        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1))
-    return total_loss / len(loader)
+    """ComCo-Weighted (fixed alpha) -> src/train/comco.py (2026-11-22 refactor)."""
+    return _comco_epoch(comco_args, model, loader, cls_loss_fn, cont_loss_fn, optimizer, epoch, device, _CS['ComCo-Weighted'])
 
 
 # ─── per-batch alpha switching (variable-average-k experiment) ────────────
@@ -96,47 +68,6 @@ def batch_random_alpha(partial_Y) -> float:
 
 def train_comco_weighted_switch_epoch(comco_args, model, loader, cls_loss_fn, cont_loss_fn, optimizer, epoch,
                                        device, alpha_fn, alpha_trace: list = None):
-    """Same as train_comco_weighted_epoch, except `cls_loss_fn`'s alpha is
-    picked fresh each batch by `alpha_fn(partial_Y_batch) -> float in {0, 1}`
-    (see batch_cond_alpha/batch_random_alpha above) instead of using the
-    ComCoWeightedClsLoss instance's own fixed self.alpha. PartialLoss's
-    confidence_update still runs every batch once past warm-up regardless of
-    that batch's realized alpha -- same as train_comco_weighted_epoch -- so
-    its confidence buffer stays live even on batches where this step's loss
-    was driven entirely by the other term."""
-    model.train()
-    total_loss = 0
-    warmup_pos = epoch >= comco_args['warmup_pos']
-    warmup_neg = epoch >= comco_args['warmup_neg']
-    start_upd_prot = epoch >= comco_args['prot_start']
-
-    progress_bar = tqdm(loader, desc=f"ComCo-Weighted-Switch Epoch {epoch + 1}/{comco_args['epochs']}")
-    for (images_w, images_s, comp_mask, true_labels, index) in progress_bar:
-        images_w = images_w.to(device)
-        images_s = images_s.to(device)
-        comp_mask = comp_mask.to(device)
-        index = index.to(device)
-        partial_Y = 1.0 - comp_mask
-
-        cls_out, q, all_feats, all_pseudo, all_comp, score_prot = model(
-            images_w, images_s, comp_mask, partial_Y, comco_args)
-        pseudo_q = cls_out.argmax(dim=1)
-
-        if start_upd_prot:
-            cls_loss_fn.confidence_update(temp_un_conf=score_prot.detach(), batch_index=index, batchY=partial_Y)
-
-        alpha = alpha_fn(partial_Y)
-        alpha_mean = float(alpha.mean()) if torch.is_tensor(alpha) else float(alpha)
-        if alpha_trace is not None:
-            alpha_trace.append(alpha_mean)
-        loss_cls = cls_loss_fn(cls_out, index, comp_mask, alpha=alpha)
-        loss_cont = cont_loss_fn(q, all_feats, all_pseudo, all_comp, pseudo_q, warmup_pos, warmup_neg)
-        loss = loss_cls + comco_args['loss_weight'] * loss_cont
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        total_loss += loss.item()
-        progress_bar.set_postfix(loss=total_loss / (progress_bar.n + 1), alpha=alpha_mean)
-    return total_loss / len(loader)
+    """ComCo-Weighted with per-batch alpha = alpha_fn(Y) (switch / bandit arms) -> src/train/comco.py."""
+    return _comco_epoch(comco_args, model, loader, cls_loss_fn, cont_loss_fn, optimizer, epoch, device,
+                        _CS['ComCo-Weighted-Switch'], alpha_fn=alpha_fn, alpha_trace=alpha_trace)
