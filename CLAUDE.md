@@ -195,6 +195,7 @@ src/
 ├── solar/
 │   ├── utils_algo.py          # Sinkhorn-Knopp algorithm, linear rampup
 │   └── utils_loss.py          # Partial loss with confidence tracking
+├── analysis/                  # Reusable non-accuracy analysis toolkit (pairs/labels/gradients/prediction/estimates + io/stats/traces post-hoc); inventory in docs/analysis_metrics.md, equivalence check verify_scripts/check_analysis.py
 └── pipeline/                  # Comparison pipeline (scripts/run_pipeline.py) — see above
     ├── config.py              # Resolved run config: merges config.yaml + CLI args
     ├── gpu.py                 # Device selection, multi-GPU round-robin algorithm sharding
