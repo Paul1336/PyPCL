@@ -496,6 +496,18 @@ def make_pcd_runner(algorithm):
             loader = loaders['comco']
         opt = make_optimizer(model, hparams)
         log = _CsvLog(raw_cfg, algorithm, C)
+        # standard detail diagnostics (2026-11-22): per-class, concentration, label_diag, t-SNE,
+        # cls-loss gradient bias/variance (MCL family via a comp-mask adapter), kNN at the end
+        from src.pipeline import biasvariance as _bv
+        from src.pipeline import detail as _detail
+        bv_loss = cls_loss
+        if framework != 'pico':
+            fn = CLS_FNS.get(flags.get('cls'), scl_nl_avg)
+            bv_loss = type('CompLoss', (), {'takes_comp': True, '__call__': staticmethod(fn)})()
+        bv_on = _detail.biasvariance_enabled(raw_cfg)
+        if bv_on:
+            bv_batch = _bv.build_fixed_eval_batch(pl_ds, orig_targets,
+                                                  _detail.biasvariance_cfg(raw_cfg).get('eval_size', 256), device)
         t0 = time.perf_counter()
         for ep in range(epochs):
             te = time.perf_counter()
@@ -508,9 +520,16 @@ def make_pcd_runner(algorithm):
                                if (ep + 1) % 10 == 0 or ep + 1 == epochs or ep < 5 else float('nan'))
             row['epoch_time_s'] = time.perf_counter() - te
             log.write(row)
+            _detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
+            _detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
+            _detail.maybe_log_concentration(raw_cfg, model, pl_ds, device, C, ep + 1, algorithm)
+            _detail.maybe_log_label_diag(raw_cfg, model, cls_loss, pl_ds, orig_targets, C, ep + 1, algorithm)
+            if bv_on:
+                _detail.maybe_log_biasvariance(raw_cfg, model, bv_loss, None, algorithm, *bv_batch, C, ep + 1, device)
             if (ep + 1) % report_every == 0 or ep + 1 == epochs:
                 _print_eta(tag, ep + 1, epochs, time.perf_counter() - t0, min(report_every, ep + 1))
                 t0 = time.perf_counter()
+        _detail.maybe_run_knn_eval(raw_cfg, model, pl_ds, orig_targets, loaders['test'], device, C, epochs, algorithm)
         acc = evaluate_model(model, loaders['test'], device)
         del model, opt, cls_loss
         gc.collect()

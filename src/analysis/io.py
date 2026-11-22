@@ -179,16 +179,21 @@ def load_detail_csv(runs, filename, root=RESULTS_ROOT, dedup_on=None):
     frames = []
     for run in runs:
         d = _run_dir(run, root)
-        for f in sorted(glob.glob(os.path.join(d, 'detail', '*', 'C*_k*', filename))):
+        files = (glob.glob(os.path.join(d, 'detail', '*', 'C*_k*', filename))
+                 + glob.glob(os.path.join(d, 'detail', '*', 'C*_k*', 's*', filename)))  # seed dirs since 2026-11-22
+        for f in sorted(files):
             cell = os.path.dirname(f)
+            seed_dir = re.fullmatch(r's(\d+)', os.path.basename(cell))
+            if seed_dir:
+                cell = os.path.dirname(cell)
             m = _CELL_RE.search(os.path.basename(cell))
             x = pd.read_csv(f)
             x['run'] = os.path.basename(d.rstrip('/'))
             x['algorithm'] = x.get('algorithm', os.path.basename(os.path.dirname(cell)))
             x['C'], x['k'] = int(m.group(1)), int(m.group(2))
             sm = re.search(r'_s(\d+)\.csv$', f)
-            if sm and 'seed' not in x:
-                x['seed'] = int(sm.group(1))
+            if 'seed' not in x and (sm or seed_dir):
+                x['seed'] = int((seed_dir or sm).group(1))
             if dedup_on:
                 keys = ['run', 'algorithm', 'C', 'k'] + (['seed'] if 'seed' in x else []) + list(dedup_on)
                 x = x.drop_duplicates(keys, keep='last')

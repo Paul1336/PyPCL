@@ -107,13 +107,14 @@ def run(cfg: PipelineConfig):
         'biasvariance_eval_size': cfg.biasvariance_eval_size,
         'only_q': cfg.only_q, 'only_bimodal': cfg.only_bimodal, 'batching': cfg.batching,
         'holdout_frac': cfg.holdout_frac, 'cl_bias': cfg.cl_bias, 'noise_eta': cfg.noise_eta,
-        'switch_diag': cfg.switch_diag,
+        'switch_diag': cfg.switch_diag, 'label_diag': cfg.label_diag,
     })
 
     # Stashed in raw_cfg (like '_dataset_spec' below) rather than added to
     # every runner's uniform signature -- see src/pipeline/detail.py.
     cfg.raw['_detail'] = {
         'enabled': cfg.detail,
+        'label_diag': cfg.label_diag,
         'log_every': cfg.detail_log_every,
         'out_dir': os.path.join(cfg.results_dir, 'detail'),
         'tsne': {

@@ -222,8 +222,15 @@ def _cls_loss_and_grad(cls_loss_fn, logits: torch.Tensor, partial_Y: torch.Tenso
         partial_term = -((logsm * renorm).sum(dim=1)).mean()
         comco_term = cls_loss_fn.comco_loss(leaf, comp_mask)
         loss = cls_loss_fn.alpha * comco_term + (1 - cls_loss_fn.alpha) * partial_term
-    elif isinstance(cls_loss_fn, FixedComCoCLSLoss):
+    elif isinstance(cls_loss_fn, FixedComCoCLSLoss) or getattr(cls_loss_fn, 'takes_comp', False):
         loss = cls_loss_fn(leaf, comp_mask)
+    elif hasattr(cls_loss_fn, 'conf') and hasattr(cls_loss_fn, 'cand'):
+        # ProdenLoss (2026-11-22): its forward takes sample indices, not a candidate mask -- use the
+        # real confidence rows restricted to the resampled Y, exactly like the PartialLoss branch.
+        real_conf_row = cls_loss_fn.conf[eval_index, :].detach()
+        masked = real_conf_row * partial_Y
+        renorm = masked / masked.sum(dim=1, keepdim=True).clamp(min=1e-8)
+        loss = -((F.log_softmax(leaf, dim=1) * renorm).sum(dim=1)).mean()
     else:
         # Stateless: PiCOMCLLoss (PiCO-MCL-Fixed).
         loss = cls_loss_fn(leaf, partial_Y)
@@ -252,15 +259,24 @@ def log_biasvariance_checkpoint(model, cls_loss_fn, cont_loss_fn, algorithm: str
     queue -- which is enough to satisfy SupConLoss/ComCoContrastiveLoss's
     assumption that a same-sample "key view" positive exists in the pool
     (see oracle_cont_grad's docstring)."""
-    model.encoder_q.eval()
-    model.encoder_k.eval()
-    with torch.no_grad():
-        cls_out, q = model.encoder_q(eval_images)
-        _, k_view = model.encoder_k(eval_images)
+    if hasattr(model, 'encoder_q'):
+        model.encoder_q.eval()
+        model.encoder_k.eval()
+        with torch.no_grad():
+            cls_out, q = model.encoder_q(eval_images)
+            _, k_view = model.encoder_k(eval_images)
+        q = q.detach()
+        k_view = k_view.detach()
+    else:  # single-encoder model (PRODEN, ...): cls-loss bias/variance only (2026-11-22)
+        was_training = model.training
+        model.eval()
+        with torch.no_grad():
+            cls_out = model(eval_images)
+        model.train(was_training)
+        q = k_view = None
+        cont_loss_fn = None
     logits = cls_out.detach()
     cls_softmax = F.softmax(logits, dim=1).detach()
-    q = q.detach()
-    k_view = k_view.detach()
     B = eval_images.shape[0]
 
     oracle_grad = oracle_cls_grad(logits, eval_true_labels)

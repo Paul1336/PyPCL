@@ -136,6 +136,10 @@ def _run_proden_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch
     if 'train_idx' in loaders:  # --holdout_frac: never train on the held-out split (indices stay global)
         idx_ds = Subset(idx_ds, [int(i) for i in loaders['train_idx']])
     idx_loader = DataLoader(idx_ds, batch_size=batch_size, shuffle=True, num_workers=2)
+    bv_on = detail.biasvariance_enabled(raw_cfg)
+    if bv_on:
+        eval_size = detail.biasvariance_cfg(raw_cfg).get('eval_size', 256)
+        bv_images, bv_labels, bv_index = biasvariance.build_fixed_eval_batch(pl_ds, orig_targets, eval_size, device)
 
     chunk_t0 = time.perf_counter()
     final_acc = 0.0
@@ -150,6 +154,10 @@ def _run_proden_variant(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch
 
         detail.maybe_log_checkpoint(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
         detail.maybe_log_concentration(raw_cfg, model, pl_ds, device, C, ep + 1, algorithm)
+        detail.maybe_log_label_diag(raw_cfg, model, loss_fn, pl_ds, orig_targets, C, ep + 1, algorithm)
+        if bv_on:
+            detail.maybe_log_biasvariance(raw_cfg, model, loss_fn, None, algorithm,
+                                          bv_images, bv_labels, bv_index, C, ep + 1, device)
 
         if (ep + 1) % report_every == 0 or ep + 1 == epochs:
             final_acc = evaluate_model(model, loaders['test'], device)

@@ -90,6 +90,9 @@ def _add_run_parser(sub):
     p.add_argument('--tsne_max_points', type=int, default=2000,
                     help='Max test-set samples to embed per --tsne snapshot (t-SNE cost grows '
                          'roughly with n log n).')
+    p.add_argument('--label_diag', action='store_true',
+                   help='Per-epoch (every --detail_log_every) label-side diagnostics on the train set '
+                        '(candidate mass, disambiguation, confidence buffer, concentration) -> detail/.../label_diag.csv')
     p.add_argument('--concentration', action='store_true',
                     help='Log per-sample and averaged prediction-concentration (entropy + '
                          'max-softmax-prob of the model\'s own predicted distribution over the '

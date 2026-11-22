@@ -123,12 +123,23 @@ def _detail_cfg(raw_cfg: dict) -> dict:
 
 
 def cell_dir(raw_cfg: dict, algorithm: str, C: int) -> str:
-    """results/<run_name>/detail/<algorithm>/C{C}_k{k}/ -- k comes from
-    runner.py stashing '_current_k' in raw_cfg once per (C, k) cell, the same
-    pattern already used for '_dataset_spec'."""
+    """results/<run_name>/detail/<algorithm>/C{C}_k{k}/s{seed}/ (seed level added 2026-11-22: sweeps
+    run every seed as its own process, and the old seed-less path made their files collide)."""
     base = _detail_cfg(raw_cfg)['out_dir']
     k = raw_cfg.get('_current_k', 0)
-    return os.path.join(base, algorithm, f'C{C}_k{k}')
+    d = os.path.join(base, algorithm, f'C{C}_k{k}')
+    seed = raw_cfg.get('_current_seed')
+    return os.path.join(d, f's{seed}') if seed is not None else d
+
+
+def _cell_file(cell, filename, seed=None):
+    """Reader side of cell_dir: <cell>/s{seed}/<file> (new layout; first seed if seed is None) or
+    <cell>/<file> (runs before 2026-11-22)."""
+    import glob as _glob
+    if seed is not None:
+        return os.path.join(cell, f's{seed}', filename)
+    seeded = sorted(_glob.glob(os.path.join(cell, 's*', filename)))
+    return seeded[0] if seeded and not os.path.isfile(os.path.join(cell, filename)) else os.path.join(cell, filename)
 
 
 # ─── (1) per-class accuracy/loss checkpoint logging ────────────────────────
@@ -325,6 +336,41 @@ def log_prediction_concentration_checkpoint(model, pl_ds, spec, device, C, epoch
     np.savez(os.path.join(conc_dir, f'ep{epoch:04d}.npz'), entropy=entropy.numpy(), max_prob=max_prob.numpy())
 
 
+LABEL_DIAG_FIELDS = ['epoch', 'cand_mass', 'disamb_acc', 'cand_entropy', 'p_true', 'train_true_acc',
+                     'conf_acc', 'conf_true_mass', 'conf_sharp', 'conf_ent',
+                     'mean_entropy', 'std_entropy', 'median_entropy', 'mean_max_prob', 'std_max_prob',
+                     'median_max_prob']
+
+
+@torch.no_grad()
+def maybe_log_label_diag(raw_cfg, model, cls_loss, pl_ds, orig_targets, C, epoch, algorithm, batch_size=512):
+    """--label_diag (2026-11-22): label-side diagnostics on the full non-augmented training set every
+    --detail_log_every epochs, computed with src/analysis -> <cell>/label_diag.csv:
+    candidate mass / disambiguation accuracy / normalised candidate entropy / p(true) / train
+    accuracy of the classifier (labels.candidate_distribution_stats), the cls loss's confidence
+    buffer if it has one (labels.confidence_stats: conf_acc, conf_true_mass, conf_sharp, conf_ent)
+    and the prediction concentration (prediction.concentration)."""
+    cfg = _detail_cfg(raw_cfg)
+    if not cfg.get('label_diag') or not _seed_matches(raw_cfg) or epoch % cfg.get('log_every', 10) != 0:
+        return
+    from src.analysis import labels as L
+    from src.analysis import prediction as P
+    from src.analysis.accum import append_csv
+    from src.losses.confidence import conf_buffer
+    from src.pll_init import candidate_masked_init
+    device = next(model.parameters()).device
+    loader = _build_train_eval_loader(pl_ds, raw_cfg.get('_dataset_spec'), np.arange(len(pl_ds)), batch_size)
+    probs = _predict_probs_over_trainset(model, loader, device).to(device)
+    Y = (candidate_masked_init(pl_ds.targets, C) > 0).float().to(device)
+    y = torch.as_tensor(np.asarray(orig_targets)).long().to(device)
+    row = {'epoch': epoch, **L.candidate_distribution_stats(probs, Y, y)}
+    conf = conf_buffer(cls_loss) if cls_loss is not None else None
+    if conf is not None and conf.shape[0] == len(y):
+        row.update(L.confidence_stats(conf.to(device), y))
+    row.update(P.concentration(probs)[0])
+    append_csv(os.path.join(cell_dir(raw_cfg, algorithm, C), 'label_diag.csv'), LABEL_DIAG_FIELDS, [row])
+
+
 def maybe_log_concentration(raw_cfg, model, pl_ds, device, C, epoch, algorithm, batch_size=512):
     """No-op unless --concentration is enabled, the current seed matches
     '_detail'.diagnostics_seed (see _seed_matches), and `epoch` lands on a
@@ -420,7 +466,7 @@ def final_epoch_pico_confusion(results_dir: str, algorithm: str, C: int, k: int)
     percentage of `total` (tp_pct/fp_pct/tn_pct/fn_pct -- same 'what % of
     all pairs' framing as plot_pico_confusion_stats' y-axis) alongside the
     precision/recall-style ratios (pos_precision/neg_precision/recall)."""
-    path = os.path.join(results_dir, 'detail', algorithm, f'C{C}_k{k}', 'pico_selection_stats.csv')
+    path = _cell_file(os.path.join(results_dir, 'detail', algorithm, f'C{C}_k{k}'), 'pico_selection_stats.csv')
     if not os.path.isfile(path):
         return None
     with open(path, newline='') as f:
@@ -737,8 +783,8 @@ def plot_heatmap(results_dir: str, alg_l: str, C: int, k: int, out_path: str,
     import matplotlib.pyplot as plt
 
     base = os.path.join(results_dir, 'detail')
-    dL = _load_per_class_csv(os.path.join(base, alg_l, f'C{C}_k{k}', 'per_class_loss.csv'), C)
-    dR = _load_per_class_csv(os.path.join(base, alg_r, f'C{C}_k{k}', 'per_class_loss.csv'), C) if alg_r else None
+    dL = _load_per_class_csv(_cell_file(os.path.join(base, alg_l, f'C{C}_k{k}'), 'per_class_loss.csv'), C)
+    dR = _load_per_class_csv(_cell_file(os.path.join(base, alg_r, f'C{C}_k{k}'), 'per_class_loss.csv'), C) if alg_r else None
 
     if dL is None and dR is None:
         algs = alg_l if not alg_r else f'{alg_l} or {alg_r}'
@@ -824,7 +870,7 @@ def plot_heatmap_multi(entries: list, C: int, k: int, out_path: str,
 
     data = []
     for results_dir, alg, display in entries:
-        d = _load_per_class_csv(os.path.join(results_dir, 'detail', alg, f'C{C}_k{k}', 'per_class_loss.csv'), C)
+        d = _load_per_class_csv(_cell_file(os.path.join(results_dir, 'detail', alg, f'C{C}_k{k}'), 'per_class_loss.csv'), C)
         data.append((alg, display, d))
 
     loaded = [d for _, _, d in data if d is not None]
@@ -903,7 +949,7 @@ def plot_heatmap_side_by_side(results_dir: str, alg: str, C: int, k: int, out_pa
     import matplotlib.pyplot as plt
 
     display_name = display_name or alg
-    d = _load_per_class_csv(os.path.join(results_dir, 'detail', alg, f'C{C}_k{k}', 'per_class_loss.csv'), C)
+    d = _load_per_class_csv(_cell_file(os.path.join(results_dir, 'detail', alg, f'C{C}_k{k}'), 'per_class_loss.csv'), C)
     if d is None:
         raise ValueError(f'No detail logs found for C={C} k={k}, algorithm {alg} under '
                           f'{results_dir}/detail/ (did you run with --detail?)')
@@ -978,7 +1024,7 @@ def plot_pico_selection_stats(results_dir: str, algorithm: str, C: int, k: int, 
     import matplotlib.pyplot as plt
 
     display_name = display_name or algorithm
-    path = os.path.join(results_dir, 'detail', algorithm, f'C{C}_k{k}', 'pico_selection_stats.csv')
+    path = _cell_file(os.path.join(results_dir, 'detail', algorithm, f'C{C}_k{k}'), 'pico_selection_stats.csv')
     if not os.path.isfile(path):
         raise ValueError(f'No selection-stats log found at {path} (did you run with --detail?)')
     with open(path, newline='') as f:
@@ -1042,7 +1088,7 @@ def plot_pico_confusion_stats(results_dir: str, algorithm: str, C: int, k: int, 
     import matplotlib.pyplot as plt
 
     display_name = display_name or algorithm
-    path = os.path.join(results_dir, 'detail', algorithm, f'C{C}_k{k}', 'pico_selection_stats.csv')
+    path = _cell_file(os.path.join(results_dir, 'detail', algorithm, f'C{C}_k{k}'), 'pico_selection_stats.csv')
     if not os.path.isfile(path):
         raise ValueError(f'No selection-stats log found at {path} (did you run with --detail?)')
     with open(path, newline='') as f:
@@ -1164,7 +1210,7 @@ def plot_pico_selection_stats_multi_k(run_dirs: dict, algorithm: str, C: int, ou
     ks = sorted(run_dirs, reverse=True)
     series = {}   # k -> pos_smooth array
     for k in ks:
-        path = os.path.join(run_dirs[k], 'detail', algorithm, f'C{C}_k{k}', 'pico_selection_stats.csv')
+        path = _cell_file(os.path.join(run_dirs[k], 'detail', algorithm, f'C{C}_k{k}'), 'pico_selection_stats.csv')
         if not os.path.isfile(path):
             print(f'  [plot_pico_selection_stats_multi_k] skip k={k}: no data at {path}', flush=True)
             continue
@@ -1225,7 +1271,7 @@ def plot_pico_oracle_correction_stats(results_dir: str, C: int, k: int, out_path
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
 
-    path = os.path.join(results_dir, 'detail', 'PiCO-Oracle', f'C{C}_k{k}', 'pico_oracle_correction_stats.csv')
+    path = _cell_file(os.path.join(results_dir, 'detail', 'PiCO-Oracle', f'C{C}_k{k}'), 'pico_oracle_correction_stats.csv')
     if not os.path.isfile(path):
         raise ValueError(f'No oracle correction-stats log found at {path} '
                           f'(did you run PiCO-Oracle with --detail?)')
@@ -1306,7 +1352,7 @@ def plot_concentration_trend(entries: list, C: int, k: int, out_path: str) -> st
     data = []
     for results_dir, alg, display in entries:
         d = _load_concentration_csv(
-            os.path.join(results_dir, 'detail', alg, f'C{C}_k{k}', 'concentration_summary.csv'))
+            _cell_file(os.path.join(results_dir, 'detail', alg, f'C{C}_k{k}'), 'concentration_summary.csv'))
         data.append((alg, display, d))
 
     loaded = [d for _, _, d in data if d is not None]
@@ -1364,7 +1410,7 @@ def plot_knn_eval_bar(entries: list, C: int, k: int, out_path: str) -> str:
 
     labels, accs = [], []
     for results_dir, alg, display in entries:
-        path = os.path.join(results_dir, 'detail', alg, f'C{C}_k{k}', 'knn_eval.csv')
+        path = _cell_file(os.path.join(results_dir, 'detail', alg, f'C{C}_k{k}'), 'knn_eval.csv')
         if not os.path.isfile(path):
             print(f'  [plot_knn_eval_bar] skip {alg}: no knn_eval.csv '
                   f'(no .encoder_q, or --knn_eval not used)', flush=True)

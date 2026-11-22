@@ -98,6 +98,7 @@ def run_epochs(epoch_fn, model, *, loaders, pl_ds, orig_targets, C, raw_cfg, dev
         detail.maybe_plot_tsne(raw_cfg, model, loaders['test'], device, C, ep + 1, algorithm)
         if concentration:
             detail.maybe_log_concentration(raw_cfg, model, pl_ds, device, C, ep + 1, algorithm)
+        detail.maybe_log_label_diag(raw_cfg, model, cls_loss, pl_ds, orig_targets, C, ep + 1, algorithm)
         if bv_on:
             detail.maybe_log_biasvariance(raw_cfg, model, cls_loss, cont_loss, algorithm,
                                           bv_images, bv_labels, bv_index, C, ep + 1, device)
