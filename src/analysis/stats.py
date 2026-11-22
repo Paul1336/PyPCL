@@ -49,12 +49,16 @@ def pivot_fmt(df, index='algorithm', columns='k', value='final_accuracy', digits
     return tab
 
 
-def to_markdown(tab, bold_best=None):
+def to_markdown(tab, bold_best=None, lower_is_better=False):
     """Plain markdown table; bold_best = DataFrame of numeric means with the same shape to
-    bold the column-wise maximum."""
+    bold the column-wise maximum (minimum if lower_is_better). Constant columns are not bolded."""
     cols = [str(c) for c in tab.columns]
     lines = ['| ' + ' | '.join([tab.index.name or ''] + cols) + ' |', '|' + '---|' * (len(cols) + 1)]
-    best = bold_best.idxmax() if bold_best is not None else {}
+    best = {}
+    if bold_best is not None:
+        varied = bold_best.columns[(bold_best.max() - bold_best.min()) > 0]
+        b = bold_best[varied]
+        best = (b.idxmin() if lower_is_better else b.idxmax()).to_dict() if len(varied) else {}
     for idx, row in tab.iterrows():
         cells = []
         for c in tab.columns:
