@@ -932,22 +932,26 @@ def _run_comco_weighted_switch_variant(loaders, pl_ds, orig_targets, C, hparams,
 
     detail.maybe_run_knn_eval(raw_cfg, model, pl_ds, orig_targets, loaders['test'], device, C, epochs, algorithm)
     acc = evaluate_model(model, loaders['test'], device)
-    _save_alpha_trace(raw_cfg, algorithm, alpha_per_epoch)
+    _save_alpha_trace(raw_cfg, algorithm, alpha_per_epoch, C)
     del model, cls_loss, cont_loss, opt, init_conf
     gc.collect()
     torch.cuda.empty_cache()
     return acc
 
 
-def _save_alpha_trace(raw_cfg, algorithm, alpha_per_epoch):
-    """results/<run>/alpha_trace/<algorithm>_C{C}_k{k}_seed{seed}.json -- per
-    epoch, per batch, the realized mean alpha the switch picked."""
-    out_dir = os.path.join(raw_cfg.get('_results_dir', 'results'), 'alpha_trace')
+def _write_trace(raw_cfg, subdir, algorithm, C, obj):
+    """results/<run>/<subdir>/<algorithm>_C{C}_k{k}_seed{seed}.json (C added 2026-11-22: runs that
+    sweep several C into one results dir used to overwrite each other's traces)."""
+    out_dir = os.path.join(raw_cfg.get('_results_dir', 'results'), subdir)
     os.makedirs(out_dir, exist_ok=True)
-    fname = (f"{algorithm}_k{raw_cfg.get('_current_k')}"
-             f"_seed{raw_cfg.get('_current_seed')}.json")
+    fname = f"{algorithm}_C{C}_k{raw_cfg.get('_current_k')}_seed{raw_cfg.get('_current_seed')}.json"
     with open(os.path.join(out_dir, fname), 'w') as f:
-        json.dump(alpha_per_epoch, f)
+        json.dump(obj, f)
+
+
+def _save_alpha_trace(raw_cfg, algorithm, alpha_per_epoch, C):
+    """Per epoch, per batch, the realized mean alpha the switch picked."""
+    _write_trace(raw_cfg, 'alpha_trace', algorithm, C, alpha_per_epoch)
 
 
 def run_comco_weighted_samplecond(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device,
@@ -1041,11 +1045,7 @@ def _run_comco_weighted_bandit(loaders, pl_ds, orig_targets, C, hparams, raw_cfg
             torch.cuda.empty_cache()
 
     acc = evaluate_model(model, loaders['test'], device)
-    out_dir = os.path.join(raw_cfg.get('_results_dir', 'results'), 'bandit_trace')
-    os.makedirs(out_dir, exist_ok=True)
-    with open(os.path.join(out_dir, f"{algorithm}_k{raw_cfg.get('_current_k')}"
-                                    f"_seed{raw_cfg.get('_current_seed')}.json"), 'w') as f:
-        json.dump(trace, f)
+    _write_trace(raw_cfg, 'bandit_trace', algorithm, C, trace)
     del model, cls_loss, cont_loss, opt, init_conf
     gc.collect()
     torch.cuda.empty_cache()
@@ -1348,11 +1348,7 @@ def _run_generic_bandit(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch
             torch.cuda.empty_cache()
 
     acc = evaluate_model(model, loaders['test'], device)
-    out_dir = os.path.join(raw_cfg.get('_results_dir', 'results'), 'bandit_trace')
-    os.makedirs(out_dir, exist_ok=True)
-    with open(os.path.join(out_dir, f"{algorithm}_k{raw_cfg.get('_current_k')}"
-                                    f"_seed{raw_cfg.get('_current_seed')}.json"), 'w') as f:
-        json.dump(trace, f)
+    _write_trace(raw_cfg, 'bandit_trace', algorithm, C, trace)
     del model, cls_loss, cont_loss, opt, init_conf
     gc.collect()
     torch.cuda.empty_cache()
@@ -1765,6 +1761,8 @@ def run_pico_cls(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, 
     idx_ds = (_IndexedDataset(pl_ds.data, image_size=spec.image_size, mean=spec.mean, std=spec.std,
                                modality=spec.modality)
               if spec is not None else _IndexedDataset(pl_ds.data))
+    if 'train_idx' in loaders:  # --holdout_frac: never train on the held-out split (2026-11-22 fix)
+        idx_ds = Subset(idx_ds, [int(i) for i in loaders['train_idx']])
     idx_loader = DataLoader(idx_ds, batch_size=batch_size,
                              shuffle=True, num_workers=2, drop_last=True)
 
@@ -1916,7 +1914,9 @@ def run_comco_fixed(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_siz
 def run_solar(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
     solar_cfg = raw_cfg['solar']
     solar_ds = SoLarDataset(pl_ds, orig_targets)
-    solar_loader = DataLoader(solar_ds, batch_size=batch_size, shuffle=True,
+    train_ds = (Subset(solar_ds, [int(i) for i in loaders['train_idx']])  # holdout fix (2026-11-22)
+                if 'train_idx' in loaders else solar_ds)
+    solar_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
                                drop_last=True, collate_fn=solar_collate_fn, pin_memory=True)
 
     fake_args = SimpleNamespace(lr=hparams['lr'], momentum=hparams.get('momentum', 0.9),
@@ -2092,12 +2092,8 @@ def _run_swap_prune(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_siz
             torch.cuda.empty_cache()
 
     acc = evaluate_model(model, loaders['test'], device)
-    out_dir = os.path.join(raw_cfg.get('_results_dir', 'results'), 'prune_trace')
-    os.makedirs(out_dir, exist_ok=True)
-    with open(os.path.join(out_dir, f"{algorithm}_k{raw_cfg.get('_current_k')}"
-                                    f"_seed{raw_cfg.get('_current_seed')}.json"), 'w') as f:
-        json.dump({'k': k, 'k_star': k_star, 'warm': PRUNE_WARM, 'every': PRUNE_EVERY, 'ramp': PRUNE_RAMP,
-                   'trace': trace}, f)
+    _write_trace(raw_cfg, 'prune_trace', algorithm, C, {'k': k, 'k_star': k_star, 'warm': PRUNE_WARM, 'every': PRUNE_EVERY, 'ramp': PRUNE_RAMP,
+                   'trace': trace})
     del model, cls_loss, cont_loss, opt, init_conf
     gc.collect()
     torch.cuda.empty_cache()

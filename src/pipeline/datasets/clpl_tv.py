@@ -160,7 +160,7 @@ def _build_specs() -> dict:
     return {
         'clpl-lost': DatasetSpec(
             name='clpl-lost', modality='image', backbone='cnn', fixed_num_classes=16,
-            supports_pico_family=True, loader=_loader_lost,
+            supports_pico_family=False, loader=_loader_lost,  # 2026-11-22: loader builds no pico/comco views (KeyError)
             in_channels=3, image_size=90, mean=(0.4914, 0.4822, 0.4465), std=(0.247, 0.2435, 0.2616),
             is_preambiguous=True, batch_size_override=32,
             notes=('CLPL paper\'s own raw-image "Lost" benchmark (Section 7-8). Real screenplay-'

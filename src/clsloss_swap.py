@@ -169,7 +169,7 @@ class PRODENLoss(nn.Module):
         conf = self.conf[index]
         loss = -(conf * F.log_softmax(logits, dim=1)).sum(dim=1).mean()
         with torch.no_grad():
-            new = (conf > 0).float() * torch.softmax(logits, dim=1)
+            new = partial_Y * torch.softmax(logits, dim=1)  # true Y, not conf > 0 (2026-11-22 fix)
             self.conf[index] = new / new.sum(dim=1, keepdim=True).clamp(min=1e-8)
         return loss
 

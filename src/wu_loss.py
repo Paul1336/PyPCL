@@ -49,7 +49,8 @@ class WuPLLLoss(nn.Module):
         sum_cand = -(log_sm * cand_mask).sum(dim=1)               # [B]
         sum_all  = -log_sm.sum(dim=1)                             # [B]
 
-        alpha = (C - 1.0) / (C - k)
-        beta  = (k  - 1.0) / (C - k)
+        denom = (C - k).clamp(min=1.0)                            # k = C (all classes) -> no div by 0 (2026-11-22)
+        alpha = (C - 1.0) / denom
+        beta  = (k  - 1.0) / denom
 
         return (alpha * sum_cand - beta * sum_all).mean()

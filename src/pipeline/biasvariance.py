@@ -58,6 +58,13 @@ def build_fixed_eval_batch(pl_ds, orig_targets, eval_size: int, device):
     index = torch.arange(n, dtype=torch.long, device=device)
     return imgs, true_labels, index
 
+
+def _stable_seed(key) -> int:
+    """Process-independent seed (2026-11-22): Python's hash() of strings is salted per process
+    unless PYTHONHASHSEED is set, so resampling seeds used to differ between runs."""
+    import zlib
+    return zlib.crc32(repr(key).encode()) & 0xFFFFFFFF
+
 FIELDS = ['dataset', 'C', 'k', 'algorithm', 'seed', 'epoch', 'loss_type',
           'bias2', 'variance', 'mse', 'cos_sim']
 
@@ -260,7 +267,7 @@ def log_biasvariance_checkpoint(model, cls_loss_fn, cont_loss_fn, algorithm: str
     oracle_grad = oracle_cls_grad(logits, eval_true_labels)
     grads = []
     for m in range(m_resamples):
-        seed_val = hash((dataset, C, k, epoch, algorithm, m)) & 0xFFFFFFFF
+        seed_val = _stable_seed((dataset, C, k, epoch, algorithm, m))
         partial_Y, comp_mask = _resample_batch(eval_true_labels, C, k, seed_val, device)
         g = _cls_loss_and_grad(cls_loss_fn, logits, partial_Y, comp_mask, eval_index)
         grads.append(g)
@@ -282,7 +289,7 @@ def log_biasvariance_checkpoint(model, cls_loss_fn, cont_loss_fn, algorithm: str
         pseudo_all = cls_out.argmax(dim=1).detach()
         pool_pseudo = torch.cat([pseudo_all, pseudo_all])
         for m in range(m_resamples):
-            seed_val = hash((dataset, C, k, epoch, algorithm, 'cont', m)) & 0xFFFFFFFF
+            seed_val = _stable_seed((dataset, C, k, epoch, algorithm, 'cont', m))
             _partial_Y, comp_mask = _resample_batch(eval_true_labels, C, k, seed_val, device)
             all_comp = torch.cat([comp_mask, comp_mask], dim=0)
             q_leaf = q.clone().requires_grad_(True)
@@ -292,7 +299,7 @@ def log_biasvariance_checkpoint(model, cls_loss_fn, cont_loss_fn, algorithm: str
             cont_grads.append(q_leaf.grad.detach())
     else:
         for m in range(m_resamples):
-            seed_val = hash((dataset, C, k, epoch, algorithm, 'cont', m)) & 0xFFFFFFFF
+            seed_val = _stable_seed((dataset, C, k, epoch, algorithm, 'cont', m))
             partial_Y, _comp_mask = _resample_batch(eval_true_labels, C, k, seed_val, device)
             pseudo = resample_pseudo_target(partial_Y, cls_softmax)
             pool_pseudo = torch.cat([pseudo, pseudo])

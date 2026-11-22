@@ -32,6 +32,13 @@ import torch.nn.functional as F
 
 from src.pipeline.biasvariance import oracle_cls_grad, _reduce
 
+
+def _stable_seed(key) -> int:
+    """Process-independent seed (2026-11-22): Python's hash() of strings is salted per process
+    unless PYTHONHASHSEED is set, so resampling seeds used to differ between runs."""
+    import zlib
+    return zlib.crc32(repr(key).encode()) & 0xFFFFFFFF
+
 FIELDS = ['dataset', 'C', 'algorithm', 'seed', 'epoch', 'bias2', 'variance', 'mse', 'cos_sim']
 
 
@@ -80,7 +87,7 @@ def log_checkpoint(loss_fns: dict, logits: torch.Tensor, true_labels: torch.Tens
     for algo, loss_fn in loss_fns.items():
         grads = []
         for m in range(m_resamples):
-            seed_val = hash((dataset, C, epoch, algo, m)) & 0xFFFFFFFF
+            seed_val = _stable_seed((dataset, C, epoch, algo, m))
             comp_labels = resample_single_cl_batch(true_labels, C, seed_val, device)
             grads.append(_loss_grad(loss_fn, logits, comp_labels))
         stats = _reduce(grads, oracle_grad)

@@ -71,7 +71,9 @@ class PiCOCLSLoss(nn.Module):
     @torch.no_grad()
     def update_confidence(self, outputs: torch.Tensor, indices: torch.Tensor):
         """
-        Call after optimizer.step() each batch.
+        Call order differs by caller (kept as-is for reproducibility, 2026-11-22 note):
+        run_pico_cls calls it AFTER optimizer.step(); engine.train_pico_sc_epoch
+        (PiCO-SC) calls it BEFORE computing the loss (gated by prot_start).
 
         Selects pseudo-label = argmax of softmax within candidate set,
         then blends into stored confidence via EMA.

@@ -24,7 +24,7 @@ import torch.nn.functional as F
 def _non_complementary_mask_sum(outputs: torch.Tensor, complementary_labels: torch.Tensor):
     """Shared setup: returns (sum_probs_not_in_complementary_set, num_complementary)."""
     valid_labels_mask = (complementary_labels != -1)
-    num_complementary = valid_labels_mask.sum(dim=1).float()
+    num_complementary = valid_labels_mask.sum(dim=1).float().clamp(min=1.0)  # |Ybar|=0 -> no inf (2026-11-22)
 
     batch_size, num_classes = outputs.shape
     probs_all = F.softmax(outputs, dim=1)

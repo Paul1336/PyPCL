@@ -4,7 +4,7 @@ DataFrames in long format with the run name attached, so analyses can concat run
 Layout (results/<run>/...):
   results.csv, shards/worker*.csv          final accuracy per (C, k, algorithm, seed)
   pcdiag/<alg>/C{C}_k{k}_s{seed}.csv        per-epoch diagnostics (pcdiag.py / picoplus.py)
-  bandit_trace/<alg>_k{k}_seed{s}.json      per-epoch bandit records (+ switch_diag fields)
+  bandit_trace/<alg>[_C{C}]_k{k}_seed{s}.json  per-epoch bandit records (+ switch_diag fields)
   prune_trace/<alg>_k{k}_seed{s}.json       {k, k_star, warm, every, ramp, trace: [...]}
   alpha_trace/<alg>_k{k}_seed{s}.json       [epoch][batch] realised alpha
   detail/<alg>/C{C}_k{k}/*.csv              --detail / --concentration / --knn_eval /
@@ -97,7 +97,7 @@ def load_pcdiag(runs, algorithms=None, root=RESULTS_ROOT, min_epochs=None):
 
 # ─── JSON traces ───────────────────────────────────────────────────────────
 
-_TRACE_RE = re.compile(r'(.+)_k(-?\d+)_seed(\d+)\.json$')
+_TRACE_RE = re.compile(r'(.+?)(?:_C(\d+))?_k(-?\d+)_seed(\d+)\.json$')  # _C{C} since 2026-11-22
 
 
 def _iter_traces(runs, sub, root):
@@ -107,7 +107,8 @@ def _iter_traces(runs, sub, root):
         for f in sorted(glob.glob(os.path.join(d, sub, '*.json'))):
             m = _TRACE_RE.search(os.path.basename(f))
             if m:
-                yield os.path.basename(d.rstrip('/')), m.group(1), int(m.group(2)), int(m.group(3)), f
+                C = int(m.group(2)) if m.group(2) else None
+                yield os.path.basename(d.rstrip('/')), m.group(1), C, int(m.group(3)), int(m.group(4)), f
 
 
 def load_bandit_traces(runs, root=RESULTS_ROOT, expand_look_all=True):
@@ -115,11 +116,11 @@ def load_bandit_traces(runs, root=RESULTS_ROOT, expand_look_all=True):
     expand_look_all, look_all=[{...},{...}] -> look0_<key>/look1_<key>. Run-level header
     (epoch 0: reward, shrink_lambda, cv_loglik) is returned in df.attrs['headers']."""
     rows, headers = [], {}
-    for run, alg, k, seed, f in _iter_traces(runs, 'bandit_trace', root):
+    for run, alg, C, k, seed, f in _iter_traces(runs, 'bandit_trace', root):
         for rec in json.load(open(f)):
-            base = dict(run=run, algorithm=alg, k=k, seed=seed)
+            base = dict(run=run, algorithm=alg, C=C, k=k, seed=seed)
             if rec.get('epoch', 1) == 0:
-                headers[(run, alg, k, seed)] = rec
+                headers[(run, alg, C, k, seed)] = rec
                 continue
             r = dict(base)
             for key, v in rec.items():
@@ -144,21 +145,21 @@ def load_bandit_traces(runs, root=RESULTS_ROOT, expand_look_all=True):
 
 def load_prune_traces(runs, root=RESULTS_ROOT):
     rows = []
-    for run, alg, k, seed, f in _iter_traces(runs, 'prune_trace', root):
+    for run, alg, C, k, seed, f in _iter_traces(runs, 'prune_trace', root):
         d = json.load(open(f))
         hdr = {kk: v for kk, v in d.items() if kk != 'trace'}
         for rec in d['trace']:
-            rows.append(dict(run=run, algorithm=alg, seed=seed, **{**hdr, 'k': k}, **rec))
+            rows.append(dict(run=run, algorithm=alg, C=C, seed=seed, **{**hdr, 'k': k}, **rec))
     return pd.DataFrame(rows)
 
 
 def load_alpha_traces(runs, root=RESULTS_ROOT):
     """One row per (epoch, batch) with the realised mean alpha."""
     rows = []
-    for run, alg, k, seed, f in _iter_traces(runs, 'alpha_trace', root):
+    for run, alg, C, k, seed, f in _iter_traces(runs, 'alpha_trace', root):
         for ep, batches in enumerate(json.load(open(f)), start=1):
             for b, a in enumerate(batches):
-                rows.append(dict(run=run, algorithm=alg, k=k, seed=seed, epoch=ep, batch=b, alpha=a))
+                rows.append(dict(run=run, algorithm=alg, C=C, k=k, seed=seed, epoch=ep, batch=b, alpha=a))
     return pd.DataFrame(rows)
 
 

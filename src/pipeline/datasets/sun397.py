@@ -104,7 +104,7 @@ def _build_specs() -> dict:
     return {
         'sun397': DatasetSpec(
             name='sun397', modality='image', backbone='cnn', fixed_num_classes=_N_CLASSES,
-            supports_pico_family=True, loader=_loader,
+            supports_pico_family=False, loader=_loader,  # 2026-11-22: loader builds no pico/comco views (KeyError)
             in_channels=3, image_size=_IMAGE_SIZE,
             mean=(0.4914, 0.4822, 0.4465), std=(0.247, 0.2435, 0.2616),
             notes=('UNVERIFIED (2026-08-14): code-complete but the ~17GB download was not run in '

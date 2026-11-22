@@ -21,9 +21,10 @@ class ProdenLoss(nn.Module):
       - Initialised uniformly over candidate labels (or another init_mode, see below).
       - forward() uses the *stored* confidence as soft-label weights for the loss,
         then updates conf[indices] in-place with the current model's renormalised
-        softmax — ready for the next batch. This renormalize-every-batch update is
-        UNCHANGED regardless of init_mode: only the very first batch(es) touching a
-        given sample still reflect its initial confidence, after which it's
+        softmax restricted to the candidate set Y -- ready for the next batch. The
+        renormalize-every-batch update is UNCHANGED regardless of init_mode (it always
+        uses the stored Y, never the support of conf): only the very first batch(es)
+        touching a given sample still reflect its initial confidence, after which it's
         overwritten by the model's own prediction -- see
         src/pipeline/algorithms/runners.py's PRODEN-UniformInit / PRODEN-BiasedInit
         variants, which exist specifically to demonstrate this insensitivity as a
@@ -94,6 +95,11 @@ class ProdenLoss(nn.Module):
         else:
             raise ValueError(f'Unknown init_mode {init_mode!r}')
         self.register_buffer('conf', conf)   # [N, C], lives on same device as model
+        # The candidate set Y is stored separately (2026-11-22 fix): the update used to derive it
+        # from `conf > 0`, so any init whose support differs from Y (uniform_all, biased_oracle,
+        # biased_all, biased_partial_random, biased_random_all) kept that support for the WHOLE run
+        # (oracle leak or no candidate constraint), not just at initialisation.
+        self.register_buffer('cand', candidate_masked_init(partial_targets, num_classes).gt(0).float())
 
     def set_conf_ema_m(self, epoch: int, epochs: int):
         """Same linear schedule as PiCO's PartialLoss.set_conf_ema_m. No-op
@@ -122,7 +128,7 @@ class ProdenLoss(nn.Module):
         # hard overwrite (conf <- new_conf); conf_ema_m > 0 keeps a
         # PiCO-style memory of the previous confidence instead.
         with torch.no_grad():
-            candidate_mask = (conf > 0).float()           # [B, C]
+            candidate_mask = self.cand[indices]           # [B, C] the true candidate set Y
             new_conf = candidate_mask * torch.softmax(outputs, dim=1)
             new_conf = new_conf / new_conf.sum(dim=1, keepdim=True).clamp(min=1e-8)
             m = self.conf_ema_m

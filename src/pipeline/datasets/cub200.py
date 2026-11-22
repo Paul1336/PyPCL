@@ -108,7 +108,7 @@ def _build_specs() -> dict:
     return {
         'cub200': DatasetSpec(
             name='cub200', modality='image', backbone='cnn', fixed_num_classes=200,
-            supports_pico_family=True, loader=_loader,
+            supports_pico_family=False, loader=_loader,  # 2026-11-22: loader builds no pico/comco views (KeyError)
             in_channels=3, image_size=_IMAGE_SIZE,
             mean=(0.4914, 0.4822, 0.4465), std=(0.247, 0.2435, 0.2616),
             notes=(f'Real photos, {_IMAGE_SIZE}x{_IMAGE_SIZE} resized (see module docstring for '
