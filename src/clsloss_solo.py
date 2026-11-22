@@ -45,8 +45,7 @@ from src.pipeline.biasvariance import _resample_batch, oracle_cls_grad
 SOLO_LOSSES = ['UCE', 'CLPL', 'Wu2022', 'PRODEN', 'PiCOCLS', 'SoLar',
                'MCLLOG', 'MCLLOGFixed', 'SCLNL', 'OP', 'OPW']
 
-_MEAN = [0.4914, 0.4822, 0.4465]
-_STD = [0.247, 0.2435, 0.2616]
+from src.data.transforms import CIFAR_MEAN as _MEAN, CIFAR_STD as _STD  # noqa: E402  (single source, 2026-11-22)
 
 DYN_FIELDS = ['epoch', 'train_loss', 'test_acc', 'train_true_acc', 'disamb_acc', 'cand_mass',
               'cand_entropy', 'p_true', 'conf_acc']

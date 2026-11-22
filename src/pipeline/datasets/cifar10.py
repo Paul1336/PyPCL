@@ -15,8 +15,7 @@ import numpy as np
 from src.pipeline.datasets.generic_loaders import build_image_loaders_full
 from src.pipeline.datasets.specs import DatasetSpec
 
-_CIFAR_MEAN = (0.4914, 0.4822, 0.4465)
-_CIFAR_STD = (0.247, 0.2435, 0.2616)
+from src.data.transforms import CIFAR_MEAN as _CIFAR_MEAN, CIFAR_STD as _CIFAR_STD  # noqa: E402
 
 _CACHE: dict = {}  # keyed by data_dir
 

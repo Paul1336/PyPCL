@@ -26,6 +26,7 @@ import os
 
 from src.pipeline.datasets.generic_loaders import build_lazy_image_loaders_full
 from src.pipeline.datasets.specs import DatasetSpec
+from src.data.transforms import IMAGENET_MEAN, IMAGENET_STD  # noqa: E402
 
 _HF_REPO = 'tanganke/sun397'
 _IMAGE_SIZE = 64
@@ -106,7 +107,7 @@ def _build_specs() -> dict:
             name='sun397', modality='image', backbone='cnn', fixed_num_classes=_N_CLASSES,
             supports_pico_family=False, loader=_loader,  # 2026-11-22: loader builds no pico/comco views (KeyError)
             in_channels=3, image_size=_IMAGE_SIZE,
-            mean=(0.4914, 0.4822, 0.4465), std=(0.247, 0.2435, 0.2616),
+            mean=IMAGENET_MEAN, std=IMAGENET_STD,  # natural images (was CIFAR stats, 2026-11-22)
             notes=('UNVERIFIED (2026-08-14): code-complete but the ~17GB download was not run in '
                    'this pass -- see module docstring. Run a small smoke test before trusting results.'),
         ),

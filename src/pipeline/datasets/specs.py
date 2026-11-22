@@ -7,6 +7,7 @@ design rationale.
 
 from dataclasses import dataclass
 from typing import Callable, Optional, Tuple
+from src.data.transforms import CIFAR_MEAN, CIFAR_STD  # noqa: E402
 
 
 @dataclass
@@ -29,8 +30,8 @@ class DatasetSpec:
     # image-modality fields (ignored for tabular/preambiguous)
     in_channels: int = 3
     image_size: int = 32
-    mean: Tuple[float, ...] = (0.4914, 0.4822, 0.4465)
-    std: Tuple[float, ...] = (0.247, 0.2435, 0.2616)
+    mean: Tuple[float, ...] = CIFAR_MEAN
+    std: Tuple[float, ...] = CIFAR_STD
 
     # tabular/preambiguous-modality fields
     input_dim: Optional[int] = None

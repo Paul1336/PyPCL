@@ -27,6 +27,7 @@ import numpy as np
 
 from src.pipeline.datasets.generic_loaders import build_image_loaders_full, build_preambiguous_loaders
 from src.pipeline.datasets.specs import DatasetSpec, DatasetUnavailableError
+from src.data.transforms import CIFAR_MEAN, CIFAR_STD  # noqa: E402
 
 _URL = 'http://www.timotheecour.com/tv_data/tv_data.tar.gz'
 _CACHE: dict = {}
@@ -161,7 +162,7 @@ def _build_specs() -> dict:
         'clpl-lost': DatasetSpec(
             name='clpl-lost', modality='image', backbone='cnn', fixed_num_classes=16,
             supports_pico_family=False, loader=_loader_lost,  # 2026-11-22: loader builds no pico/comco views (KeyError)
-            in_channels=3, image_size=90, mean=(0.4914, 0.4822, 0.4465), std=(0.247, 0.2435, 0.2616),
+            in_channels=3, image_size=90, mean=CIFAR_MEAN, std=CIFAR_STD,  # TODO: dataset-specific stats (kept CIFAR for reproducibility)
             is_preambiguous=True, batch_size_override=32,
             notes=('CLPL paper\'s own raw-image "Lost" benchmark (Section 7-8). Real screenplay-'
                    'derived candidate labels -- same underlying data as pll_mat.py\'s "lost" '

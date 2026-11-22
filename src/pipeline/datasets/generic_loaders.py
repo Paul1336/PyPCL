@@ -56,28 +56,6 @@ class _ArrayTestDataset(Dataset):
         return img, self.targets[idx]
 
 
-class LazyImagePathDataset:
-    """Like _ArrayDataset, but .data holds file path strings instead of
-    preloaded arrays -- for datasets too large / too variable-resolution to
-    load into memory up front (CUB-200, SUN397). __getitem__ opens the file
-    lazily. Accepted by ComparisonDataGenerator (same .data/.targets/.classes
-    contract) and by WeaklySupervisedDataset (Image.open instead of
-    Image.fromarray)."""
-
-    def __init__(self, paths: list, targets: list, classes: list):
-        self.data = paths
-        self.targets = targets
-        self.classes = classes
-
-    def __len__(self):
-        return len(self.targets)
-
-    def __iter__(self):
-        from PIL import Image
-        for i in range(len(self)):
-            yield Image.open(self.data[i]).convert('RGB'), self.targets[i]
-
-
 class LazyWeaklySupervisedDataset(Dataset):
     """Path-based counterpart to src.data_utils.WeaklySupervisedDataset."""
 

@@ -34,6 +34,7 @@ sampling (logged at runtime, not silent) -- confirmed by a real run at C=20
 
 from src.cifar100_subset import get_subset_dataloaders_full, prepare_cifar100_subset
 from src.pipeline.datasets.specs import DatasetSpec
+from src.data.transforms import CIFAR_MEAN, CIFAR_STD  # noqa: E402
 
 _HIERARCHICAL_Q = 0.5  # paper's Table 3 headline setting (Table 6 also tests 0.1, 0.8)
 
@@ -54,7 +55,7 @@ def _build_specs() -> dict:
         'cifar100-h': DatasetSpec(
             name='cifar100-h', modality='image', backbone='cnn', fixed_num_classes=None,
             supports_pico_family=True, loader=_loader, sweeps_k=False,
-            in_channels=3, image_size=32, mean=(0.4914, 0.4822, 0.4465), std=(0.247, 0.2435, 0.2616),
+            in_channels=3, image_size=32, mean=CIFAR_MEAN, std=CIFAR_STD,
             notes=(f'Hierarchical (same-superclass) candidate labels on CIFAR-100, q={_HIERARCHICAL_Q} '
                    f'(paper-confirmed generation process, see module docstring). Most meaningful at '
                    f'large --c_values (close to 100); small subsets mostly fall back to uniform sampling.'),

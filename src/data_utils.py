@@ -8,6 +8,8 @@ from src.pico.randaugment import RandomAugment
 import copy
 
 
+from src.data.transforms import CIFAR_MEAN, CIFAR_STD, SOLAR_STD, weak_strong  # noqa: E402
+
 class WeaklySupervisedDataset(Dataset):
     def __init__(self, data, targets, transform=None):
         self.data = data
@@ -312,94 +314,48 @@ class ComparisonDataGenerator:
 
         return pl_dataset, cl_dataset
 
-class PicoDataset(Dataset):
+def _num_classes(original_labels):
+    """C from the remapped true labels (0..C-1). Was len(set(labels)), which undercounts when a
+    class has no training sample; max + 1 is identical whenever every class is present."""
+    return int(max(int(x) for x in original_labels)) + 1
 
-    def __init__(self, pl_dataset_raw, original_labels, image_size=32,
-                 mean=(0.4914, 0.4822, 0.4465), std=(0.247, 0.2435, 0.2616)):
+
+class PicoDataset(Dataset):
+    """(weak view, strong view, dense candidate mask Y [C], true label, index) for PiCO-family runs.
+    Augmentations: src/data/transforms.weak_strong (shared with ComCoDataset)."""
+
+    def __init__(self, pl_dataset_raw, original_labels, image_size=32, mean=CIFAR_MEAN, std=CIFAR_STD):
         self.images = pl_dataset_raw.data
         self.given_label_matrix_sparse = pl_dataset_raw.targets
         self.true_labels = original_labels
-
-        self.num_classes = len(set(original_labels.numpy()))
-
-        # Weak and strong augmentations for contrastive learning.
-        # image_size/mean/std default to the original CIFAR values so existing
-        # call sites (no args passed) are unaffected. RGB-only ops (ColorJitter,
-        # RandomGrayscale) mean this class should only be used for 3-channel
-        # image datasets -- see DatasetSpec.supports_pico_family.
-        self.weak_transform = transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.RandomResizedCrop(size=image_size, scale=(0.2, 1.)),
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomApply([
-                transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)
-            ], p=0.8),
-            transforms.RandomGrayscale(p=0.2),
-            transforms.ToTensor(),
-            transforms.Normalize(mean, std)
-        ])
-        self.strong_transform = transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.RandomResizedCrop(size=image_size, scale=(0.2, 1.)),
-            transforms.RandomHorizontalFlip(),
-            RandomAugment(n=3, m=5),
-            transforms.ToTensor(),
-            transforms.Normalize(mean, std)
-        ])
+        self.num_classes = _num_classes(original_labels)
+        self.weak_transform, self.strong_transform = weak_strong(image_size, mean, std)
 
     def __len__(self):
         return len(self.true_labels)
-        
+
     def __getitem__(self, index):
         image = self.images[index]
         each_image_w = self.weak_transform(image)
         each_image_s = self.strong_transform(image)
-        
-        # Create one-hot encoded partial label vector.
-        p_label = self.given_label_matrix_sparse[index]
         each_label = torch.zeros(self.num_classes, dtype=torch.float)
-        each_label[p_label] = 1.0
-        
-        each_true_label = self.true_labels[index]
-        return each_image_w, each_image_s, each_label, each_true_label, index
+        each_label[self.given_label_matrix_sparse[index]] = 1.0
+        return each_image_w, each_image_s, each_label, self.true_labels[index], index
 
 class ComCoDataset(Dataset):
-    """Dataset for ComCo: returns weak/strong augmented pairs with complementary label masks."""
+    """(weak view, strong view, dense complementary mask [C], true label, index) for ComCo runs;
+    same augmentations as PicoDataset."""
 
-    def __init__(self, cl_dataset_raw, original_labels, image_size=32,
-                 mean=(0.4914, 0.4822, 0.4465), std=(0.247, 0.2435, 0.2616)):
+    def __init__(self, cl_dataset_raw, original_labels, image_size=32, mean=CIFAR_MEAN, std=CIFAR_STD):
         self.images = cl_dataset_raw.data
         self.true_labels = original_labels
-        self.num_classes = len(set(original_labels.numpy()))
-
-        # Pre-build dense binary complementary masks [C] from variable-length sparse labels
+        self.num_classes = _num_classes(original_labels)
         self.comp_masks = []
         for cl_labels in cl_dataset_raw.targets:
             mask = torch.zeros(self.num_classes, dtype=torch.float)
             mask[cl_labels] = 1.0
             self.comp_masks.append(mask)
-
-        # image_size/mean/std default to the original CIFAR values (see PicoDataset
-        # for why this class should only be used for 3-channel image datasets).
-        self.weak_transform = transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.RandomResizedCrop(size=image_size, scale=(0.2, 1.)),
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomApply([
-                transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)
-            ], p=0.8),
-            transforms.RandomGrayscale(p=0.2),
-            transforms.ToTensor(),
-            transforms.Normalize(mean, std)
-        ])
-        self.strong_transform = transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.RandomResizedCrop(size=image_size, scale=(0.2, 1.)),
-            transforms.RandomHorizontalFlip(),
-            RandomAugment(n=3, m=5),
-            transforms.ToTensor(),
-            transforms.Normalize(mean, std)
-        ])
+        self.weak_transform, self.strong_transform = weak_strong(image_size, mean, std)
 
     def __len__(self):
         return len(self.true_labels)
@@ -408,19 +364,16 @@ class ComCoDataset(Dataset):
         image = self.images[index]
         img_w = self.weak_transform(image)
         img_s = self.strong_transform(image)
-        comp_mask = self.comp_masks[index]
-        true_label = self.true_labels[index]
-        return img_w, img_s, comp_mask, true_label, index
+        return img_w, img_s, self.comp_masks[index], self.true_labels[index], index
 
 
 class SoLarDataset(Dataset):
-    def __init__(self, pl_dataset_raw, original_labels, image_size=32,
-                 mean=(0.4914, 0.4822, 0.4465), std=(0.247, 0.243, 0.261)):
+    def __init__(self, pl_dataset_raw, original_labels, image_size=32, mean=CIFAR_MEAN, std=SOLAR_STD):
         self.images = pl_dataset_raw.data
         self.given_label_matrix_sparse = pl_dataset_raw.targets
         self.true_labels = original_labels
 
-        self.num_classes = len(set(original_labels.numpy()))
+        self.num_classes = _num_classes(original_labels)
 
         self.weak_transform = transforms.Compose([
                                         transforms.ToPILImage(),

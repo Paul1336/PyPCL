@@ -9,7 +9,7 @@ IS alive (also confirmed by the same probe).
 
 Images are extracted once to real JPEG files under
 <data_dir>/cub200_extracted/ so this dataset can reuse the lazy-path
-machinery in generic_loaders.py (LazyImagePathDataset /
+machinery in generic_loaders.py (
 build_lazy_image_loaders_full) unchanged, rather than writing a
 CUB-200-specific Dataset class.
 
@@ -28,6 +28,7 @@ import os
 
 from src.pipeline.datasets.generic_loaders import build_lazy_image_loaders_full
 from src.pipeline.datasets.specs import DatasetSpec
+from src.data.transforms import IMAGENET_MEAN, IMAGENET_STD  # noqa: E402
 
 _HF_REPO = 'bentrevett/caltech-ucsd-birds-200-2011'
 _IMAGE_SIZE = 64
@@ -38,7 +39,7 @@ def _extract_to_files(data_dir: str) -> dict:
     """Downloads (via HF `datasets`, cached by HF's own cache dir) then
     materializes each image as a real JPEG file under
     <data_dir>/cub200_extracted/{train,test}/, so downstream code can use
-    plain file paths (LazyImagePathDataset) instead of holding a live HF
+    plain file paths instead of holding a live HF
     Dataset object. One-time cost; skipped if already extracted."""
     if 'paths' in _CACHE:
         return _CACHE['paths']
@@ -110,7 +111,7 @@ def _build_specs() -> dict:
             name='cub200', modality='image', backbone='cnn', fixed_num_classes=200,
             supports_pico_family=False, loader=_loader,  # 2026-11-22: loader builds no pico/comco views (KeyError)
             in_channels=3, image_size=_IMAGE_SIZE,
-            mean=(0.4914, 0.4822, 0.4465), std=(0.247, 0.2435, 0.2616),
+            mean=IMAGENET_MEAN, std=IMAGENET_STD,  # natural images (was CIFAR stats, 2026-11-22)
             notes=(f'Real photos, {_IMAGE_SIZE}x{_IMAGE_SIZE} resized (see module docstring for '
                    f'why this deviates from the papers\' typically-larger/pretrained-backbone setup).'),
         ),

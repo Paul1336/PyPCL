@@ -23,8 +23,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-_MEAN = [0.4914, 0.4822, 0.4465]
-_STD = [0.247, 0.2435, 0.2616]
+from src.data.transforms import CIFAR_MEAN as _MEAN, CIFAR_STD as _STD  # noqa: E402  (single source, 2026-11-22)
 
 
 class SwitchDiag:
