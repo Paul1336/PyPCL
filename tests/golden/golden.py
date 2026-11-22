@@ -45,8 +45,8 @@ CONC = ['--concentration', '--concentration_log_every', '2']
 KNN = ['--knn_eval']
 BV = ['--biasvariance', '--biasvariance_log_every', '2', '--biasvariance_m_resamples', '4',
       '--biasvariance_eval_size', '64']
-PRUNE = ['src.pipeline.algorithms.runners:PRUNE_WARM=1', 'src.pipeline.algorithms.runners:PRUNE_EVERY=1',
-         'src.pipeline.algorithms.runners:PRUNE_RAMP=2']
+PRUNE = ['src.pipeline.algorithms.runners.swap:PRUNE_WARM=1', 'src.pipeline.algorithms.runners.swap:PRUNE_EVERY=1',
+         'src.pipeline.algorithms.runners.swap:PRUNE_RAMP=2']
 AC = ['src.pcdiag:AC_POS_START=2']
 
 # (cell id, algorithm, extra run_pipeline args, module patches)
