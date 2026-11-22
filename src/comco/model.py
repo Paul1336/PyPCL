@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from src.models.common import ema_prototypes_loop, init_key_encoder, momentum_update
 from src.pico.resnet import SupConResNet
 
 
@@ -18,9 +19,7 @@ class ComCoModel(nn.Module):
         self.encoder_q = SupConResNet(num_class=args['num_class'], feat_dim=args['low_dim'])
         self.encoder_k = SupConResNet(num_class=args['num_class'], feat_dim=args['low_dim'])
 
-        for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
-            param_k.data.copy_(param_q.data)
-            param_k.requires_grad = False
+        init_key_encoder(self.encoder_q, self.encoder_k)
 
         Q = args['moco_queue']
         D = args['low_dim']
@@ -31,10 +30,12 @@ class ComCoModel(nn.Module):
         self.register_buffer("queue_comp", torch.zeros(Q, C))
         self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
 
+    def predict(self, x):
+        return self.encoder_q(x)[0]
+
     @torch.no_grad()
     def _momentum_update_key_encoder(self, moco_m):
-        for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
-            param_k.data = param_k.data * moco_m + param_q.data * (1.0 - moco_m)
+        momentum_update(self.encoder_q, self.encoder_k, moco_m)
 
     @torch.no_grad()
     def _dequeue_and_enqueue(self, keys, pseudo_labels, comp_masks, queue_size):
@@ -99,9 +100,7 @@ class ComCoWeightedModel(ComCoModel):
         prototypes = self.prototypes.clone().detach()
         logits_prot = torch.mm(q, prototypes.t())
         score_prot = torch.softmax(logits_prot, dim=1)
-        for feat, label in zip(q, pseudo_labels_b):
-            self.prototypes[label] = self.prototypes[label] * args['proto_m'] + (1 - args['proto_m']) * feat
-        self.prototypes = F.normalize(self.prototypes, p=2, dim=1).detach()
+        self.prototypes = ema_prototypes_loop(self.prototypes, q, pseudo_labels_b, args['proto_m'])
 
         with torch.no_grad():
             self._momentum_update_key_encoder(args['moco_m'])

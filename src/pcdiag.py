@@ -44,6 +44,8 @@ from src.comco.model import ComCoModel
 from src.engine import evaluate_model
 from src.pico.model import PiCOModel
 from src.losses import functional as Fn
+from src.losses.contrastive import comco_masks, masked_infonce  # noqa: F401  (moved 2026-11-22)
+from src.models.common import seq_ema_prototypes  # noqa: F401  (moved 2026-11-22)
 from src.pico.utils_loss import PartialLoss
 
 PCD_VARIANTS = {
@@ -124,33 +126,6 @@ PICO_TAU = 0.07  # SupConLoss default (temperature = base_temperature -> scale 1
 
 
 # ─── shared pieces ─────────────────────────────────────────────────────────
-
-
-def seq_ema_prototypes(protos, feats, labels, m):
-    """Vectorised, exact equivalent of PiCOModel.forward's sequential per-sample loop
-    `proto[l] = m * proto[l] + (1 - m) * f` followed by one L2 normalisation."""
-    C = protos.shape[0]
-    n = labels.shape[0]
-    order = torch.sort(labels, stable=True)[1]
-    sl = labels[order]
-    counts = torch.bincount(labels, minlength=C)
-    starts = torch.cumsum(counts, 0) - counts
-    rank = torch.arange(n, device=labels.device) - starts[sl]
-    w = (1 - m) * torch.pow(torch.tensor(m, device=labels.device, dtype=feats.dtype),
-                            (counts[sl] - 1 - rank).to(feats.dtype))
-    contrib = torch.zeros_like(protos).index_add_(0, sl, w[:, None] * feats[order])
-    decay = torch.pow(torch.tensor(m, device=labels.device, dtype=feats.dtype), counts.to(feats.dtype))
-    return F.normalize(protos * decay[:, None] + contrib, p=2, dim=1)
-
-
-def masked_infonce(q, feats, pos, denom, tau):
-    """-(1/|P_i|) sum_{p in P_i} log( exp(s_ip/tau) / sum_{a in D_i} exp(s_ia/tau) ), mean over i.
-    Same arithmetic as SupConLoss (mask mode, D = all but self) and ComCoContrastiveLoss."""
-    logits = torch.mm(q, feats.t()) / tau
-    logits = logits - logits.max(dim=1, keepdim=True)[0].detach()
-    exp_logits = torch.exp(logits) * denom
-    log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True) + 1e-12)
-    return -((pos * log_prob).sum(1) / (pos.sum(1) + 1e-12)).mean()
 
 
 # cls losses on the dense comp mask -> canonical formulas in src/losses/functional.py (2026-11-22)
@@ -448,57 +423,6 @@ class ComCoDiagModel(ComCoModel):
         self.queue_true[ptr:ptr + k.shape[0]] = true
         return dict(h=h, output=output, q=q, yhat=yhat, pair_lab=pair_lab, feats=feats, pool_lab=pool_lab,
                     pool_comp=pool_comp, pool_true=pool_true)
-
-
-@torch.no_grad()
-def comco_masks(sim, lab_q, pool_lab, pool_comp, warm_pos, warm_neg, top_k, compat=None, force_cstar=None,
-                pos_all=False, neg_all=False):
-    """Selection masks of ComCoContrastiveLoss (same code path); compat (CandFilter) restricts the
-    top-K neighbour search to pool entries sharing a candidate class; force_cstar fixes c*.
-    pos_all / neg_all: PiCO+ AllClean rules (all same-label positives / all-but-self denominator)."""
-    B, A = sim.shape
-    C = pool_comp.shape[1]
-    device = sim.device
-    ar = torch.arange(B, device=device)
-    key_idx = ar + B
-    pos = torch.zeros(B, A, device=device)
-    pos.scatter_(1, key_idx[:, None], 1.0)
-    if neg_all:
-        warm_neg = False  # -> denominator = ones minus self below
-    if warm_pos and pos_all:
-        same_lab = (lab_q[:, None] == pool_lab[None, :]).float()
-        same_lab.scatter_(1, ar[:, None], 0.0)
-        pos = ((pos + same_lab) > 0).float()
-    elif warm_pos and top_k > 0:
-        isim = (lab_q[:, None] == pool_lab[None, :]).float() * 0.5 * (1.0 + sim)
-        isim.scatter_(1, ar[:, None], -1e9)
-        isim.scatter_(1, key_idx[:, None], -1e9)
-        if compat is None:
-            idx = isim.topk(top_k, dim=1)[1]
-            pos.scatter_(1, idx, 1.0)
-        else:
-            isim = isim.masked_fill(compat == 0, -1e9)
-            vals, idx = isim.topk(top_k, dim=1)
-            pos.scatter_add_(1, idx, (vals > -1e8).float())
-            pos.clamp_(max=1.0)
-    cstar = None
-    if warm_neg:
-        if force_cstar is None:
-            mx = torch.full((B, C), -1e9, device=device)
-            for c in range(C):
-                mc = pool_comp[:, c].bool()
-                if mc.any():
-                    mx[:, c] = sim[:, mc].max(dim=1).values
-            dist = 0.5 * (1.0 - mx)
-            dist[mx <= -1e8] = -1e9
-            cstar = dist.argmax(dim=1)
-        else:
-            cstar = force_cstar
-        denom = (pos + pool_comp[:, cstar].t()).clamp(max=1.0)
-    else:
-        denom = torch.ones(B, A, device=device)
-    denom.scatter_(1, ar[:, None], 0.0)
-    return pos, denom, cstar
 
 
 def train_comco_pcd_epoch(comco_args, model, loader, optimizer, epoch, device, flags, C):

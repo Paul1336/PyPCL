@@ -3,50 +3,23 @@ import torch.nn.functional as F
 import torch.nn as nn
     
 from src.losses.confidence import PartialLoss  # noqa: F401,E402  (moved 2026-11-22)
+from src.losses.contrastive import masked_infonce, moco_infonce, self_mask  # noqa: E402
 
 
 class SupConLoss(nn.Module):
-    """Supervised Contrastive Learning loss."""
+    """Supervised contrastive loss (PiCO). mask mode -> masked_infonce with positives = mask
+    minus self and denominator = everything but self; mask=None -> MoCo loss.
+    Core in src/losses/contrastive.py (2026-11-22)."""
     def __init__(self, temperature=0.07, base_temperature=0.07):
         super().__init__()
         self.temperature = temperature
         self.base_temperature = base_temperature
 
     def forward(self, features, mask=None, batch_size=-1):
-        device = features.device
-        if mask is not None:
-            # SupCon loss (Partial Label Mode)
-            mask = mask.float().detach().to(device)
-            # Compute logits.
-            anchor_dot_contrast = torch.div(torch.matmul(features[:batch_size], features.T), self.temperature)
-            # For numerical stability.
-            logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
-            logits = anchor_dot_contrast - logits_max.detach()
-            # Mask-out self-contrast cases.
-            logits_mask = torch.scatter(torch.ones_like(mask), 1, torch.arange(batch_size).view(-1, 1).to(device), 0)
-            mask = mask * logits_mask
-            # Compute log_prob.
-            exp_logits = torch.exp(logits) * logits_mask
-            log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True) + 1e-12)
-            # Compute mean of log-likelihood over positive samples.
-            mean_log_prob_pos = (mask * log_prob).sum(1) / (mask.sum(1) + 1e-12)
-
-            # Loss
-            loss = - (self.temperature / self.base_temperature) * mean_log_prob_pos
-            loss = loss.mean()
-        else: # MoCo Loss
-            # Positive logits: Nx1
-            q = features[:batch_size]
-            k = features[batch_size:batch_size * 2]
-            queue = features[batch_size * 2:]
-            l_pos = torch.einsum('nc,nc->n', [q, k]).unsqueeze(-1)
-            # Negative logits: NxK
-            l_neg = torch.einsum('nc,kc->nk', [q, queue])
-            # Logits: Nx(1+K)
-            logits = torch.cat([l_pos, l_neg], dim=1)
-            # Apply temperature.
-            logits /= self.temperature
-            # Labels: positive key indicators.
-            labels = torch.zeros(logits.shape[0], dtype=torch.long).to(device)
-            loss = F.cross_entropy(logits, labels)
-        return loss
+        if mask is None:
+            return moco_infonce(features, batch_size, self.temperature)
+        mask = mask.float().detach().to(features.device)
+        not_self = self_mask(batch_size, mask.shape[1], features.device)
+        loss = masked_infonce(features[:batch_size], features, mask * not_self, not_self, self.temperature)
+        scale = self.temperature / self.base_temperature
+        return loss if scale == 1.0 else loss * scale

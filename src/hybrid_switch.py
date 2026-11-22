@@ -45,6 +45,9 @@ class HybridModel(nn.Module):
         logits, _ = self.pico.encoder_q(x)
         return logits
 
+    def predict(self, x):
+        return self.forward(x)
+
 
 class ComCoBatchView:
     """Iterate a PiCO-format loader (or list of batches) as ComCo-format batches."""

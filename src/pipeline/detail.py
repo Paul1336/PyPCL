@@ -83,6 +83,8 @@ import os
 
 import numpy as np
 import torch
+
+from src.models.common import predict_logits
 import torch.nn.functional as F
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
@@ -154,10 +156,7 @@ def log_per_class_checkpoint(model, test_loader, device, C, epoch, out_dir, pred
     all_logits, all_labels = [], []
     for images, labels in test_loader:
         images = images.to(device)
-        if isinstance(model, (PiCOModel, PiCOOracleModel, ComCoModel)):
-            logits = model(images, eval_only=True)
-        else:
-            logits = model(images)
+        logits = predict_logits(model, images)
         all_logits.append(logits.cpu())
         all_labels.append(labels)
     all_logits = torch.cat(all_logits, dim=0)
@@ -285,10 +284,7 @@ def _predict_probs_over_trainset(model, loader, device):
     all_probs = []
     for imgs, _ in loader:
         imgs = imgs.to(device)
-        if isinstance(model, (PiCOModel, PiCOOracleModel, ComCoModel)):
-            logits = model(imgs, eval_only=True)
-        else:
-            logits = model(imgs)
+        logits = predict_logits(model, imgs)
         all_probs.append(F.softmax(logits, dim=1).cpu())
     return torch.cat(all_probs, dim=0)
 

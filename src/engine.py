@@ -1,7 +1,6 @@
 import torch
 from tqdm import tqdm
-from src.pico.model import PiCOModel, PiCOOracleModel
-from src.comco.model import ComCoModel
+from src.models.common import predict_logits
 import torch.nn.functional as F
 import numpy as np
 import math
@@ -15,10 +14,7 @@ def evaluate_model(model, test_loader, device):
     with torch.no_grad():
         for images, labels in test_loader:
             images, labels = images.to(device), labels.to(device)
-            if isinstance(model, (PiCOModel, PiCOOracleModel, ComCoModel)):
-                outputs = model(images, eval_only=True)
-            else:
-                outputs = model(images)
+            outputs = predict_logits(model, images)
             _, predicted = torch.max(outputs.data, 1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()

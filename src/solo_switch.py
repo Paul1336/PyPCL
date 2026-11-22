@@ -28,6 +28,9 @@ class SoloModel(nn.Module):
         logits, _ = self.encoder_q(x)
         return logits
 
+    def predict(self, x):
+        return self.forward(x)
+
 
 def train_solo_switch_epoch(args, model, loader, loss_fn, loss_cont_fn, optimizer, epoch, device, alpha_fn):
     """One epoch of cls-loss-only training; loss_fn takes (logits, index, partial_Y, alpha=...).

@@ -149,6 +149,63 @@ def test_stateful_moved():
         report(f'{name} (moved)', ok)
 
 
+def test_contrastive():
+    import legacy_src.comco.utils_loss as oc
+    import legacy_src.pico.utils_loss as op
+    from src.comco.utils_loss import ComCoContrastiveLoss
+    from src.pico.utils_loss import SupConLoss
+    B, Q, D, C = 16, 32, 8, 6
+    feats = torch.nn.functional.normalize(torch.randn(2 * B + Q, D), dim=1)
+    lab = torch.randint(0, C, (2 * B + Q,))
+    mask = (lab[:B, None] == lab[None, :]).float()
+    for name, args in [('SupCon mask', (mask, B)), ('SupCon MoCo', (None, B))]:
+        ok, d = compare(name, lambda f, *a: SupConLoss()(f, *a), lambda f, *a: op.SupConLoss()(f, *a),
+                        args, args, feats)
+        report(name, ok, '' if ok else d)
+    comp = (torch.rand(2 * B + Q, C) < 0.5).float()
+    pq = lab[:B]
+    for wp, wn in [(False, False), (False, True), (True, True)]:
+        f_new = lambda q, *a: ComCoContrastiveLoss()(q, *a)
+        f_old = lambda q, *a: oc.ComCoContrastiveLoss()(q, *a)
+        args = (feats, lab, comp, pq, wp, wn)
+        ok, d = compare(f'ComCoContrastive wp={wp} wn={wn}', f_new, f_old, args, args, feats[:B].clone())
+        report(f'ComCoContrastive wp={wp} wn={wn}', ok, '' if ok else d)
+
+
+def test_models_forward():
+    """Same seed -> same init; two forward passes must give identical outputs and buffers."""
+    import legacy_src.comco.model as ocm
+    import legacy_src.pico.model as opm
+    from src.comco import model as ncm
+    from src.pico import model as npm
+    C, B = 5, 8
+    args = dict(num_class=C, low_dim=16, moco_queue=16, moco_m=0.99, proto_m=0.9)
+    x1, x2 = torch.randn(B, 3, 32, 32), torch.randn(B, 3, 32, 32)
+    Y = (torch.rand(B, C) < 0.5).float()
+    Y[:, 0] = 1
+    y = torch.randint(0, C, (B,))
+    comp = 1 - Y
+    cases = [('PiCOModel', npm.PiCOModel, opm.PiCOModel, lambda M: M(x1, x2, Y, args)),
+             ('PiCOOracleModel', npm.PiCOOracleModel, opm.PiCOOracleModel, lambda M: M(x1, x2, Y, y, args)),
+             ('ComCoModel', ncm.ComCoModel, ocm.ComCoModel, lambda M: M(x1, x2, comp, args)),
+             ('ComCoWeightedModel', ncm.ComCoWeightedModel, ocm.ComCoWeightedModel,
+              lambda M: M(x1, x2, comp, Y, args))]
+    for name, New, Old, fwd in cases:
+        torch.manual_seed(1)
+        mn = New(args)
+        torch.manual_seed(1)
+        mo = Old(args)
+        ok = True
+        for _ in range(2):
+            on, oo = fwd(mn), fwd(mo)
+            ok &= all(close(a.float(), b.float()) for a, b in zip(on, oo))
+        bn, bo = dict(mn.named_buffers()), dict(mo.named_buffers())
+        ok &= set(bn) == set(bo) and all(close(bn[k].float(), bo[k].float()) for k in bn)
+        ok &= all(close(a, b) for a, b in zip(mn.encoder_k.parameters(), mo.encoder_k.parameters()))
+        ok &= close(mn.predict(x1), mo(x1, eval_only=True))
+        report(f'{name} forward x2 + buffers + predict', ok)
+
+
 if __name__ == '__main__':
     for name, fn in list(globals().items()):
         if name.startswith('test_') and callable(fn):
