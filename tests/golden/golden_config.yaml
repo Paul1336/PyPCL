@@ -1,0 +1,44 @@
+data_generation:
+  cifar_path: ./data
+  eta: 0.2
+training:
+  num_classes: 20
+  batch_size: 512
+  epochs: 1000
+  lr: 0.001
+  momentum: 0.9
+  weight_decay: 1e-4
+comco:
+  low_dim: 128
+  moco_queue: 1024
+  moco_m: 0.999
+  loss_weight: 0.3
+  temperature: 0.17
+  top_k: 1
+  warmup_neg: 1
+  warmup_pos: 2
+pico:
+  low_dim: 128
+  moco_queue: 1024
+  moco_m: 0.999
+  proto_m: 0.99
+  prot_start: 1
+  loss_weight: 0.5
+  conf_ema_range:
+  - 0.95
+  - 0.8
+  prot_start_fixed: 1
+solar:
+  warmup_epoch: 1
+  rho_range:
+  - 0.2
+  - 0.6
+  lamd: 3
+  eta: 0.9
+  tau: 0.99
+  est_epochs: 2
+  gamma1: 0.1
+  gamma2: 0.01
+picoplus:
+  plus_warmup: 1
+  knn_start: 2
