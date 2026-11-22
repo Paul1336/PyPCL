@@ -1,0 +1,16 @@
+# Port of logs/noctr_1118/launch.py (2026-11-18 no-contrastive baselines), used to verify that
+# scripts/sweep.py reproduces the old launcher's cells, shard ids and arguments (tests/sweep_equiv.py).
+id: noctr_1118
+epochs: 200
+data_dir: /nfs/home/Paul/PyPCL/data
+families:
+  - {name: c100u_fixk, run_name: "noctr_c{C}_{cl_bias}_fixk_1118", k_mode: fixk,
+     grid: {C: [100], cl_bias: [uniform], algorithm: [PRODEN, MCL-LOG], seed: [42, 43, 44], k: [5, 25, 50, 75, 99]}}
+  - {name: c100u_varq, run_name: "noctr_c{C}_{cl_bias}_varq_1118", k_mode: varq,
+     grid: {C: [100], cl_bias: [uniform], algorithm: [PRODEN, MCL-LOG], seed: [42, 43, 44], k: [5, 25, 50, 75, 99]}}
+  - {name: c20_fixk, run_name: "noctr_c{C}_{cl_bias}_fixk_1118", k_mode: fixk,
+     grid: {C: [20], cl_bias: [uniform, set1], algorithm: [PRODEN, MCL-LOG], seed: [42, 43, 44], k: [2, 5, 10, 15, 19]}}
+  - {name: c20_varq, run_name: "noctr_c{C}_{cl_bias}_varq_1118", k_mode: varq,
+     grid: {C: [20], cl_bias: [uniform, set1], algorithm: [PRODEN, MCL-LOG], seed: [42, 43, 44], k: [2, 5, 10, 15, 19]}}
+order: [seed, family, -C, algorithm, k]
+resources: {gpus: [0, 1, 2, 3], slots_per_gpu: 4, mem_budget_mb: 24000}
