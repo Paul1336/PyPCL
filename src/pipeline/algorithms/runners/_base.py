@@ -30,7 +30,6 @@ from src.fixed_pico_engine import train_pico_epoch_fixed, train_pico_mcl_epoch_f
 from src.oracle_pico_engine import train_pico_oracle_add_graded_epoch, train_pico_oracle_graded_epoch
 from src.mcl_losses import MCL_LOG
 from src.fixed_mcl_losses import FixedMCLLog
-from src.model_setup import setup_solar
 from src.models import create_model_for_spec
 from src.op_loss import OPLoss, OPWLoss
 from src.pico.mcl_cls_loss import PiCOMCLLoss

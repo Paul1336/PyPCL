@@ -386,46 +386,6 @@ def prepare_cifar100_subset(
             (sub['test_data'], sub['test_targets']), log_info)
 
 
-def get_subset_dataloaders(
-    pl_dataset_raw,
-    cl_dataset_raw,
-    original_targets,
-    test_info,
-    batch_size: int,
-):
-    """
-    Builds 'pl', 'cl', and 'test' DataLoaders from raw subset datasets.
-    Only these three loaders are needed for Cour 2011 and MCL-LOG.
-    """
-    from torchvision import transforms
-    train_transform = transforms.Compose([
-        transforms.RandomCrop(32, padding=4),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        transforms.Normalize(_MEAN, _STD),
-    ])
-    test_transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize(_MEAN, _STD),
-    ])
-
-    pl_dataset = WeaklySupervisedDataset(
-        pl_dataset_raw.data, pl_dataset_raw.targets, transform=train_transform
-    )
-    cl_dataset = WeaklySupervisedDataset(
-        cl_dataset_raw.data, cl_dataset_raw.targets, transform=train_transform
-    )
-
-    pl_loader = DataLoader(pl_dataset, batch_size=batch_size, shuffle=True,  collate_fn=collate_fn)
-    cl_loader = DataLoader(cl_dataset, batch_size=batch_size, shuffle=True,  collate_fn=collate_fn)
-
-    test_data, test_targets = test_info
-    test_dataset = _ArrayTestDataset(test_data, test_targets, transform=test_transform)
-    test_loader  = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-
-    return {'pl': pl_loader, 'cl': cl_loader, 'test': test_loader}
-
-
 class SizeBucketBatchSampler:
     """Batches that each contain samples of a single candidate-set size.
 

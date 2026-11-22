@@ -212,3 +212,33 @@ Phase 3/4、7、8 互相獨立，可以平行（各開 worktree）。
 4. **資料 RNG**：label 生成改具名 rng 會讓之後的抽樣跟舊 run 不同，要切換（新 run 用新 `data_version`）還是永遠保留 global RNG？
 5. **28 個 alias 名字**與舊 bandit（`ComCo-Weighted-BanditPaired`）：保留為 alias 或直接停用？
 6. **兩套 results**（主 checkout 9 月以前 + analysis worktree 10 月以後）要合併嗎？
+
+---
+
+## 7. 執行紀錄（2026-11-22 完成）
+
+決定：PRODEN bug 只在 experiments_summary 加註（§0 第 8 點 + C2/C3/C4/D2/E2）；等價門檻 ≤1e-6；label 生成保留 global RNG；舊演算法名稱全部保留；刪除舊 workflow；兩套 results 不合併。
+
+| Phase | commit | 內容 | 驗證 |
+|---|---|---|---|
+| 1 | f6427cc | golden（97 演算法 cell + 11 資料 cell，deterministic）、registry 不變式、`tests/run_all.py` | 重跑 3/3 bit-exact |
+| 0 | 282c960 | B1 B2 B4 B5 B6 B8 B10 | 只有 B1（4 個 PRODEN init）與 B8（biasvariance.csv）的 cell 改變 |
+| 2 | 506c899 | `src/core`、results `config_hash` + `run_configs/`、原子合併 | 97/97（只多新欄位） |
+| 3 | 5c37c4a | `src/losses`（每個公式一份；MCL 保留 add/clamp 兩種 eps） | step_equiv 177 項、97/97 |
+| 4 | dbb4c49 | contrastive 核心、`src/models`、PiCOOracleModel 子類別、`predict` | 97/97 |
+| 5 | 2d08365 | `src/train/{pico,comco,hooks}.py`：15 個 epoch 迴圈 → 2 個 + spec/hook；pcdiag 統計改用 `src/analysis` | 97/97（含所有 detail/pcdiag CSV） |
+| 6a/6b | b437dc6, 5976511 | `families.py`（13 runner → 2）、arg helpers、hparams 規則、`needs_views`（B3）、`runners/` 套件 | 97/97、registry 507 |
+| 7 | 84d3cc9 | `src/data/transforms.py`、Pico/ComCo dataset 合併、拆 `prepare_cifar100_subset`、CUB/SUN 改 ImageNet 統計（B7 部分） | data 11/11、97/97 |
+| 8 | b279705 | `scripts/sweep.py` + `experiments/*.yaml` | noctr_1118 移植 180/180 等價 |
+| 9 | （本次） | 刪舊 workflow / `scripts/legacy` / 一次性 launcher、CLI 拆成 `src/pipeline/cli`、CLAUDE.md | run_all 全過 |
+
+行數：runners.py 2118 → runners/ 1507 + families 260；detail.py 1735 → 1402；engine/fixed/oracle/comco 引擎 + swap 迴圈 ~700 → ~410（大多是 wrapper）。
+
+**刻意未做（風險 > 收益，或需要另行決定）：**
+- `_run_generic_bandit` 的 161 行狀態機未拆成 Policy/Reward 物件；舊 `ComCo-Weighted-Bandit*` 與 generic 版重複仍在（名稱都有舊結果）。
+- sweep 工廠與 `pll_init` 的命名邏輯未改成單一宣告式清單（registry 不變式保護現狀）。
+- pcdiag / picoplus 的訓練迴圈仍是獨立實作（統計已改用 `src/analysis`）。
+- `ComparisonDataGenerator` 的 8 個 generator 未合併（global RNG 決定下合併的收益小）。
+- 舊 `logs/*/launch.py` 只移植了 noctr_1118 作為等價驗證；其餘已完成的實驗不再需要 launcher。
+- `paradigm` 仍用名稱前綴推導（Hybrid/Solo 標成 CLL，只影響繪圖分組）。
+- `tests/legacy_ref/` 保留作為 step_equiv / check_analysis 的參考實作。

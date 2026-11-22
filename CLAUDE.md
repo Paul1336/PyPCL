@@ -8,9 +8,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **PLL algorithms**: CLPL (Cour 2011), Wu2022, PRODEN, PiCO, PiCO-MCL, PiCO-SC, PiCO-CLS, SoLar
 - **CLL algorithms**: MCL-LOG, SCL-NL, OP, OP-W, CPE, ComCo
 
-There are two independent workflows in this repo:
-1. **Algorithm comparison pipeline** (`scripts/run_pipeline.py`) — the actively used workflow. Trains the algorithms above on CIFAR-100 class-subsets (configurable number of classes `C` and candidate-label count `k`) to compare accuracy across methods. See "Running the Comparison Pipeline" below.
-2. **Full-dataset experiment runner** (`scripts/run_experiment.py`) — trains PiCO, Proden, SoLar, and MCL (LOG/MAE/EXP) on complete CIFAR-10/CIFAR-20/CLCIFAR-10/CLCIFAR-20 datasets. See "Running the Full-Dataset Experiment" below.
+Workflow:
+1. **Algorithm comparison pipeline** (`scripts/run_pipeline.py`) — one training cell or a small sweep. Trains the algorithms above on CIFAR-100 class-subsets (configurable number of classes `C` and candidate-label count `k`) to compare accuracy across methods. See "Running the Comparison Pipeline" below.
+2. **Declarative sweeps** (`scripts/sweep.py experiments/<id>.yaml`) — the launcher for multi-cell experiments (GPU packing, resume, retries); see `experiments/README.md`.
+
+The old full-dataset workflow (`scripts/run_experiment.py`, `src/{args,data_setup,training_pipelines,saving,plotting,clcifar,model_setup}.py`) and `scripts/legacy/` were removed in the 2026-11-22 refactor (`docs/refactor_plan.md`); they are in git history before 84d3cc9.
 
 ## Installation & Setup
 
@@ -23,7 +25,7 @@ pip install -r requirements.txt
 
 ## Running the Comparison Pipeline
 
-`scripts/run_pipeline.py` is the single entry point for comparing all 14 algorithms on CIFAR-100 class-subsets. It replaced 57 one-off scripts (`run_sweep_*`, `run_*_comparison`, `plot_*`, `launch_*.sh`) that had accumulated ad hoc, largely duplicated CLI parsing / CSV handling / plotting logic — those are kept for reference under `scripts/legacy/` but should not be used for new work.
+`scripts/run_pipeline.py` is the single entry point for comparing all 14 algorithms on CIFAR-100 class-subsets. It replaced 57 one-off scripts (`run_sweep_*`, `run_*_comparison`, `plot_*`, `launch_*.sh`) that had accumulated ad hoc, largely duplicated CLI parsing / CSV handling / plotting logic (removed 2026-11-22).
 
 It has three subcommands:
 
@@ -50,57 +52,15 @@ python scripts/run_pipeline.py plot --runs demo --out plots/demo/summary.png
 
 Results land in `results/<run_name>/` (`run_config.json` snapshot, per-worker `shards/worker<id>.csv`, merged `results.csv`); plots default to `plots/<run_name>/`. See `src/pipeline/` for the implementation (`gpu.py` device/sharding, `data.py` C/k schedule + dataloaders, `algorithms/` registry + per-algorithm hyperparameters + training runners, `results.py` CSV schema, `plotting.py`, `runner.py` ties it together). Adding a new algorithm only requires a runner function in `src/pipeline/algorithms/runners.py`, a hyperparameter entry in `hparams.py`, and one line in the registry (`src/pipeline/algorithms/__init__.py`).
 
-## Running the Full-Dataset Experiment
-
-`scripts/run_experiment.py` is a separate workflow: it trains PiCO, Proden, SoLar, and MCL (LOG/MAE/EXP) on complete CIFAR-10/20/CLCIFAR-10/20 datasets (not the CIFAR-100 class-subset sweep above). Hyperparameters can be set via command-line arguments (which override `config.yaml` defaults).
-
-### Basic Examples
-
-```bash
-# CIFAR-10: constant setting with k=2 partial labels, clean labels
-python scripts/run_experiment.py --dataset cifar10 --type constant --value 2 --noise clean
-
-# CIFAR-20: variable setting with 50% label inclusion probability, 20% label noise
-python scripts/run_experiment.py --dataset cifar20 --type variable --value 0.5 --noise noisy --eta 0.2
-
-# CLCIFAR-10: human-annotated dataset (no type/value/noise required)
-python scripts/run_experiment.py --dataset clcifar10
-```
-
-### Command-Line Arguments
-
-| Argument | Values | Purpose |
-|----------|--------|---------|
-| `--dataset` | `cifar10`, `cifar20`, `clcifar10`, `clcifar20` | Dataset selection |
-| `--type` | `constant`, `variable` | Label generation strategy (CIFAR-10/20 only) |
-| `--value` | float | k for constant, q for variable |
-| `--noise` | `clean`, `noisy` | Add label noise (CIFAR-10/20 only) |
-| `--eta` | float | Noise level (0.0-1.0) |
-| `--batch_size` | int | Training batch size |
-| `--epochs` | int | Total training epochs |
-| `--lr` | float | Learning rate |
-| `--weight_decay` | float | SGD weight decay |
-| `--momentum` | float | SGD momentum |
-
-Results (accuracies, plots) are saved to `results/` and `plots/` directories.
-
 ## Architecture & Data Flow
 
 ### High-Level Pipeline
 
-1. **Data Preparation** (`src/data_setup.py`)
-   - Load base CIFAR/CLCIFAR dataset
-   - Generate weak labels using `ComparisonDataGenerator` (for CIFAR) or use pre-annotated labels (for CLCIFAR)
-   - Create separate dataloaders for each algorithm's needs
-
-2. **Algorithm Training** (`src/training_pipelines.py` → `src/engine.py`)
-   - Each algorithm has a dedicated setup function in `src/model_setup.py`
-   - Algorithms are trained sequentially, with memory cleanup between runs
-   - Per-epoch accuracies are tracked and plotted
-
-3. **Results & Visualization** (`src/saving.py`, `src/plotting.py`)
-   - Accuracies saved to CSV with hyperparameter metadata
-   - Accuracy plots generated and saved after each algorithm completes
+`scripts/run_pipeline.py run` -> `src/pipeline/runner.py` (C x seed x k x algorithm loop, one `CellContext` per cell, resume by shard + `config_hash`) -> `src/pipeline/data.py` (`src/cifar100_subset.py` or the `src/pipeline/datasets` registry) -> registry `src/pipeline/algorithms` (507 names) -> runner:
+- PiCO / ComCo variants: `algorithms/families.py` (`run_pico_family`, `run_comco_family`, shared `run_epochs` with the diagnostic hooks) -> one epoch function each in `src/train/pico.py` / `src/train/comco.py` (variants = `PiCOSpec` / `ComCoSpec` flags; oracle corrections = mask transforms; detail stats = `src/train/hooks.py`).
+- everything else: `algorithms/runners/{simple,sweeps,bandit,swap}.py`; diagnostic-heavy re-implementations in `src/pcdiag.py` (PCD-*) and `src/picoplus.py` (PCD-PiCOPlus*).
+- losses: `src/losses/` (canonical formulas in `functional.py`); models: `src/models/`, `src/pico/model.py`, `src/comco/model.py`.
+- results: `results/<run>/shards/worker<id>.csv` (+ `results.csv`, `run_configs/<config_hash>.json`), diagnostics under `results/<run>/{pcdiag,detail,bandit_trace,prune_trace,alpha_trace}/`; analysis with `src/analysis/`.
 
 ### Label Generation Strategies
 
@@ -174,55 +134,41 @@ Collate functions (`src/collate.py`) handle variable-length label tensors by pad
 
 ```
 src/
-├── args.py                    # Argument parsing & validation
-├── data_setup.py              # Dataset preparation, loader creation
-├── data_utils.py              # Dataset classes (Weakly Supervised, PiCO, SoLar)
-├── engine.py                  # Core training loops: train_algorithm, train_pico_epoch, train_solar_epoch, train_solar
-├── models.py                  # ResNet18 backbone
-├── model_setup.py             # Algorithm-specific initialization (setup_proden, setup_mcl, setup_pico, setup_solar)
-├── training_pipelines.py      # Entry points for each algorithm (run_*_training)
-├── collate.py                 # Dataloader collate functions
-├── proden_loss.py             # Proden loss implementation
-├── mcl_losses.py              # MCL loss implementations (LOG, MAE, EXP)
-├── saving.py                  # Results to CSV
-├── plotting.py                # Accuracy plot generation
-├── clcifar.py                 # CLCIFAR10/20 dataset loaders (downloads from Google Drive)
-├── pico/
-│   ├── model.py               # PiCO model (dual encoder, queue, prototypes)
-│   ├── resnet.py              # SupConResNet backbone with feature head
-│   ├── utils_loss.py          # PartialLoss, SupConLoss (contrastive)
-│   └── randaugment.py         # RandAugment augmentation implementation
-├── solar/
-│   ├── utils_algo.py          # Sinkhorn-Knopp algorithm, linear rampup
-│   └── utils_loss.py          # Partial loss with confidence tracking
-├── analysis/                  # Reusable non-accuracy analysis toolkit (pairs/labels/gradients/prediction/estimates + io/stats/traces post-hoc); inventory in docs/analysis_metrics.md, equivalence check verify_scripts/check_analysis.py
-└── pipeline/                  # Comparison pipeline (scripts/run_pipeline.py) — see above
-    ├── config.py              # Resolved run config: merges config.yaml + CLI args
-    ├── gpu.py                 # Device selection, multi-GPU round-robin algorithm sharding
-    ├── data.py                # C/k schedule + CIFAR-100 subset dataloaders (wraps src/cifar100_subset.py)
-    ├── results.py             # Unified results CSV schema, shard merge/resume
-    ├── plotting.py            # Single parameterized accuracy-vs-k plotting tool
-    ├── runner.py               # Experiment loop: for C, k, algorithm -> train -> record
-    └── algorithms/
-        ├── __init__.py        # Algorithm registry: name -> (paradigm, runner)
-        ├── hparams.py         # Per-algorithm default hyperparameters
-        └── runners.py         # Training "shapes" (simple / proden / pico family / comco / solar)
-scripts/
-├── run_pipeline.py            # Main entry point: 14-algorithm CIFAR-100 subset comparison pipeline
-├── run_experiment.py          # Full-dataset entry point: CIFAR-10/20/CLCIFAR-10/20, 7 algorithms
-├── download_data.py           # One-time CIFAR-10/100 download utility
-└── legacy/                    # Superseded one-off scripts, kept for reference only
-config.yaml                    # Hyperparameter defaults
+├── core/            CellContext (per-cell identity), trace writer
+├── data/            transforms.py: normalisation constants + PiCO/ComCo weak/strong augmentation
+├── losses/          functional (canonical formulas), masks, stateless / confidence / composite / swap / contrastive
+├── models/          backbones (ResNet18 / MLP), common (key-encoder momentum, prototype EMA, predict_logits)
+├── train/           pico.py / comco.py (the one epoch function per framework + specs), hooks.py
+├── pipeline/
+│   ├── runner.py  config.py  data.py  results.py  gpu.py  plotting.py  detail.py  biasvariance*.py
+│   ├── cli/         run_pipeline parsers + subcommand implementations
+│   ├── datasets/    non-CIFAR-100 dataset registry
+│   └── algorithms/  __init__ (registry, needs_views), hparams (rule), families.py, runners/{simple,sweeps,bandit,swap}.py
+├── sweep/           spec.py (YAML -> cells -> argv), scheduler.py (GPU packing, resume, retries)
+├── analysis/        non-accuracy diagnostics (training-time + post-hoc); inventory docs/analysis_metrics.md
+├── pico/ comco/ solar/   framework-specific models / contrastive loss / SoLar utilities
+├── cifar100_subset.py  data_utils.py  collate.py  pll_init.py   data generation, datasets, confidence inits
+├── pcdiag.py  picoplus.py  clsloss_swap.py  clsloss_solo.py  comco_bandit.py  bias_aware_reward.py
+├── hybrid_switch.py  solo_switch.py  switch_diag.py  unified_loss.py
+└── *_loss.py, engine.py, fixed_*_engine.py, oracle_pico_engine.py   thin re-export shims kept for old imports
+scripts/   run_pipeline.py, sweep.py, download_data.py, log_experiment.py, plot_*.py, summarize_clsloss_swap.py,
+           launch_clsloss_swap.py (build_plan = Nano4 shard map), run_clsloss_solo.py, run_biasvariance_faithful.py
+experiments/  one YAML spec per sweep
+tests/     run_all.py (safety net), golden/, step_equiv.py, unit_checks.py, sweep_equiv.py, legacy_ref/ (frozen pre-refactor src)
+config.yaml                    Hyperparameter defaults
 ```
+
+## Before changing training code
+
+Run `python tests/run_all.py` (or `--fast` without the ~10 min GPU golden cells). Golden cells
+(`tests/golden/`) fingerprint 97 representative algorithms deterministically; a deliberate behaviour
+change is accepted with `golden.py check --allow <regex> --update` after checking that only the
+expected cells/columns changed. Do not edit `tests/legacy_ref/`.
 
 ## Key Design Patterns
 
 ### 1. Modular Algorithm Design
-- Each algorithm has three components:
-  - **Setup** (`setup_*` in model_setup.py): Initialize model, loss, optimizer
-  - **Training** (`train_*` in training_pipelines.py or engine.py): Run training loop
-  - **Dataloader** (get_dataloaders): Provide algorithm-specific loader
-- Enables easy addition of new algorithms
+- A new PiCO/ComCo variant is usually a new `PiCOSpec`/`ComCoSpec` flag or `PiCOVariant` entry plus one registry name; other algorithms get a runner in `algorithms/runners/` and a registry line. Hyperparameters follow `hparams.hparams_for`.
 
 ### 2. Configuration Management
 - `config.yaml` provides defaults for all hyperparameters

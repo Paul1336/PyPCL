@@ -406,6 +406,28 @@ def run_comco_fixed(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_siz
 # ─── SoLar: two-stage (pre-estimation + Sinkhorn-Knopp final training) ────
 
 
+def _setup_solar(args, train_config, solar_config, solar_train_dataset, device):
+    """SoLar model / loss / optimizer / queue (moved from the old-workflow src/model_setup.py)."""
+    import torch.optim as optim
+    from src.losses.confidence import SolarPartialLoss
+    from src.models import create_model
+    solar_args = {
+        'num_class': train_config['num_classes'], 'epochs': args.epochs, 'warmup_epoch': solar_config['warmup_epoch'],
+        'rho_range': solar_config['rho_range'], 'lamd': solar_config['lamd'], 'eta': solar_config['eta'],
+        'tau': solar_config['tau'], 'est_epochs': solar_config['est_epochs'], 'gamma1': solar_config['gamma1'],
+        'gamma2': solar_config['gamma2']
+    }
+    model = create_model(train_config['num_classes']).to(device)
+    num_classes = train_config['num_classes']
+    solar_given_label_matrix = torch.zeros(len(solar_train_dataset), num_classes)
+    for i, p_label in enumerate(solar_train_dataset.given_label_matrix_sparse):
+        solar_given_label_matrix[i, p_label] = 1.0
+    loss_fn = SolarPartialLoss(solar_given_label_matrix, device)
+    optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+    queue = torch.zeros(64 * args.batch_size, train_config['num_classes']).to(device)
+    return model, loss_fn, optimizer, solar_args, queue
+
+
 def run_solar(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epochs, device, tag, report_every):
     solar_cfg = raw_cfg['solar']
     solar_ds = SoLarDataset(pl_ds, orig_targets)
@@ -418,7 +440,7 @@ def run_solar(loaders, pl_ds, orig_targets, C, hparams, raw_cfg, batch_size, epo
                                  weight_decay=hparams['weight_decay'], epochs=epochs, batch_size=batch_size)
     train_config = {'num_classes': C}
 
-    model, loss_fn, opt, solar_args, queue = setup_solar(fake_args, train_config, solar_cfg, solar_ds, device)
+    model, loss_fn, opt, solar_args, queue = _setup_solar(fake_args, train_config, solar_cfg, solar_ds, device)
 
     total_epochs = solar_cfg['est_epochs'] + epochs
     print(f'  [{tag}]  SoLar: est={solar_cfg["est_epochs"]} + train={epochs} = {total_epochs} total epochs',
