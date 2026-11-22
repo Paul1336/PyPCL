@@ -1,0 +1,34 @@
+# Final comparison after the 2026-11-22 refactor: the paper-closest versions of
+#   PiCO  -> PCD-PiCO        (= PiCO-Fixed: paper warm-up prot_start_fixed=1, candidate-masked init,
+#                              Adam 3e-4) with the full per-epoch PCD diagnostics
+#   ComCo -> PCD-ComCoMCLNL  (ComCo framework, MCL-NL cls loss as in ComCo Sec 5.4.2 under MCLL,
+#                              tau 0.17, lambda 0.3, warmup_neg 1 / warmup_pos 100)
+#   PRODEN -> PRODEN         (SGD 0.01, paper-verified)
+# on uniform CIFAR-100 subsets C=20 / C=100, fixed |Y| = k, seeds 42-44, 200 epochs, no held-out,
+# with every diagnostic on (analysed with src/analysis, see docs/final_1122_report.md).
+id: final_1122
+epochs: 200
+data_dir: data
+families:
+  - name: c20
+    run_name: "final_c{C}_{cl_bias}_fixk_1122"
+    k_mode: fixk
+    grid: {C: [20], cl_bias: [uniform], algorithm: [PCD-PiCO, PCD-ComCoMCLNL, PRODEN],
+           seed: [42, 43, 44], k: [2, 5, 10, 15, 19]}
+    args: &diag {detail: true, detail_log_every: 5, label_diag: true, concentration: true,
+                 concentration_log_every: 20, knn_eval: true, biasvariance: true, biasvariance_log_every: 20,
+                 tsne: true, tsne_every: 100}
+  - name: c100
+    run_name: "final_c{C}_{cl_bias}_fixk_1122"
+    k_mode: fixk
+    grid: {C: [100], cl_bias: [uniform], algorithm: [PCD-PiCO, PCD-ComCoMCLNL, PRODEN],
+           seed: [42, 43, 44], k: [5, 25, 50, 75, 99]}
+    args: *diag
+order: [seed, -est, algorithm, k]     # one full seed first (preliminary analysis), longest cells first
+resources:
+  gpus: [0, 1, 2, 3]
+  slots_per_gpu: 4
+  mem_budget_mb: 24000
+  mem_mb: {default: 4500, PRODEN: 2500}
+  est_minutes: {default: 70, 'C=100': 330, PRODEN: 15, 'PRODEN,C=100': 60}
+policy: {retries: 2, retry_backoff_s: 60}
